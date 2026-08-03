@@ -5,8 +5,8 @@
 //! Pluto validator nodes.
 
 use crate::error::CliError;
-use clap::{CommandFactory, FromArgMatches};
-use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
+use clap::FromArgMatches;
+use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
 
@@ -28,8 +28,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> std::result::Result<(), CliError> {
-    let cmd = commands::test::update_test_cases_help(Cli::command());
-    let matches = cmd.get_matches();
+    let matches = cli::build_command().get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
     // Top level cancellation token for graceful shutdown on Ctrl+C / SIGTERM.
@@ -85,6 +84,17 @@ async fn run() -> std::result::Result<(), CliError> {
             let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
             commands::relay::run(config, ct).await
         }
+        Commands::Run(args) => {
+            let config: commands::run::RunConfig = (*args).try_into()?;
+            // Tracing/Loki init is owned by `commands::run::run`.
+            commands::run::run(config, ct).await
+        }
+        Commands::Unsafe(args) => match args.command {
+            UnsafeCommands::Run(args) => {
+                let config: commands::run::RunConfig = (*args).try_into()?;
+                commands::run::run(config, ct).await
+            }
+        },
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 pluto_tracing::init(&pluto_tracing::TracingConfig::default())

@@ -12,14 +12,26 @@ use blst::{
     min_pk::{PublicKey as BlstPublicKey, SecretKey as BlstSecretKey, Signature as BlstSignature},
 };
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroizing;
 
 use crate::{
     tbls::Tbls,
-    types::{BlsError, Error, Index, PrivateKey, PublicKey, Signature},
+    types::{BlsError, Error, Index, PrivateKey, PublicKey, SIGNATURE_LENGTH, Signature},
 };
 
 /// Domain Separation Tag for Ethereum 2.0 BLS signatures
 const ETH2_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+
+/// Serialized BLS12-381 G2 compressed point at infinity (the identity
+/// signature). This is the value Charon's Herumi `Aggregate` returns for an
+/// empty input slice: `sig.Serialize()` of a zero `bls.Sign`. The high byte
+/// sets the compression bit (`0x80`) and the infinity bit (`0x40`); all other
+/// bytes are zero.
+const IDENTITY_SIGNATURE: Signature = {
+    let mut s = [0u8; SIGNATURE_LENGTH];
+    s[0] = 0xc0;
+    s
+};
 
 /// BLST implementation of threshold BLS signatures.
 ///
@@ -30,10 +42,12 @@ pub struct BlstImpl;
 
 impl Tbls for BlstImpl {
     fn generate_secret_key(&self, mut rng: impl RngCore + CryptoRng) -> Result<PrivateKey, Error> {
-        let mut ikm = [0u8; 32];
-        rng.fill_bytes(&mut ikm);
+        // `ikm` is secret input key material; wipe it on drop. (`BlstSecretKey`
+        // itself is `#[zeroize(drop)]`, so the derived `sk` is wiped too.)
+        let mut ikm = Zeroizing::new([0u8; 32]);
+        rng.fill_bytes(ikm.as_mut());
 
-        let sk = BlstSecretKey::key_gen(&ikm, &[])
+        let sk = BlstSecretKey::key_gen(ikm.as_ref(), &[])
             .map_err(|_| Error::InvalidSecretKey(BlsError::KeyGeneration))?;
 
         Ok(sk.to_bytes())
@@ -44,18 +58,21 @@ impl Tbls for BlstImpl {
         mut rng: impl RngCore + CryptoRng,
     ) -> Result<PrivateKey, Error> {
         for _ in 0..100 {
-            let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
+            // Wipe the candidate buffer on every iteration; on success its value
+            // is copied into the returned key first.
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            rng.fill_bytes(bytes.as_mut());
 
-            if BlstSecretKey::from_bytes(&bytes).is_ok() {
-                return Ok(bytes);
+            if BlstSecretKey::from_bytes(bytes.as_ref()).is_ok() {
+                return Ok(*bytes);
             }
         }
         Err(Error::InvalidSecretKey(BlsError::KeyGeneration))
     }
 
     fn secret_to_public_key(&self, secret_key: &PrivateKey) -> Result<PublicKey, Error> {
-        let sk = BlstSecretKey::from_bytes(secret_key)?;
+        let sk =
+            BlstSecretKey::from_bytes(secret_key).map_err(|e| Error::InvalidSecretKey(e.into()))?;
         let pk = sk.sk_to_pk();
         Ok(pk.to_bytes())
     }
@@ -67,22 +84,35 @@ impl Tbls for BlstImpl {
         threshold: Index,
         mut rng: impl RngCore + CryptoRng,
     ) -> Result<HashMap<Index, PrivateKey>, Error> {
+        // Charon's Herumi backend only rejects `threshold <= 1`
+        // (see charon/tbls/herumi.go ThresholdSplit @ v1.7.1). We additionally
+        // reject `threshold > total`: such a (t, n) scheme is unrecoverable and
+        // is always a programming error. No Charon call site passes t > n, so
+        // this hardening never rejects an otherwise-valid split.
         if threshold <= 1 || threshold > total {
             return Err(Error::InvalidThreshold { threshold, total });
         }
-        let threashlod =
-            usize::try_from(threshold).map_err(|_| Error::InvalidThreshold { threshold, total })?;
 
-        let sk = BlstSecretKey::from_bytes(secret_key)?;
+        // `threshold` is bounded above by `total` here; the conversion is
+        // infallible on 64-bit targets and only fails on 32-bit targets for an
+        // implausibly large `total`. Map that to a dedicated overflow error
+        // rather than re-using InvalidThreshold (the value is in range).
+        let threshold_usize =
+            usize::try_from(threshold).map_err(|_| Error::ThresholdOverflow { threshold })?;
 
-        // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random
-        let mut poly = Vec::with_capacity(threashlod);
+        let sk =
+            BlstSecretKey::from_bytes(secret_key).map_err(|e| Error::InvalidSecretKey(e.into()))?;
+
+        // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random.
+        // `poly` holds `BlstSecretKey`s, each `#[zeroize(drop)]`, so the secret
+        // coefficients are wiped when `poly` is dropped.
+        let mut poly = Vec::with_capacity(threshold_usize);
         poly.push(sk);
 
         for _ in 1..threshold {
-            let mut ikm = [0u8; 32];
-            rng.fill_bytes(&mut ikm);
-            let coeff = BlstSecretKey::key_gen(&ikm, &[])
+            let mut ikm = Zeroizing::new([0u8; 32]);
+            rng.fill_bytes(ikm.as_mut());
+            let coeff = BlstSecretKey::key_gen(ikm.as_ref(), &[])
                 .map_err(|_| Error::InvalidSecretKey(BlsError::KeyGeneration))?;
             poly.push(coeff);
         }
@@ -116,6 +146,8 @@ impl Tbls for BlstImpl {
         // points)
         let share_points: Vec<Index> = shares.keys().copied().collect();
 
+        // The reconstructed master secret and the parsed share scalars are all
+        // `BlstSecretKey`s (`#[zeroize(drop)]`), so they are wiped on drop.
         let share_secrets: Vec<BlstSecretKey> = shares
             .values()
             .map(|bytes| {
@@ -129,15 +161,17 @@ impl Tbls for BlstImpl {
     }
 
     fn aggregate(&self, signatures: &[Signature]) -> Result<Signature, Error> {
+        // Parity with Charon Herumi `Aggregate` (tbls/herumi.go:227): an empty
+        // input is NOT an error. Herumi aggregates into a zero `bls.Sign` and
+        // returns its serialized form, i.e. the G2 compressed point at infinity.
         if signatures.is_empty() {
-            return Err(Error::EmptySignatureArray);
+            return Ok(IDENTITY_SIGNATURE);
         }
 
-        if signatures.len() == 1 {
-            return Ok(signatures[0]);
-        }
-
-        // Use blst's aggregation
+        // Deserialize every input signature (matches the Herumi loop, which
+        // errors if any element fails to deserialize). Note: aggregation
+        // canonicalizes the output even for a single input (Herumi returns
+        // `sig.Serialize()`, never the input bytes verbatim).
         let parsed_sigs: Vec<BlstSignature> = signatures
             .iter()
             .map(|sig_bytes| {
@@ -198,7 +232,8 @@ impl Tbls for BlstImpl {
     }
 
     fn sign(&self, private_key: &PrivateKey, data: &[u8]) -> Result<Signature, Error> {
-        let sk = BlstSecretKey::from_bytes(private_key)?;
+        let sk = BlstSecretKey::from_bytes(private_key)
+            .map_err(|e| Error::InvalidSecretKey(e.into()))?;
         let sig = sk.sign(data, ETH2_DST, &[]);
         Ok(sig.to_bytes())
     }
@@ -793,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_single_signature() {
+    fn aggregate_single_signature_is_canonical() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -802,11 +837,24 @@ mod tests {
         let sk = blst.generate_secret_key(OsRng).unwrap();
         let sig = blst.sign(&sk, data).unwrap();
 
+        // Charon Herumi Aggregate deserializes+re-serializes even for one element,
+        // so the output is the canonical encoding of the parsed point (not the
+        // input bytes verbatim). For a signature produced by `sign` these coincide.
         let aggregated = blst.aggregate(&[sig]).unwrap();
-        assert_eq!(
-            sig, aggregated,
-            "Aggregating single signature should return the same signature"
-        );
+        assert_eq!(sig, aggregated);
+
+        // Canonical round-trip: re-serializing the parsed aggregate is idempotent.
+        let reparsed = BlstSignature::from_bytes(&aggregated).unwrap();
+        assert_eq!(aggregated, reparsed.to_bytes());
+    }
+
+    #[test]
+    fn aggregate_single_malformed_signature_errors() {
+        let blst = setup();
+        // All-zero 96 bytes is not a valid compressed signature; Herumi's
+        // Deserialize fails, so Aggregate returns an error.
+        let bad = [0u8; 96];
+        assert!(blst.aggregate(&[bad]).is_err());
     }
 
     #[test]
@@ -859,12 +907,73 @@ mod tests {
         let sk = blst.generate_secret_key(OsRng).unwrap();
 
         // Threshold of 1 is invalid
-        let result = blst.threshold_split(&sk, 5, 1);
-        assert!(result.is_err(), "Threshold of 1 should be rejected");
+        let err = blst.threshold_split(&sk, 5, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidThreshold {
+                threshold: 1,
+                total: 5
+            }
+        ));
 
         // Threshold greater than total is invalid
-        let result = blst.threshold_split(&sk, 3, 5);
-        assert!(result.is_err(), "Threshold > total should be rejected");
+        let err = blst.threshold_split(&sk, 3, 5).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidThreshold {
+                threshold: 5,
+                total: 3
+            }
+        ));
+
+        // threshold == 0 is also rejected (<= 1)
+        let err = blst.threshold_split(&sk, 5, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidThreshold {
+                threshold: 0,
+                total: 5
+            }
+        ));
+    }
+
+    #[test]
+    fn threshold_equal_total_is_valid() {
+        let blst = setup();
+        let sk = blst.generate_secret_key(rand::rngs::OsRng).unwrap();
+        // threshold == total is a valid (n, n) scheme.
+        let shares = blst.threshold_split(&sk, 4, 4).unwrap();
+        assert_eq!(shares.len(), 4);
+        let recovered = blst.recover_secret(&shares).unwrap();
+        assert_eq!(sk, recovered);
+    }
+
+    #[test]
+    fn invalid_secret_key_error_is_consistent() {
+        let blst = setup();
+        // All-0xff bytes are >= the scalar field order => from_bytes fails.
+        let bad: PrivateKey = [0xff; 32];
+
+        assert!(matches!(
+            blst.secret_to_public_key(&bad),
+            Err(Error::InvalidSecretKey(_))
+        ));
+        assert!(matches!(
+            blst.sign(&bad, b"data"),
+            Err(Error::InvalidSecretKey(_))
+        ));
+        assert!(matches!(
+            blst.threshold_split(&bad, 5, 3),
+            Err(Error::InvalidSecretKey(_))
+        ));
+
+        let mut shares = HashMap::new();
+        shares.insert(1u64, bad);
+        shares.insert(2u64, bad);
+        assert!(matches!(
+            blst.recover_secret(&shares),
+            Err(Error::InvalidSecretKey(_))
+        ));
     }
 
     #[test]
@@ -905,14 +1014,33 @@ mod tests {
     }
 
     #[test]
-    fn empty_aggregate_fails() {
+    fn aggregate_empty_returns_identity_signature() {
         let blst = setup();
 
-        let result = blst.aggregate(&[]);
-        assert!(
-            result.is_err(),
-            "Aggregating empty signature list should fail"
+        // Parity with Charon Herumi Aggregate: empty input is NOT an error; it
+        // returns the serialized G2 point at infinity. Fixture: `0xc0` followed by
+        // 95 zero bytes (Herumi `sig.Serialize()` of a zero `bls.Sign`).
+        let agg = blst
+            .aggregate(&[])
+            .expect("empty aggregate must not error (Herumi parity)");
+
+        let mut expected = [0u8; 96];
+        expected[0] = 0xc0;
+        assert_eq!(
+            agg, expected,
+            "empty aggregate must equal the serialized identity signature"
         );
+    }
+
+    #[test]
+    fn identity_signature_matches_go_fixture() {
+        // Hex of Herumi `bls.Sign{}.Serialize()` for the BLS12-381 G2 compressed
+        // point at infinity (eth2/ZCash compressed encoding): `c0` followed by
+        // 190 hex zeros (96 bytes total).
+        let go_fixture_hex = format!("c0{}", "0".repeat(190));
+        let go_fixture = hex::decode(go_fixture_hex).unwrap();
+        assert_eq!(go_fixture.len(), 96);
+        assert_eq!(&IDENTITY_SIGNATURE[..], &go_fixture[..]);
     }
 
     #[test]

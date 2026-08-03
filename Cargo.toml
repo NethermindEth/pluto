@@ -58,7 +58,6 @@ futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"
-humantime = "2.1"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
@@ -71,7 +70,24 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7.11"
-libp2p = { version = "0.56", features = ["full", "secp256k1"] }
+# Explicit feature list (not "full"): only the protocols Pluto actually wires.
+# Dropping "full" removes unused stacks (floodsub/gossipsub/kad/mdns/dcutr/
+# websocket/webrtc/…) and, with them, `cuckoofilter`→`rand 0.7.3` (RUSTSEC-2026-0097).
+libp2p = { version = "0.56", features = [
+    "autonat",
+    "dns",
+    "identify",
+    "macros",
+    "mdns",
+    "noise",
+    "ping",
+    "quic",
+    "relay",
+    "secp256k1",
+    "tcp",
+    "tokio",
+    "yamux",
+] }
 url = "2.5"
 percent-encoding = "2.3"
 aes = "0.8.4"
@@ -84,6 +100,7 @@ scrypt = "0.11.0"
 subtle = "2.6"
 unicode-normalization = "0.1.25"
 zeroize = "1.8.2"
+secrecy = "0.10"
 uuid = { version = "1.19", features = ["serde", "v4"] }
 unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
@@ -116,7 +133,7 @@ flate2 = "1.1"
 wiremock = "0.6"
 tower = "0.5"
 sysinfo = "0.33"
-quick-xml = { version = "0.39", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }

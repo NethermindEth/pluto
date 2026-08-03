@@ -15,11 +15,21 @@
 // reporters, committee plumbing) have no in-crate caller.
 #![allow(dead_code)]
 
-use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use pluto_eth2api::versioned;
+use chrono::{DateTime, Utc};
+use pluto_eth2api::{
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockV2Request, GetBlockV2Response,
+    versioned,
+};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
+use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
 
 use crate::{
@@ -28,12 +38,23 @@ use crate::{
         VersionedSignedAggregateAndProof, VersionedSignedProposal,
     },
     tracker::{StepError, analysis::incl_supported, metrics::TRACKER_METRICS},
-    types::{Duty, DutyType, PubKey, SignedData},
+    types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
 
 /// Number of slots after which an unincluded duty is assumed missed and its
 /// cached submission (and associated committee state) is dropped.
-const INCL_MISSED_LAG: u64 = 32;
+///
+/// Public because the tracker's analyser deadline is offset by
+/// `INCL_MISSED_LAG + INCL_CHECK_LAG` slots so that a duty is analysed only
+/// after its inclusion verdict can have arrived. Parity: charon
+/// `core/tracker/inclusion.go` `InclMissedLag`, consumed by `app.go`.
+pub const INCL_MISSED_LAG: u64 = 32;
+
+/// Number of slots to lag behind the head before checking inclusion, giving the
+/// beacon node time to import the block for that slot.
+///
+/// Parity: charon `core/tracker/inclusion.go` `InclCheckLag`.
+pub const INCL_CHECK_LAG: u64 = 6;
 
 /// SSZ capacity bound used only to decode aggregation bitlists for bit-level
 /// comparisons. The bit operations (`contains`/`bit_at`) work on the decoded
@@ -83,6 +104,9 @@ pub enum InclusionError {
     /// A versioned attestation carried no payload.
     #[error("missing attestation payload")]
     MissingAttestation,
+    /// An aggregation-bits field could not be SSZ-decoded.
+    #[error("decode aggregation bits")]
+    DecodeAggregationBits,
     /// A bitfield comparison failed.
     #[error(transparent)]
     Bitfield(#[from] pluto_ssz::BitfieldError),
@@ -298,6 +322,8 @@ impl InclusionCore {
             .iter()
             .filter_map(|(key, sub)| match sub.duty.duty_type {
                 DutyType::Proposer => (sub.duty.slot.inner() == slot).then(|| key.clone()),
+                // CheckBlock is only ever fed proposer submissions. Parity:
+                // charon core/tracker/inclusion.go panics identically here.
                 _ => unreachable!("bug: unexpected type"),
             })
             .collect();
@@ -444,8 +470,10 @@ fn check_attestation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
         | versioned::DataVersion::Bellatrix
         | versioned::DataVersion::Capella
         | versioned::DataVersion::Deneb => {
-            let sub_bits = AggBits::from_ssz_bytes(payload.aggregation_bits());
-            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+            let sub_bits = AggBits::from_ssz_bytes(payload.aggregation_bits())
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
+            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
             Ok(att_bits.contains(&sub_bits)?)
         }
         versioned::DataVersion::Electra | versioned::DataVersion::Fulu => {
@@ -459,7 +487,8 @@ fn check_attestation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
                 .find(|d| d.validator_index == validator_index)
                 .ok_or(InclusionError::NoAttesterDuty)?;
 
-            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
             let committee_index = electra_committee_index(payload)?;
 
             // Sum the validator counts of all committees preceding the
@@ -484,7 +513,8 @@ fn check_aggregation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
     let Some(att) = block.attestations_by_data_root.get(&sub.att_data_root) else {
         return Ok(false);
     };
-    let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+    let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+        .map_err(|_| InclusionError::DecodeAggregationBits)?;
 
     let any = &*sub.data as &dyn Any;
     let agg = any
@@ -493,7 +523,8 @@ fn check_aggregation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
     let sub_bits = AggBits::from_ssz_bytes(
         agg.aggregation_bits()
             .ok_or(InclusionError::ParseVersionedAggregate)?,
-    );
+    )
+    .map_err(|_| InclusionError::DecodeAggregationBits)?;
 
     Ok(att_bits.contains(&sub_bits)?)
 }
@@ -584,6 +615,167 @@ fn log_block_included(sub: &Submission, block_slot: u64, blinded: bool) {
         broadcast_delay = ?sub.delay,
         "{msg}",
     );
+}
+
+/// Networked driver that polls the beacon node and feeds [`InclusionCore`].
+///
+/// Parity: charon's `InclusionChecker` in `core/tracker/inclusion.go`. The
+/// core holds all the decision logic; this type owns only the clock, the
+/// beacon-node calls, and the once-per-slot cadence.
+pub struct InclusionChecker {
+    core: Mutex<InclusionCore>,
+    eth2_cl: EthBeaconNodeApiClient,
+    genesis: DateTime<Utc>,
+    slot_duration: Duration,
+}
+
+impl InclusionChecker {
+    /// Builds a checker, fetching genesis time and slot duration up front (as
+    /// charon's `NewInclusion` does) so the ticker loop needs no further config
+    /// lookups.
+    pub async fn new(
+        eth2_cl: EthBeaconNodeApiClient,
+        tracker_incl_fn: TrackerInclFn,
+        feature_set: Arc<FeatureSet>,
+    ) -> Result<Self, EthBeaconNodeApiClientError> {
+        let genesis = eth2_cl.fetch_genesis_time().await?;
+        let (slot_duration, _slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
+
+        Ok(Self {
+            core: Mutex::new(InclusionCore::new(tracker_incl_fn, feature_set)),
+            eth2_cl,
+            genesis,
+            slot_duration,
+        })
+    }
+
+    /// Records a duty submitted to the beacon node, stamping each entry with
+    /// the delay between slot start and broadcast.
+    ///
+    /// Synchronous (the core is I/O-free) so the broadcaster stitch point can
+    /// call it without awaiting.
+    pub fn submitted(&self, duty: &Duty, set: &SignedDataSet) -> Result<(), InclusionError> {
+        let delay = self.delay_since_slot_start(duty.slot.inner());
+
+        let mut core = self.core.lock().expect("inclusion core mutex poisoned");
+        for (pubkey, data) in set {
+            core.submitted(duty.clone(), *pubkey, data.clone(), delay)?;
+        }
+
+        Ok(())
+    }
+
+    /// Elapsed time between the start of `slot` and now, saturating at zero for
+    /// a slot that has not started yet.
+    fn delay_since_slot_start(&self, slot: u64) -> Duration {
+        let offset = self
+            .slot_duration
+            .saturating_mul(u32::try_from(slot).unwrap_or(u32::MAX));
+        let Some(slot_start) = chrono::Duration::from_std(offset)
+            .ok()
+            .and_then(|offset| self.genesis.checked_add_signed(offset))
+        else {
+            return Duration::ZERO;
+        };
+        Utc::now()
+            .signed_duration_since(slot_start)
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+    }
+
+    /// Slot currently due for an inclusion check: the head slot lagged by
+    /// [`INCL_CHECK_LAG`] so the beacon node has had time to import it. `None`
+    /// before the chain is old enough to have such a slot.
+    fn check_due_slot(&self) -> Option<u64> {
+        let elapsed = Utc::now()
+            .signed_duration_since(self.genesis)
+            .to_std()
+            .ok()?;
+        let head = u64::try_from(
+            elapsed
+                .as_nanos()
+                .checked_div(self.slot_duration.as_nanos())?,
+        )
+        .ok()?;
+        head.checked_sub(INCL_CHECK_LAG)
+    }
+
+    /// Reports whether a block exists at `slot`. A `404` means no block was
+    /// proposed, which is a normal outcome rather than an error — the same
+    /// distinction charon draws via `is404Error`.
+    async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
+        let request = GetBlockV2Request::builder()
+            .block_id(slot.to_string())
+            .build()
+            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
+
+        match self
+            .eth2_cl
+            .get_block_v2(request)
+            .await
+            .map_err(|err| InclusionCheckerError::Request(err.into()))?
+        {
+            GetBlockV2Response::Ok(_) | GetBlockV2Response::OkBinary(_) => Ok(true),
+            GetBlockV2Response::NotFound(_) => Ok(false),
+            other => Err(InclusionCheckerError::UnexpectedResponse(format!(
+                "{other:?}"
+            ))),
+        }
+    }
+
+    /// Drives inclusion checking until `cancel` fires: once per due slot, ask
+    /// the beacon node whether that slot produced a block, feed the verdict to
+    /// the core, then trim submissions old enough to count as missed.
+    pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        let mut checked_slot: Option<u64> = None;
+
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                _ = ticker.tick() => {}
+            }
+
+            let Some(slot) = self.check_due_slot() else {
+                continue;
+            };
+            if checked_slot == Some(slot) {
+                continue;
+            }
+
+            let found = match self.block_exists(slot).await {
+                Ok(found) => found,
+                Err(err) => {
+                    tracing::warn!(slot, %err, "Failed to check inclusion");
+                    continue;
+                }
+            };
+
+            {
+                let mut core = self.core.lock().expect("inclusion core mutex poisoned");
+                core.check_block(slot, found);
+                if let Some(trim_to) = slot.checked_sub(INCL_MISSED_LAG) {
+                    core.trim(trim_to);
+                }
+            }
+
+            checked_slot = Some(slot);
+        }
+    }
+}
+
+/// Errors raised by the networked [`InclusionChecker`] while talking to the
+/// beacon node. Logged and skipped rather than propagated: the slot is just
+/// retried on the next tick.
+#[derive(Debug, thiserror::Error)]
+pub enum InclusionCheckerError {
+    /// The beacon-node request failed or could not be built. Boxed because the
+    /// generated client surfaces `anyhow::Error`, which `pluto-core` avoids.
+    #[error("beacon node request failed: {0}")]
+    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// The beacon node returned a status the checker does not handle.
+    #[error("unexpected beacon node response: {0}")]
+    UnexpectedResponse(String),
 }
 
 #[cfg(test)]
@@ -799,6 +991,30 @@ mod tests {
         assert_eq!(scenario(0, false), 1, "block not found at slot -> missed");
         assert_eq!(scenario(1, true), 0, "slot mismatch -> skipped");
         assert_eq!(scenario(1, false), 0, "slot mismatch, not found -> skipped");
+    }
+
+    /// Pins the faithful parity with Go's `panic("bug: unexpected type")` in
+    /// `CheckBlock` (charon core/tracker/inclusion.go:289-291 @ v1.7.1): the
+    /// non-attestation path only ever expects proposer submissions.
+    #[test]
+    #[should_panic(expected = "bug: unexpected type")]
+    fn check_block_panics_on_non_proposer_submission() {
+        let mut core = InclusionCore::with_handlers(
+            Box::new(|_d: &Duty, _pk, _err| {}),
+            Box::new(|_s: &Submission| {}),
+            Box::new(|_s: &Submission, _b: &Block| {}),
+            featureset(true),
+        );
+
+        core.submitted(
+            Duty::new_attester_duty(SlotNumber::new(7)),
+            pubkey(),
+            Box::new(Attestation::new(phase0_attestation(7))),
+            Duration::ZERO,
+        )
+        .expect("submit attester");
+
+        core.check_block(7, true);
     }
 
     /// `trim` reports each removed submission as missed and never included,

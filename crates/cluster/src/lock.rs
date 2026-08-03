@@ -212,10 +212,28 @@ impl<'de> Deserialize<'de> for Lock {
         match version {
             V1_0 | V1_1 => {
                 let lock: LockV1x0or1 = serde_json::from_value(value).map_err(Error::custom)?;
+                if lock
+                    .distributed_validators
+                    .iter()
+                    .any(|v| !v.fee_recipient_address.is_empty())
+                {
+                    return Err(Error::custom(
+                        "distributed validator fee recipient not supported anymore",
+                    ));
+                }
                 Ok(lock.into())
             }
             V1_2 | V1_3 | V1_4 | V1_5 => {
                 let lock: LockV1x2to5 = serde_json::from_value(value).map_err(Error::custom)?;
+                if lock
+                    .distributed_validators
+                    .iter()
+                    .any(|v| !v.fee_recipient_address.is_empty())
+                {
+                    return Err(Error::custom(
+                        "distributed validator fee recipient not supported anymore",
+                    ));
+                }
                 Ok(lock.into())
             }
             V1_6 => {
@@ -1027,6 +1045,50 @@ mod tests {
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
         assert!(lock.verify_hashes().is_ok());
+    }
+
+    #[test]
+    fn legacy_lock_hash_uses_distributed_validator_count() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_2_0.json"))
+                .unwrap();
+        assert!(lock.verify_hashes().is_ok());
+        let golden = lock.lock_hash.clone();
+
+        // Append an identical (so `legacy_validator_addresses` still collapses to a
+        // single address, keeping field (0) unchanged) extra address entry, making
+        // validator_addresses.len() != distributed_validators.len().
+        let extra = lock.definition.validator_addresses[0].clone();
+        lock.definition.validator_addresses.push(extra);
+        assert_ne!(
+            lock.definition.validator_addresses.len(),
+            lock.distributed_validators.len()
+        );
+
+        // Field (1) count must still track distributed_validators, so the legacy
+        // lock hash is unchanged. The buggy field (`validator_addresses.len()`)
+        // would diverge from this golden hash.
+        let recomputed = hash_lock(&lock).expect("hash_lock should not error");
+        assert_eq!(recomputed.to_vec(), golden);
+    }
+
+    #[test]
+    fn legacy_lock_rejects_distributed_validator_fee_recipient() {
+        for fixture in [
+            include_str!("testdata/cluster_lock_v1_0_0.json"),
+            include_str!("testdata/cluster_lock_v1_2_0.json"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            value["distributed_validators"][0]["fee_recipient_address"] =
+                serde_json::json!("0x1111111111111111111111111111111111111111");
+
+            let err = serde_json::from_value::<Lock>(value).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("distributed validator fee recipient not supported anymore"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[tokio::test]

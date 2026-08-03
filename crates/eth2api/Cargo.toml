@@ -35,6 +35,7 @@ tree_hash_derive.workspace = true
 alloy.workspace = true
 pluto-ssz.workspace = true
 tokio.workspace = true
+vise.workspace = true
 
 [dev-dependencies]
 testcontainers.workspace = true

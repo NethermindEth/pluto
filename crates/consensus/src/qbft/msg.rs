@@ -75,18 +75,9 @@ pub enum Error {
     #[error("value hash not found in values")]
     ValueHashNotFound,
 
-    /// Value hash was absent, zero, or not exactly 32 bytes when required.
-    #[error("invalid value hash")]
-    InvalidValueHash,
-
     /// Prepared value hash did not exist in the values map.
     #[error("prepared value hash not found in values")]
     PreparedValueHashNotFound,
-
-    /// Prepared value hash was absent, zero, or not exactly 32 bytes when
-    /// required.
-    #[error("invalid prepared value hash")]
-    InvalidPreparedValueHash,
 
     /// Value did not exist in the values map.
     #[error("value not found")]
@@ -158,13 +149,15 @@ impl fmt::Debug for Msg {
 impl Msg {
     /// Wraps a raw QBFT protobuf message for the generic core.
     ///
-    /// Value-bearing messages must include a non-zero 32-byte `value_hash`
-    /// present in `values`. This is deliberately stricter than Charon's
-    /// current wrapper behavior, which collapses absent or malformed hashes to
-    /// nil; admitting that shape can let core progress on a value that cannot
-    /// be decoded at decision time.
-    ///
-    /// `prepared_value_hash` is optional only while `prepared_round` is zero.
+    /// Admission mirrors Charon's `newMsg`: a `value_hash` /
+    /// `prepared_value_hash` that is absent, all-zero, or not exactly 32 bytes
+    /// collapses to the nil hash `[0u8; 32]` with no error. A well-formed,
+    /// non-zero 32-byte hash must be present in `values`, otherwise this
+    /// returns [`Error::ValueHashNotFound`] /
+    /// [`Error::PreparedValueHashNotFound`]. There is no message-type or
+    /// prepared-round requirement here; round consistency and value presence
+    /// at decision time are enforced by the generic QBFT core's justification
+    /// rules.
     ///
     /// Justifications are raw protobuf messages from the same consensus
     /// envelope. They are recursively wrapped with the same shared value map.
@@ -403,25 +396,11 @@ fn to_hash32(value: &[u8]) -> Option<HashRoot> {
 }
 
 fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
-    let required = value_hash_required(MessageType::from_wire(msg.r#type));
-    if msg.value_hash.is_empty() {
-        return if required {
-            Err(Error::InvalidValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
-    }
-
-    if msg.value_hash.len() != 32 {
-        return Err(Error::InvalidValueHash);
-    }
-
+    // Mirror Charon newMsg: an absent / zero / non-32-byte value_hash collapses
+    // to the nil hash with no error; a well-formed non-zero 32-byte hash must
+    // be present in `values`.
     let Some(hash) = to_hash32(&msg.value_hash) else {
-        return if required {
-            Err(Error::InvalidValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
+        return Ok([0u8; 32]);
     };
 
     if values.contains_key(&hash) {
@@ -431,32 +410,11 @@ fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot>
     Err(Error::ValueHashNotFound)
 }
 
-fn value_hash_required(type_: MessageType) -> bool {
-    type_ == qbft::MSG_PRE_PREPARE
-        || type_ == qbft::MSG_PREPARE
-        || type_ == qbft::MSG_COMMIT
-        || type_ == qbft::MSG_DECIDED
-}
-
 fn prepared_value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
-    if msg.prepared_value_hash.is_empty() {
-        return if msg.prepared_round > 0 {
-            Err(Error::InvalidPreparedValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
-    }
-
-    if msg.prepared_value_hash.len() != 32 {
-        return Err(Error::InvalidPreparedValueHash);
-    }
-
+    // Mirror Charon newMsg: the prepared hash is admitted on the same rule as
+    // value_hash and is independent of prepared_round.
     let Some(hash) = to_hash32(&msg.prepared_value_hash) else {
-        return if msg.prepared_round > 0 {
-            Err(Error::InvalidPreparedValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
+        return Ok([0u8; 32]);
     };
 
     if values.contains_key(&hash) {
@@ -490,10 +448,6 @@ mod tests {
     use prost_types::Timestamp;
     use test_case::test_case;
 
-    const UNSIGNED_DATASET_HASH: &str =
-        "d8f9bc3de8b0cb0e3eb1f773c14a96d58f7acaf0f09192ce6562d84ea315e67b";
-    const UNSIGNED_DATASET_KEY: &str = "0xe5301bb68d031b01ef7f35613a77f05f6134983fedd8b0107ec2e45c9bb480eb52accb3174a9a936f255f96410d2eb03";
-    const UNSIGNED_DATASET_VALUE_HEX: &str = "0800000088000000394651850fd4010078892ee285ec0100511455780875d64ee2d3d0d0de6bf8f9b44ce85ff044c6b1f83b8e883bbf857ac354f3ede2d61e0067cfe242cf3ccc4ea3ae5e88526a9f4a578bcb9ef2d4a65314768d6d299761ea045c3f000f8a1900ddcdd01d756bce6c512c3801aacaeedfad5b506664e8c0e4a771ece0b8b7c196a5512e043e9b9aa687907adf5dba61350991daef80dd5c470c90650aaf7b5fd90022215ae7966bb600191b1825f88d4273c86e4ff95f160062a5eee82abd14004a2d0b75fb180d0000010000000000000001000000000000e000000000000000";
     const TIMESTAMP_HASH: &str = "0880e2cfaa0610959aef3a000000000000000000000000000000000000000000";
     const QBFT_MSG_HASH: &str = "9423898db5f4fc224e07cd775a03d7dc89dafe6aedfda9f75cccb1f17c3ba803";
     const SIGNING_PRIVKEY: &str =
@@ -514,17 +468,67 @@ mod tests {
         assert_eq!(to_hash32(&[1u8; 32]), Some([1u8; 32]));
     }
 
+    /// Cross-impl golden vectors from charon v1.7.1 (the source of truth). For
+    /// each consensus duty, pluto must hash the exact `UnsignedDataSet` bytes
+    /// charon sends on the wire to the same 32-byte root, or QBFT never forms
+    /// quorum in a mixed cluster. The `attester_seed0` vector
+    /// equals charon's own `TestHashProto` golden, so a match also proves the
+    /// vectors were captured faithfully.
     #[test]
-    fn hash_proto_matches_seeded_unsigned_dataset() {
-        let mut set = std::collections::BTreeMap::new();
-        set.insert(
-            UNSIGNED_DATASET_KEY.to_string(),
-            Bytes::from(hex::decode(UNSIGNED_DATASET_VALUE_HEX).unwrap()),
+    fn hash_proto_matches_charon_golden_vectors() {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            pubkey: String,
+            data_hex: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Vector {
+            name: String,
+            duty: String,
+            entries: Vec<Entry>,
+            hash_hex: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct File {
+            charon_ref: String,
+            vectors: Vec<Vector>,
+        }
+
+        let file: File =
+            serde_json::from_str(include_str!("../../testdata/vectors/hashproto.json")).unwrap();
+
+        // Drift guard: vectors are pinned to a specific charon release.
+        assert_eq!(
+            file.charon_ref, "v1.7.1",
+            "golden vectors are pinned to charon v1.7.1"
+        );
+        assert!(
+            !file.vectors.is_empty(),
+            "expected at least one golden vector"
         );
 
-        let hash = hash_proto(&pbcore::UnsignedDataSet { set }).unwrap();
+        for v in &file.vectors {
+            // Rebuild the exact {pubkey -> bytes} set charon serialised — 0..N
+            // entries covers single-DV, multi-DV cluster shape, and the empty
+            // boundary.
+            let mut set = std::collections::BTreeMap::new();
+            for e in &v.entries {
+                set.insert(
+                    e.pubkey.clone(),
+                    Bytes::from(hex::decode(&e.data_hex).unwrap()),
+                );
+            }
 
-        assert_eq!(hex::encode(hash), UNSIGNED_DATASET_HASH);
+            let hash = hash_proto(&pbcore::UnsignedDataSet { set }).unwrap();
+
+            assert_eq!(
+                hex::encode(hash),
+                v.hash_hex,
+                "hashProto mismatch for vector '{}' (duty={})",
+                v.name,
+                v.duty,
+            );
+        }
     }
 
     /// Builds an [`UnsignedDataSet`] from `(key, value)` pairs.
@@ -707,12 +711,16 @@ mod tests {
         assert_eq!(msg.values().len(), 2);
     }
 
+    // Parity with charon core/consensus/qbft/msg.go newMsg @ v1.7.1: an
+    // absent, all-zero, or non-32-byte value hash is admitted and collapses to
+    // the nil hash for every message type — there is no type-gating and no
+    // malformed-length rejection in the reference wrapper.
     #[test_case(MSG_PRE_PREPARE, vec![] ; "pre_prepare_empty")]
     #[test_case(MSG_PREPARE, vec![0; 32] ; "prepare_zero")]
     #[test_case(MSG_COMMIT, vec![1; 31] ; "commit_short")]
     #[test_case(MSG_DECIDED, vec![1; 33] ; "decided_long")]
-    fn new_rejects_required_invalid_value_hash(type_: MessageType, hash: Vec<u8>) {
-        let err = Msg::new(
+    fn new_admits_malformed_value_hash_as_nil(type_: MessageType, hash: Vec<u8>) {
+        let msg = Msg::new(
             pbconsensus::QbftMsg {
                 r#type: i64::from(type_),
                 value_hash: hash.into(),
@@ -721,9 +729,9 @@ mod tests {
             vec![],
             sync::Arc::default(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(err.to_string(), "invalid value hash");
+        assert_eq!(msg.value(), [0u8; 32]);
     }
 
     #[test_case(vec![] ; "empty")]
@@ -743,28 +751,23 @@ mod tests {
         assert_eq!(msg.value(), [0u8; 32]);
     }
 
-    #[test_case(vec![1; 31] ; "short")]
-    #[test_case(vec![1; 33] ; "long")]
-    fn new_rejects_malformed_optional_value_hash(hash: Vec<u8>) {
-        let err = Msg::new(
-            pbconsensus::QbftMsg {
-                r#type: i64::from(MSG_ROUND_CHANGE),
-                value_hash: hash.into(),
-                ..Default::default()
-            },
-            vec![],
-            sync::Arc::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(err.to_string(), "invalid value hash");
-    }
-
-    #[test_case(vec![] ; "empty")]
-    #[test_case(vec![0; 32] ; "zero_hash")]
-    fn new_allows_nil_prepared_value_hash_when_unprepared(hash: Vec<u8>) {
+    // Parity with charon newMsg @ v1.7.1: the prepared hash is admitted on the
+    // same rule as value_hash and is independent of prepared_round — even a
+    // ROUND-CHANGE claiming `prepared_round > 0` with an absent/zero/malformed
+    // prepared hash constructs with the nil hash. Round/prepared-round
+    // consistency is enforced by the generic core's justification rules.
+    #[test_case(0, vec![] ; "unprepared_empty")]
+    #[test_case(0, vec![0; 32] ; "unprepared_zero")]
+    #[test_case(0, vec![1; 31] ; "unprepared_short")]
+    #[test_case(0, vec![1; 33] ; "unprepared_long")]
+    #[test_case(1, vec![] ; "prepared_empty")]
+    #[test_case(1, vec![0; 32] ; "prepared_zero")]
+    #[test_case(1, vec![1; 31] ; "prepared_short")]
+    #[test_case(1, vec![1; 33] ; "prepared_long")]
+    fn new_admits_malformed_prepared_value_hash_as_nil(prepared_round: i64, hash: Vec<u8>) {
         let msg = Msg::new(
             pbconsensus::QbftMsg {
+                prepared_round,
                 prepared_value_hash: hash.into(),
                 ..Default::default()
             },
@@ -776,25 +779,39 @@ mod tests {
         assert_eq!(msg.prepared_value(), [0u8; 32]);
     }
 
-    #[test_case(0, vec![1; 31] ; "unprepared_short")]
-    #[test_case(0, vec![1; 33] ; "unprepared_long")]
-    #[test_case(1, vec![] ; "prepared_empty")]
-    #[test_case(1, vec![0; 32] ; "prepared_zero")]
-    #[test_case(1, vec![1; 31] ; "prepared_short")]
-    #[test_case(1, vec![1; 33] ; "prepared_long")]
-    fn new_rejects_invalid_prepared_value_hash(prepared_round: i64, hash: Vec<u8>) {
-        let err = Msg::new(
+    /// The two hash helpers are independent: a malformed `value_hash` collapses
+    /// to nil while a valid present `prepared_value_hash` still maps, and vice
+    /// versa.
+    #[test]
+    fn new_maps_valid_hash_beside_malformed_other_hash() {
+        let valid_hash = hash_proto(&timestamp(1)).unwrap();
+        let values = sync::Arc::new(value_map(vec![(valid_hash, any_timestamp(1))]));
+
+        let msg = Msg::new(
             pbconsensus::QbftMsg {
-                prepared_round,
-                prepared_value_hash: hash.into(),
+                value_hash: vec![1; 31].into(),
+                prepared_value_hash: valid_hash.to_vec().into(),
                 ..Default::default()
             },
             vec![],
-            sync::Arc::default(),
+            values.clone(),
         )
-        .unwrap_err();
+        .unwrap();
+        assert_eq!(msg.value(), [0u8; 32]);
+        assert_eq!(msg.prepared_value(), valid_hash);
 
-        assert_eq!(err.to_string(), "invalid prepared value hash");
+        let msg = Msg::new(
+            pbconsensus::QbftMsg {
+                value_hash: valid_hash.to_vec().into(),
+                prepared_value_hash: vec![1; 33].into(),
+                ..Default::default()
+            },
+            vec![],
+            values,
+        )
+        .unwrap();
+        assert_eq!(msg.value(), valid_hash);
+        assert_eq!(msg.prepared_value(), [0u8; 32]);
     }
 
     #[test]

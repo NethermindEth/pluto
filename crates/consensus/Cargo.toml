@@ -37,6 +37,7 @@ pluto-cluster.workspace = true
 pluto-eth2api.workspace = true
 pluto-eth2util.workspace = true
 pluto-tracing.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 ssz.workspace = true
 test-case.workspace = true

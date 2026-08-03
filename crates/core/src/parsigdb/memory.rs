@@ -258,7 +258,7 @@ impl MemDB {
         let mut output: HashMap<PubKey, Vec<ParSignedData>> = HashMap::new();
 
         for (pub_key, par_signed) in signed_data.inner().iter() {
-            let sigs = self
+            let outcome = self
                 .store(
                     Key {
                         duty: duty.clone(),
@@ -268,19 +268,16 @@ impl MemDB {
                 )
                 .await?;
 
-            let Some(sigs) = sigs else {
-                debug!("Ignoring duplicate partial signature");
-
-                continue;
-            };
-
-            let psigs = get_threshold_matching(&duty.duty_type, &sigs, self.threshold).await?;
-
-            let Some(psigs) = psigs else {
-                continue;
-            };
-
-            output.insert(*pub_key, psigs);
+            match outcome {
+                StoreOutcome::Duplicate => {
+                    debug!("Ignoring duplicate partial signature");
+                    continue;
+                }
+                StoreOutcome::Stored => continue,
+                StoreOutcome::Threshold(psigs) => {
+                    output.insert(*pub_key, psigs);
+                }
+            }
         }
 
         if output.is_empty() {
@@ -330,7 +327,20 @@ impl MemDB {
         }
     }
 
-    async fn store(&self, k: Key, value: ParSignedData) -> Result<Option<Vec<ParSignedData>>> {
+    /// Stores `value` under key `k`, then evaluates the threshold under the
+    /// same lock against the borrowed accumulator so no full clone of the
+    /// growing set is produced per store.
+    ///
+    /// Returns:
+    /// - [`StoreOutcome::Duplicate`] if `value` is a duplicate (same
+    ///   `share_idx`, equal data) and nothing was stored.
+    /// - [`StoreOutcome::Stored`] if stored but the threshold is not yet met.
+    /// - [`StoreOutcome::Threshold`] carrying exactly the matched set forwarded
+    ///   to threshold subscribers.
+    ///
+    /// Returns `Err(ParsigDataMismatch)` on a conflicting duplicate and
+    /// propagates `MessageRoot` errors from the threshold check.
+    async fn store(&self, k: Key, value: ParSignedData) -> Result<StoreOutcome> {
         let mut inner = self.inner.lock().await;
 
         // Check if we already have an entry with this ShareIdx
@@ -338,8 +348,8 @@ impl MemDB {
             for s in existing_entries {
                 if s.share_idx == value.share_idx {
                     if s == &value {
-                        // Duplicate, return None to indicate no new data
-                        return Ok(None);
+                        // Duplicate, nothing stored.
+                        return Ok(StoreOutcome::Duplicate);
                     } else {
                         return Err(MemDBError::ParsigDataMismatch {
                             pubkey: k.pub_key,
@@ -354,7 +364,7 @@ impl MemDB {
             .entries
             .entry(k.clone())
             .or_insert_with(Vec::new)
-            .push(value.clone());
+            .push(value);
         inner
             .keys_by_duty
             .entry(k.duty.clone())
@@ -365,13 +375,28 @@ impl MemDB {
             PARSIG_DB_METRICS.exit_total[&k.pub_key.to_string()].inc();
         }
 
-        let result = inner.entries.get(&k).cloned().unwrap_or_default();
+        // Threshold check runs under the lock against the borrowed slice; only
+        // the matched subset (if any) is cloned out. No full-accumulator clone.
+        let sigs = inner.entries.get(&k).map(Vec::as_slice).unwrap_or_default();
 
-        Ok(Some(result))
+        match get_threshold_matching(&k.duty.duty_type, sigs, self.threshold)? {
+            Some(psigs) => Ok(StoreOutcome::Threshold(psigs)),
+            None => Ok(StoreOutcome::Stored),
+        }
     }
 }
 
-async fn get_threshold_matching(
+/// Result of [`MemDB::store`].
+enum StoreOutcome {
+    /// `value` was a duplicate; nothing stored.
+    Duplicate,
+    /// Stored, but the threshold for the key is not yet reached.
+    Stored,
+    /// Stored and threshold reached; carries the matched set.
+    Threshold(Vec<ParSignedData>),
+}
+
+fn get_threshold_matching(
     typ: &DutyType,
     sigs: &[ParSignedData],
     threshold: u64,

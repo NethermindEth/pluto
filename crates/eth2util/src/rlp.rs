@@ -146,7 +146,7 @@ fn encode_length(length: usize, offset: u8) -> Vec<u8> {
 /// Decodes a big-endian integer from a byte slice at the given offset and
 /// length.
 fn from_big_endian(bytes: &[u8], offset: usize, length: usize) -> Result<usize> {
-    if offset >= bytes.len() || offset.wrapping_add(length) > bytes.len() {
+    if offset >= bytes.len() || offset.wrapping_add(length) >= bytes.len() {
         return Err(RlpError::InputTooShort);
     }
 
@@ -327,5 +327,17 @@ mod tests {
         // Malformed input: claims to have more data than available
         let result = decode_bytes(&[0x85, 0x01, 0x02]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_big_endian_length_bytes_are_last() {
+        // Long-form prefix (0xb8) whose single length byte is the final byte of
+        // the input, leaving no payload. `from_big_endian` must reject this as
+        // "input too short": a valid long-form encoding always has at least one
+        // payload byte after the length field, so `offset + length` must be
+        // strictly less than the input length. A lax `>` bound would instead
+        // read the length as 0 and return an empty slice rather than erroring.
+        assert!(from_big_endian(&[0xb8, 0x00], 1, 1).is_err());
+        assert!(decode_bytes(&[0xb8, 0x00]).is_err());
     }
 }

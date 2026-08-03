@@ -2,8 +2,10 @@
 //!
 //! Implements Charon-compatible `marshal`/`unmarshal` semantics: SSZ-capable
 //! types are serialized as SSZ binary; all other types use JSON.  On
-//! deserialization the codec checks for a JSON `{` prefix first — if present,
-//! it decodes as JSON.  Otherwise it tries SSZ for SSZ-capable types.
+//! deserialization the codec tries SSZ first for SSZ-capable types and only
+//! falls back to JSON when the SSZ decode fails *and* the payload looks like
+//! JSON (a `{` prefix) — matching charon's `unmarshal` (`core/proto.go`). The
+//! `{` prefix is never used to skip SSZ, since valid SSZ can begin with `0x7B`.
 
 use std::any::Any;
 
@@ -165,16 +167,20 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     Err(ParSigExCodecError::UnsupportedDutyType)
 }
 
+/// Returns `true` when the first non-whitespace byte is `{`, indicating JSON
+/// data. Charon's `unmarshal` (`core/proto.go`) uses this prefix check only to
+/// gate the JSON fallback *after* an SSZ decode has failed — never to skip SSZ.
+/// A valid SSZ payload can legitimately begin with `0x7B` (e.g. a fixed-size
+/// container whose leading `u64` has low byte 123), so it must not be treated
+/// as a positive "this is JSON" signal.
+pub(crate) fn looks_like_json(bytes: &[u8]) -> bool {
+    bytes.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{')
+}
+
 pub(crate) fn deserialize_signed_data(
     duty_type: &DutyType,
     bytes: &[u8],
 ) -> Result<Box<dyn SignedData>, ParSigExCodecError> {
-    /// Returns `true` when the trimmed byte slice starts with `{`, indicating
-    /// JSON data.
-    fn looks_like_json(bytes: &[u8]) -> bool {
-        bytes.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{')
-    }
-
     macro_rules! deserialize_json {
         ($ty:ty) => {
             serde_json::from_slice::<$ty>(bytes)
@@ -183,18 +189,9 @@ pub(crate) fn deserialize_signed_data(
         };
     }
 
-    // Core logic matching Go's `unmarshal`:
-    // - If data starts with `{`, it is JSON — skip SSZ, decode as JSON.
-    // - Otherwise, try SSZ decode for SSZ-capable types.
-    let is_json = looks_like_json(bytes);
-
     match duty_type {
         // -- Attester: SSZ-capable (non-versioned + versioned) --
         DutyType::Attester => {
-            if is_json {
-                return deserialize_json!(Attestation)
-                    .or_else(|_| deserialize_json!(VersionedAttestation));
-            }
             // Try SSZ non-versioned Attestation first.
             if let Ok(att) = ssz_codec::decode_phase0_attestation(bytes) {
                 return Ok(Box::new(Attestation::new(att)));
@@ -205,18 +202,22 @@ pub(crate) fn deserialize_signed_data(
                     .map_err(|e| ParSigExCodecError::SignedData(e.to_string()))?;
                 return Ok(Box::new(wrapped));
             }
+            if looks_like_json(bytes) {
+                return deserialize_json!(Attestation)
+                    .or_else(|_| deserialize_json!(VersionedAttestation));
+            }
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
 
         // -- Proposer: SSZ-capable (versioned header + inner SSZ) --
         DutyType::Proposer => {
-            if is_json {
-                return deserialize_json!(VersionedSignedProposal);
-            }
             if let Ok(vp) = ssz_codec::decode_versioned_signed_proposal(bytes) {
                 let wrapped = VersionedSignedProposal::new(vp)
                     .map_err(|e| ParSigExCodecError::SignedData(e.to_string()))?;
                 return Ok(Box::new(wrapped));
+            }
+            if looks_like_json(bytes) {
+                return deserialize_json!(VersionedSignedProposal);
             }
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
@@ -240,10 +241,6 @@ pub(crate) fn deserialize_signed_data(
 
         // -- Aggregator: SSZ-capable (non-versioned + versioned) --
         DutyType::Aggregator => {
-            if is_json {
-                return deserialize_json!(SignedAggregateAndProof)
-                    .or_else(|_| deserialize_json!(VersionedSignedAggregateAndProof));
-            }
             // Try SSZ non-versioned SignedAggregateAndProof first.
             if let Ok(sap) = ssz_codec::decode_phase0_signed_aggregate_and_proof(bytes) {
                 return Ok(Box::new(SignedAggregateAndProof::new(sap)));
@@ -252,16 +249,20 @@ pub(crate) fn deserialize_signed_data(
             if let Ok(va) = ssz_codec::decode_versioned_signed_aggregate_and_proof(bytes) {
                 return Ok(Box::new(VersionedSignedAggregateAndProof::new(va)));
             }
+            if looks_like_json(bytes) {
+                return deserialize_json!(SignedAggregateAndProof)
+                    .or_else(|_| deserialize_json!(VersionedSignedAggregateAndProof));
+            }
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
 
         // -- SyncMessage: SSZ-capable --
         DutyType::SyncMessage => {
-            if is_json {
-                return deserialize_json!(SignedSyncMessage);
-            }
             if let Ok(msg) = ssz_codec::decode_sync_committee_message(bytes) {
                 return Ok(Box::new(SignedSyncMessage::new(msg)));
+            }
+            if looks_like_json(bytes) {
+                return deserialize_json!(SignedSyncMessage);
             }
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
@@ -271,11 +272,11 @@ pub(crate) fn deserialize_signed_data(
 
         // -- SyncContribution: SSZ-capable --
         DutyType::SyncContribution => {
-            if is_json {
-                return deserialize_json!(SignedSyncContributionAndProof);
-            }
             if let Ok(scp) = ssz_codec::decode_signed_contribution_and_proof(bytes) {
                 return Ok(Box::new(SignedSyncContributionAndProof::new(scp)));
+            }
+            if looks_like_json(bytes) {
+                return deserialize_json!(SignedSyncContributionAndProof);
             }
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
@@ -389,6 +390,58 @@ mod tests {
         });
         let bytes = serialize_signed_data(&scp).unwrap();
         assert_ne!(bytes.first(), Some(&b'{'));
+        let decoded: SignedSyncContributionAndProof =
+            downcast(deserialize_signed_data(&DutyType::SyncContribution, &bytes).unwrap());
+        assert_eq!(scp, decoded);
+    }
+
+    /// Regression: `SyncCommitteeMessage`'s leading `u64` slot makes its SSZ
+    /// begin with `0x7B` (`{`) when `slot % 256 == 123`. SSZ must still win
+    /// over the JSON fallback (charon `unmarshal` tries SSZ first).
+    #[test]
+    fn ssz_sync_message_with_leading_brace_decodes_as_ssz() {
+        let msg = SignedSyncMessage::new(altair::SyncCommitteeMessage {
+            slot: 0x7B, // little-endian u64 → first SSZ byte is `{`
+            beacon_block_root: [0xdd; 32],
+            validator_index: 50,
+            signature: [0xee; 96],
+        });
+        let bytes = serialize_signed_data(&msg).unwrap();
+        assert_eq!(
+            bytes.first(),
+            Some(&b'{'),
+            "leading SSZ byte should be 0x7B"
+        );
+        let decoded: SignedSyncMessage =
+            downcast(deserialize_signed_data(&DutyType::SyncMessage, &bytes).unwrap());
+        assert_eq!(msg, decoded);
+    }
+
+    /// Regression: `SignedContributionAndProof`'s leading `u64` aggregator
+    /// index makes its SSZ begin with `0x7B` (`{`) when `index % 256 ==
+    /// 123`. SSZ must still win over the JSON fallback.
+    #[test]
+    fn ssz_signed_sync_contribution_with_leading_brace_decodes_as_ssz() {
+        let scp = SignedSyncContributionAndProof::new(altair::SignedContributionAndProof {
+            message: altair::ContributionAndProof {
+                aggregator_index: 0x7B, // little-endian u64 → first SSZ byte is `{`
+                contribution: altair::SyncCommitteeContribution {
+                    slot: 200,
+                    beacon_block_root: [0xab; 32],
+                    subcommittee_index: 2,
+                    aggregation_bits: BitVector::with_bits(&[0, 5]),
+                    signature: [0xcd; 96],
+                },
+                selection_proof: [0xef; 96],
+            },
+            signature: [0xfa; 96],
+        });
+        let bytes = serialize_signed_data(&scp).unwrap();
+        assert_eq!(
+            bytes.first(),
+            Some(&b'{'),
+            "leading SSZ byte should be 0x7B"
+        );
         let decoded: SignedSyncContributionAndProof =
             downcast(deserialize_signed_data(&DutyType::SyncContribution, &bytes).unwrap());
         assert_eq!(scp, decoded);

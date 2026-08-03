@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, fmt};
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::*;
 
@@ -91,13 +91,24 @@ pub struct Round2Bcast {
 /// A Shamir secret share matching Go's `sharing.ShamirShare`.
 ///
 /// The `value` field is in **big-endian** byte order.
-#[derive(Clone, Debug, PartialEq, Eq, ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct ShamirShare {
     /// The share identifier (1-indexed participant ID).
     #[zeroize(skip)]
     pub id: u32,
     /// The share value as big-endian scalar bytes.
     pub value: [u8; 32],
+}
+
+// Manual `Debug` so the secret share `value` is never rendered; only the
+// (non-secret) `id` is shown.
+impl fmt::Debug for ShamirShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShamirShare")
+            .field("id", &self.id)
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Secret state held by a participant between round 1 and round 2.
@@ -327,7 +338,7 @@ pub fn round1<R: RngCore + CryptoRng>(
     };
 
     // Schnorr proof of knowledge: sample nonce k, compute R = k*G
-    let k = loop {
+    let mut k = loop {
         let s = Scalar::random(&mut *rng);
         if s != Scalar::ZERO {
             break s;
@@ -336,7 +347,10 @@ pub fn round1<R: RngCore + CryptoRng>(
     let r_point = G1Projective::generator() * k;
     let id_u8 = u8::try_from(id).expect("id <= max_signers <= u8::MAX validated above");
     let ci = kryptology_challenge(id_u8, ctx, &commitment_points[0], &r_point);
-    let wi = k + coefficients[0] * ci;
+    let mut wi = k + coefficients[0] * ci;
+    // The nonce `k` is secret (it would reveal `coefficients[0]` together with
+    // the broadcast `wi`); wipe it now that `wi` is computed.
+    k.zeroize();
 
     // Pre-compute Shamir shares for every other participant
     let mut shares = BTreeMap::new();
@@ -345,7 +359,7 @@ pub fn round1<R: RngCore + CryptoRng>(
             continue;
         }
         let j_id = Identifier::from_u32(j)?;
-        let share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
+        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
         shares.insert(
             j,
             ShamirShare {
@@ -353,6 +367,9 @@ pub fn round1<R: RngCore + CryptoRng>(
                 value: scalar_to_be(&share_scalar),
             },
         );
+        // The per-peer secret share has been copied into `ShamirShare.value`
+        // (itself zeroized on drop); wipe the bare scalar copy.
+        share_scalar.zeroize();
     }
 
     let bcast = Round1Bcast {
@@ -363,6 +380,8 @@ pub fn round1<R: RngCore + CryptoRng>(
         wi: scalar_to_be(&wi),
         ci: scalar_to_be(&ci),
     };
+    // `wi` is broadcast, but wipe the local copy as defense-in-depth.
+    wi.zeroize();
 
     let secret = Round1Secret {
         id,
@@ -394,18 +413,24 @@ pub fn round2(
     received_bcasts: &BTreeMap<u32, Round1Bcast>,
     received_shares: &BTreeMap<u32, ShamirShare>,
 ) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), KryptologyError> {
+    // Bounds mirror ObolNetwork/kryptology@v0.1.0 dkg_round2.go, where
+    // `feldman.Limit == max_signers`:
+    // - bcast:   threshold-1 <= len <= max_signers      (may include this node's
+    //   own Round1Bcast)
+    // - p2psend: threshold-1 <= len <= max_signers - 1  (never includes self)
     let min_received = (secret.threshold - 1) as usize;
-    let max_received = (secret.max_signers - 1) as usize;
+    let bcast_max = secret.max_signers as usize;
+    let shares_max = (secret.max_signers - 1) as usize;
     if received_bcasts.len() < min_received
-        || received_bcasts.len() > max_received
+        || received_bcasts.len() > bcast_max
         || received_shares.len() < min_received
-        || received_shares.len() > max_received
+        || received_shares.len() > shares_max
     {
         return Err(KryptologyError::IncorrectPackageCount);
     }
 
     let own_identifier = Identifier::from_u32(secret.id)?;
-    let own_share_scalar =
+    let mut own_share_scalar =
         SigningShare::from_coefficients(&secret.coefficients, own_identifier).to_scalar();
 
     let mut peer_commitments: BTreeMap<Identifier, VerifiableSecretSharingCommitment> =
@@ -413,8 +438,13 @@ pub fn round2(
     let mut share_sum = Scalar::ZERO;
 
     for (&sender_id, bcast) in received_bcasts {
+        // Charon's getRound2Inputs may include this node's own Round1Bcast in the
+        // broadcast map. Go's Round2 skips it (`if id == dp.Id { continue }`) rather
+        // than erroring. Self's commitment is added to peer_commitments separately
+        // below, and self's share contribution is the own_share_scalar term — so the
+        // self entry must be skipped here for both verification and share summation.
         if sender_id == secret.id {
-            return Err(KryptologyError::InvalidParticipantId(sender_id));
+            continue;
         }
 
         let sender_commitment =
@@ -437,14 +467,30 @@ pub fn round2(
             return Err(KryptologyError::InvalidProof { culprit: sender_id });
         }
 
-        // Verify Feldman share
+        // Verify Feldman share.
+        //
+        // Mirrors kryptology's `FeldmanVerifier.Verify`, which calls
+        // `ShamirShare.Validate` (pkg/sharing/shamir.go:27-39) *before* the VSS
+        // equation. `Validate` rejects (1) id == 0, (2) a non-canonical scalar
+        // encoding, then (3) a zero scalar, each as a dedicated error.
         let share = received_shares
             .get(&sender_id)
             .ok_or(KryptologyError::InvalidShare { culprit: sender_id })?;
-        if share.id != secret.id {
+        // Step (1): identifier must be non-zero and addressed to us. kryptology
+        // only checks `id == 0`; we additionally require the share is addressed
+        // to this participant. Both map to InvalidShare with the sender culprit.
+        if share.id == 0 || share.id != secret.id {
             return Err(KryptologyError::InvalidShare { culprit: sender_id });
         }
-        let share_scalar = scalar_from_be(&share.value)?;
+        // Step (2): canonical scalar decode (scalar_from_be -> InvalidScalar).
+        let mut share_scalar = scalar_from_be(&share.value)?;
+        // Step (3): reject a zero share value, matching ShamirShare.Validate's
+        // `sc.IsZero()` -> "invalid share". scalar_from_be accepts the zero
+        // scalar, so this guard is required for parity and to ensure rejection
+        // even against an all-identity (degenerate) commitment vector.
+        if share_scalar == Scalar::ZERO {
+            return Err(KryptologyError::InvalidShare { culprit: sender_id });
+        }
 
         let signing_share = SigningShare::new(share_scalar);
         let secret_share =
@@ -454,16 +500,25 @@ pub fn round2(
             .map_err(|_| KryptologyError::InvalidShare { culprit: sender_id })?;
 
         share_sum = share_sum + share_scalar;
+        // The received secret share has been folded into `share_sum`; wipe the
+        // bare copy (the `SigningShare` above wipes itself on drop).
+        share_scalar.zeroize();
 
         let sender_identifier = Identifier::from_u32(sender_id)?;
         peer_commitments.insert(sender_identifier, sender_commitment);
     }
 
-    let total_scalar = own_share_scalar + share_sum;
+    let mut total_scalar = own_share_scalar + share_sum;
+    // The summands are no longer needed once the signing key is reconstructed.
+    own_share_scalar.zeroize();
+    share_sum.zeroize();
 
     let signing_share = SigningShare::new(total_scalar);
     let verifying_share_element = G1Projective::generator() * total_scalar;
     let verifying_share = VerifyingShare::new(verifying_share_element);
+    // `total_scalar` is the reconstructed signing key; it has been copied into
+    // `signing_share` (zeroized on drop). Wipe this bare copy.
+    total_scalar.zeroize();
 
     // Build PublicKeyPackage from all participants' commitments
     peer_commitments.insert(own_identifier, secret.commitment.clone());
@@ -671,6 +726,21 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
+
+    #[test]
+    fn shamir_share_debug_redacts_value() {
+        let share = ShamirShare {
+            id: 7,
+            value: [0xAB; 32],
+        };
+
+        let rendered = format!("{share:?}");
+
+        // The id is visible; the secret value bytes are not.
+        assert!(rendered.contains("id: 7"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(!rendered.contains("171")); // decimal of 0xAB
+    }
 
     #[test]
     fn scalar_from_be_rejects_invalid_scalar_encoding() {
@@ -1083,24 +1153,130 @@ mod tests {
         ));
     }
 
+    /// Charon-shaped input: the round2 broadcast map includes this node's own
+    /// Round1Bcast (as produced by Charon's getRound2Inputs), which Go's Round2
+    /// tolerates by skipping (`if id == dp.Id { continue }`). Round2 must
+    /// succeed.
     #[test]
-    fn round2_rejects_self_broadcast() {
+    fn round2_skips_self_broadcast() {
         let mut rng = StdRng::seed_from_u64(323);
         let threshold = 2u16;
         let max_signers = 3u16;
         let ctx = 0u8;
 
-        let (_bcast1, shares1, _secret1) =
-            round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast1, shares1, _secret1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
         let (bcast2, _shares2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
-        let received_bcasts: BTreeMap<u32, Round1Bcast> = [(2, bcast2)].into();
-        let received_shares: BTreeMap<u32, ShamirShare> = [(2, shares1[&2].clone())].into();
+        // Broadcast map includes self (id 2), exactly like Charon's getRound2Inputs.
+        let received_bcasts: BTreeMap<u32, Round1Bcast> =
+            [(1, bcast1), (2, bcast2), (3, bcast3)].into();
+        // Shares map never includes self.
+        let received_shares: BTreeMap<u32, ShamirShare> =
+            [(1, shares1[&2].clone()), (3, shares3[&2].clone())].into();
 
-        let result = round2(secret2, &received_bcasts, &received_shares);
+        let (_r2_bcast, _key_package, _public_key_package) =
+            round2(secret2, &received_bcasts, &received_shares)
+                .expect("round2 must skip the self broadcast and succeed");
+    }
+
+    /// A broadcast map larger than `max_signers` is rejected on the length
+    /// check before any cryptographic work (kryptology `feldman.Limit ==
+    /// max_signers`).
+    #[test]
+    fn round2_rejects_bcast_over_max_signers() {
+        let mut rng = StdRng::seed_from_u64(325);
+        let threshold = 2u16;
+        let max_signers = 3u16;
+        let ctx = 0u8;
+
+        let (bcast1, shares1, _s1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast2, _s2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _s3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+
+        // 4 broadcasts > max_signers (3): must be rejected on the length check.
+        let received_bcasts: BTreeMap<u32, Round1Bcast> =
+            [(1, bcast1.clone()), (2, bcast2), (3, bcast3), (4, bcast1)].into();
+        let received_shares: BTreeMap<u32, ShamirShare> =
+            [(1, shares1[&2].clone()), (3, shares3[&2].clone())].into();
+
+        assert!(matches!(
+            round2(secret2, &received_bcasts, &received_shares),
+            Err(KryptologyError::IncorrectPackageCount)
+        ));
+    }
+
+    /// The p2psend (shares) upper bound stays `max_signers - 1`; one too many
+    /// shares is rejected as `IncorrectPackageCount`.
+    #[test]
+    fn round2_rejects_shares_over_max_signers_minus_one() {
+        let mut rng = StdRng::seed_from_u64(326);
+        let threshold = 2u16;
+        let max_signers = 3u16;
+        let ctx = 0u8;
+
+        let (bcast1, shares1, _s1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (_b2, _s2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _s3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+
+        let received_bcasts: BTreeMap<u32, Round1Bcast> = [(1, bcast1), (3, bcast3)].into();
+        // 3 shares == max_signers > max_signers-1 (2): rejected.
+        let received_shares: BTreeMap<u32, ShamirShare> = [
+            (1, shares1[&2].clone()),
+            (3, shares3[&2].clone()),
+            (4, shares1[&2].clone()),
+        ]
+        .into();
+
+        assert!(matches!(
+            round2(secret2, &received_bcasts, &received_shares),
+            Err(KryptologyError::IncorrectPackageCount)
+        ));
+    }
+
+    /// A received Shamir share whose value is the zero scalar must be rejected
+    /// with a dedicated reason, matching kryptology's `ShamirShare.Validate`
+    /// (`sc.IsZero()` -> "invalid share") which runs *before* the Feldman VSS
+    /// equation. See pkg/sharing/shamir.go:27-39 @ Charon v1.7.1.
+    #[test]
+    fn round2_rejects_zero_share_value() {
+        let mut rng = StdRng::seed_from_u64(2026);
+        let threshold = 2u16;
+        let max_signers = 3u16;
+        let ctx = 0u8;
+
+        let (bcast1, shares1, _secret1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (_bcast2, _shares2, secret2) =
+            round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+
+        // Tamper: zero the share value addressed to participant 2.
+        let mut zero_share = shares1[&2].clone();
+        zero_share.value = [0u8; 32];
+        assert_eq!(zero_share.id, 2, "share is addressed to participant 2");
+
+        let result = round2(secret2, &[(1, bcast1)].into(), &[(1, zero_share)].into());
+
         assert!(matches!(
             result,
-            Err(KryptologyError::InvalidParticipantId(2))
+            Err(KryptologyError::InvalidShare { culprit: 1 })
+        ));
+    }
+
+    /// A received share with id == 0 is rejected (kryptology
+    /// ShamirShare.Validate: `Id == 0` -> "invalid identifier").
+    #[test]
+    fn round2_rejects_zero_share_id() {
+        let mut rng = StdRng::seed_from_u64(2027);
+        let (bcast1, shares1, _secret1) = round1(1, 2, 3, 0, &mut rng).unwrap();
+        let (_bcast2, _shares2, secret2) = round1(2, 2, 3, 0, &mut rng).unwrap();
+
+        let mut bad = shares1[&2].clone();
+        bad.id = 0;
+
+        let result = round2(secret2, &[(1, bcast1)].into(), &[(1, bad)].into());
+        assert!(matches!(
+            result,
+            Err(KryptologyError::InvalidShare { culprit: 1 })
         ));
     }
 

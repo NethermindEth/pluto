@@ -534,8 +534,21 @@ impl State {
         let committee_index = att.duty.committee_index;
         let validator_index = att.duty.validator_index;
 
+        // Real-index entries (full clash checks).
         self.store_att_pubkey(slot, duty_slot, committee_index, validator_index, pubkey)?;
         self.store_att_data(slot, committee_index, &att.data)?;
+
+        // commIdx=0 dual-storage. Post-Electra the beacon-APIs spec default for
+        // produceAttestationData is committee_index=0, so a spec-correct VC
+        // requests attestation data with index 0 regardless of the real
+        // committee index. Mirror Charon `storeAttestationUnsafe` by also
+        // writing the pubkey/data under committee_index=0. When the real
+        // committee_index is already 0 these calls are no-ops: the entries were
+        // just written above and the clash checks pass against the identical
+        // value, so no duplicate key is appended to attestation_keys_by_slot.
+        self.store_att_pubkey(slot, duty_slot, 0, validator_index, pubkey)?;
+        self.store_att_data_commidx0(slot, &att.data)?;
+
         Ok(())
     }
 
@@ -593,6 +606,38 @@ impl State {
                 return Err(Error::ClashingAttestationData {
                     slot,
                     committee_index,
+                });
+            }
+        } else {
+            self.attestation_duties.insert(att_key, data.clone());
+        }
+        Ok(())
+    }
+
+    /// Stores attestation data under the hardcoded `committee_index = 0` key.
+    ///
+    /// Mirrors Charon's `storeAttestationUnsafe` commIdx=0 branch. Uses a
+    /// RELAXED clash check that compares only `source` and `target` and
+    /// deliberately ignores `beacon_block_root`: a slow beacon node can return
+    /// data with a stale head for some validators in the fetch loop while
+    /// returning the new head for others, so the head (beacon_block_root) may
+    /// legitimately differ for the same `(slot, committee_index=0)`. Only the
+    /// source/target checkpoints must match.
+    fn store_att_data_commidx0(&mut self, slot: u64, data: &phase0::AttestationData) -> Result<()> {
+        let att_key = AttKey {
+            slot,
+            committee_index: 0,
+        };
+        if let Some(existing) = self.attestation_duties.get(&att_key) {
+            if existing.source != data.source || existing.target != data.target {
+                warn!(
+                    slot,
+                    committee_index = 0,
+                    "dutydb: clashing attestation data (commidx=0 source/target)"
+                );
+                return Err(Error::ClashingAttestationData {
+                    slot,
+                    committee_index: 0,
                 });
             }
         } else {
@@ -1138,6 +1183,246 @@ mod tests {
         assert!(
             matches!(err, Error::ClashingAttestationData { .. }),
             "expected ClashingAttestationData, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commidx0_lookup_for_nonzero_committee() {
+        const SLOT: u64 = 700;
+        const COMM_IDX: u64 = 4;
+        const V_IDX: u64 = 9;
+
+        let db = make_db();
+        let pk = random_core_pub_key();
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            pk,
+            UnsignedDutyData::Attestation(att_data(SLOT, COMM_IDX, V_IDX)),
+        );
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        // Real index resolves.
+        let real = db.await_attestation(SLOT, COMM_IDX).await.unwrap();
+        assert_eq!(real.index, COMM_IDX);
+        assert_eq!(
+            db.pub_key_by_attestation(SLOT, COMM_IDX, V_IDX)
+                .await
+                .unwrap(),
+            pk
+        );
+
+        // committee_index = 0 also resolves (dual-storage). The stored data is
+        // the original att data, so its `index` field is still COMM_IDX.
+        let zero = db.await_attestation(SLOT, 0).await.unwrap();
+        assert_eq!(zero.slot, SLOT);
+        assert_eq!(zero.index, COMM_IDX);
+        assert_eq!(db.pub_key_by_attestation(SLOT, 0, V_IDX).await.unwrap(), pk);
+    }
+
+    #[tokio::test]
+    async fn commidx0_relaxed_clash_differing_head_ok() {
+        const SLOT: u64 = 710;
+        let db = make_db();
+
+        // Distinct real committee indices so the real-index AttKeys differ,
+        // isolating the commIdx=0 relaxed check.
+        let mut a = att_data(SLOT, 1, 1);
+        a.data.beacon_block_root = [0xaa; 32];
+        let mut b = att_data(SLOT, 2, 2);
+        b.data.beacon_block_root = [0xbb; 32]; // different head, same default source/target
+
+        let mut set = UnsignedDataSet::new();
+        set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(a));
+        set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(b));
+
+        // Must succeed: the commIdx=0 entry tolerates differing beacon_block_root.
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        // commIdx=0 lookup resolves (whichever was inserted first).
+        db.await_attestation(SLOT, 0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn commidx0_clash_on_differing_source() {
+        const SLOT: u64 = 720;
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let a = att_data(SLOT, 1, 1); // default source/target
+        let mut b = att_data(SLOT, 2, 2);
+        b.data.source = phase0::Checkpoint {
+            epoch: 5,
+            root: [0xcc; 32],
+        };
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ClashingAttestationData {
+                    committee_index: 0,
+                    slot: SLOT
+                }
+            ),
+            "expected commIdx=0 ClashingAttestationData, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commidx0_clash_on_differing_target() {
+        const SLOT: u64 = 721;
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let a = att_data(SLOT, 1, 1); // default source/target
+        let mut b = att_data(SLOT, 2, 2);
+        b.data.target = phase0::Checkpoint {
+            epoch: 6,
+            root: [0xdd; 32],
+        };
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ClashingAttestationData {
+                    committee_index: 0,
+                    slot: SLOT
+                }
+            ),
+            "expected commIdx=0 ClashingAttestationData, got: {err}"
+        );
+    }
+
+    /// Guards against the relaxed commIdx=0 check leaking onto the real-index
+    /// path: same slot AND same real committee index with a differing
+    /// beacon_block_root must still clash on the REAL committee index.
+    #[tokio::test]
+    async fn commidx0_real_index_full_clash_still_fires() {
+        const SLOT: u64 = 725;
+        const COMM_IDX: u64 = 3;
+
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let mut a = att_data(SLOT, COMM_IDX, 1);
+        a.data.beacon_block_root = [0xaa; 32];
+        let mut b = att_data(SLOT, COMM_IDX, 2);
+        b.data.beacon_block_root = [0xbb; 32];
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ClashingAttestationData {
+                    committee_index: COMM_IDX,
+                    slot: SLOT
+                }
+            ),
+            "expected real-index ClashingAttestationData, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commidx0_entries_evicted_with_duty() {
+        let deadliner = far_future_handle();
+        let (trim_tx, trim_rx) = channel::<Duty>(64);
+        let db = make_db_with_deadliner(deadliner, trim_rx);
+
+        const SLOT: u64 = 730;
+        const COMM_IDX: u64 = 6;
+        const V_IDX: u64 = 3;
+
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(att_data(SLOT, COMM_IDX, V_IDX)),
+        );
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        // Both keys present before eviction.
+        db.pub_key_by_attestation(SLOT, COMM_IDX, V_IDX)
+            .await
+            .unwrap();
+        db.pub_key_by_attestation(SLOT, 0, V_IDX).await.unwrap();
+
+        trim_tx
+            .send(Duty::new(SlotNumber::new(SLOT), DutyType::Attester))
+            .await
+            .expect("trim_tx should be open");
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Proposal(Box::new(phase0_proposal(SLOT.saturating_add(1), 0))),
+        );
+        db.store(
+            Duty::new(SlotNumber::new(SLOT.saturating_add(1)), DutyType::Proposer),
+            set2,
+        )
+        .await
+        .unwrap();
+
+        // Both keys gone after eviction.
+        assert!(
+            db.pub_key_by_attestation(SLOT, COMM_IDX, V_IDX)
+                .await
+                .is_err()
+        );
+        assert!(db.pub_key_by_attestation(SLOT, 0, V_IDX).await.is_err());
+    }
+
+    /// When the real committee index is already 0, the commIdx=0 dual write is
+    /// a no-op: re-store is idempotent and no duplicate PkKey is appended to
+    /// `attestation_keys_by_slot`.
+    #[tokio::test]
+    async fn commidx0_when_real_index_is_zero_no_duplicate() {
+        const SLOT: u64 = 740;
+        const V_IDX: u64 = 2;
+        let db = make_db();
+        let pk = random_core_pub_key();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let mut set = UnsignedDataSet::new();
+        set.insert(pk, UnsignedDutyData::Attestation(att_data(SLOT, 0, V_IDX)));
+        db.store(duty.clone(), set.clone()).await.unwrap();
+        // Idempotent re-store must not clash.
+        db.store(duty, set).await.unwrap();
+
+        assert_eq!(db.pub_key_by_attestation(SLOT, 0, V_IDX).await.unwrap(), pk);
+        db.await_attestation(SLOT, 0).await.unwrap();
+
+        // Exactly one PkKey recorded for the duty slot (no duplicate append).
+        let state = db.state.read().await;
+        assert_eq!(
+            state
+                .attestation_keys_by_slot
+                .get(&SLOT)
+                .map_or(0, Vec::len),
+            1
         );
     }
 

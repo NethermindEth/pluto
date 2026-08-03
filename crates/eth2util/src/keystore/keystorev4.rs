@@ -295,8 +295,8 @@ fn validate_aes_iv(iv: &[u8]) -> Result<()> {
             iv.len()
         )));
     } else if iv.len() != IV_SIZE {
-        eprintln!(
-            "WARN: AES IV length incorrect is {}, should be {IV_SIZE}",
+        tracing::warn!(
+            "AES IV length incorrect is {}, should be {IV_SIZE}",
             iv.len()
         );
     }
@@ -335,9 +335,10 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
                 if params.c == 0 {
                     return Err(KeystoreError::InvalidPbkdf2Param);
                 }
-                eprintln!(
-                    "WARN: PBKDF2 parameters are too weak, 'c' is {}, we recommend using {}",
-                    params.c, DEFAULT_PBKDF2_C
+                tracing::warn!(
+                    "PBKDF2 parameters are too weak, 'c' is {}, we recommend using {}",
+                    params.c,
+                    DEFAULT_PBKDF2_C
                 );
             }
 
@@ -386,9 +387,11 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
 
             // Minimum Parameters
             if npr < DEFAULT_SCRYPT_NPR {
-                eprintln!(
-                    "WARN: Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {DEFAULT_SCRYPT_N}, p: {DEFAULT_SCRYPT_P}, r: {DEFAULT_SCRYPT_R})",
-                    params.n, params.p, params.r
+                tracing::warn!(
+                    "Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {DEFAULT_SCRYPT_N}, p: {DEFAULT_SCRYPT_P}, r: {DEFAULT_SCRYPT_R})",
+                    params.n,
+                    params.p,
+                    params.r
                 );
             }
 
@@ -411,14 +414,14 @@ fn validate_salt(salt: &[u8]) -> Result<()> {
     if salt.is_empty() {
         return Err(KeystoreError::InvalidSaltLength);
     } else if salt.len() < SALT_SIZE / 2 {
-        eprintln!(
-            "WARN: Salt is too short {}, we recommend {}",
+        tracing::warn!(
+            "Salt is too short {}, we recommend {}",
             salt.len(),
             SALT_SIZE
         );
     } else if salt.len() > SALT_SIZE * 2 {
-        eprintln!(
-            "WARN: Salt is too long {}, we recommend {}",
+        tracing::warn!(
+            "Salt is too long {}, we recommend {}",
             salt.len(),
             SALT_SIZE
         );

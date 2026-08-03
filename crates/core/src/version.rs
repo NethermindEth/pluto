@@ -61,6 +61,44 @@ pub fn git_commit() -> (String, String) {
     (hash, timestamp)
 }
 
+/// Placeholder short git hash used when no valid build hash is available. Seven
+/// lowercase-hex chars so it satisfies Charon's peerinfo git-hash validation.
+const GIT_HASH_FALLBACK: &str = "0000000";
+
+/// Short git commit hash coerced into the `^[0-9a-f]{7}$` form Charon requires
+/// in the peerinfo protocol.
+///
+/// Charon validates every peer's git hash against that regex and drops the
+/// peer's *entire* peerinfo record (version, uptime, clock offset, ...) when it
+/// fails. Release builds stamp a real 7-char hex hash, but builds without git
+/// metadata (e.g. Docker builds lacking a `.git` dir) yield `""` or `"unknown"`
+/// — both of which Charon rejects, hiding pluto peers from the cluster
+/// dashboard. This normalises whatever the build produced (lowercasing, keeping
+/// hex digits, and truncating to seven) and falls back to [`GIT_HASH_FALLBACK`]
+/// so pluto always advertises a well-formed hash and interoperates with Charon
+/// normally.
+pub fn git_commit_hash_short() -> String {
+    let (raw, _) = git_commit();
+    coerce_git_hash(&raw)
+}
+
+/// Coerces a raw build git hash into Charon's `^[0-9a-f]{7}$` form: lowercase,
+/// keep hex digits, truncate to seven, else [`GIT_HASH_FALLBACK`].
+fn coerce_git_hash(raw: &str) -> String {
+    let normalized: String = raw
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(7)
+        .collect();
+
+    if normalized.len() == 7 {
+        normalized
+    } else {
+        GIT_HASH_FALLBACK.to_owned()
+    }
+}
+
 /// Logs pluto version information along with the provided message.
 pub fn log_info(msg: &str) {
     let (git_hash, git_timestamp) = git_commit();
@@ -135,15 +173,21 @@ impl SemVer {
             .filter(|matches| matches.len() == 5)
             .ok_or(SemVerError::InvalidFormat)?;
 
-        let major = matches[1].parse().expect("invalid regex");
-        let minor = matches[2].parse().expect("invalid regex");
+        // The regex guarantees these capture groups are non-empty ASCII digits,
+        // so the only possible parse failure is integer overflow (e.g. a very
+        // long digit run from a malicious peer). Fail closed with InvalidFormat
+        // rather than panicking. NB: this is an intentional, safe divergence
+        // from Charon's Parse (app/version/version.go @ v1.7.1), which discards
+        // the strconv.Atoi error and silently yields 0 on overflow.
+        let major = matches[1].parse().map_err(|_| SemVerError::InvalidFormat)?;
+        let minor = matches[2].parse().map_err(|_| SemVerError::InvalidFormat)?;
 
         let mut patch = 0;
         let mut pre_release = "";
         let mut sem_ver_type = SemVerType::Minor;
 
         if let Some(m) = matches.get(3) {
-            patch = m.as_str().parse().expect("invalid regex");
+            patch = m.as_str().parse().map_err(|_| SemVerError::InvalidFormat)?;
             sem_ver_type = SemVerType::Patch;
         }
 
@@ -252,6 +296,26 @@ mod tests {
     }
 
     #[test]
+    fn coerce_git_hash_normalizes_and_falls_back() {
+        use super::{GIT_HASH_FALLBACK, coerce_git_hash};
+
+        // A valid short hash passes through unchanged.
+        assert_eq!(coerce_git_hash("749d2d7"), "749d2d7");
+        // Uppercase is lowered.
+        assert_eq!(coerce_git_hash("ABCDEF0"), "abcdef0");
+        // A full-length hash is truncated to seven.
+        assert_eq!(coerce_git_hash("749d2d7abcdef0123456"), "749d2d7");
+        // Non-hex sentinels and empty strings fall back.
+        assert_eq!(coerce_git_hash(""), GIT_HASH_FALLBACK);
+        assert_eq!(coerce_git_hash("unknown"), GIT_HASH_FALLBACK);
+        // Too few hex digits also falls back (must be exactly seven).
+        assert_eq!(coerce_git_hash("abc"), GIT_HASH_FALLBACK);
+        // The fallback itself is a valid 7-char lowercase-hex string.
+        assert_eq!(GIT_HASH_FALLBACK.len(), 7);
+        assert!(GIT_HASH_FALLBACK.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn is_pre_release() {
         let pre_release = SemVer::parse("v0.17.1-rc1").unwrap();
         assert!(pre_release.is_pre_release());
@@ -346,11 +410,35 @@ mod tests {
                 version: "12-dev",
                 expected: Err(SemVerError::InvalidFormat),
             },
+            ParseTestCase {
+                name: "Overflow major",
+                // 30 nines: far exceeds usize::MAX on any target, must not panic.
+                version: "v999999999999999999999999999999.0",
+                expected: Err(SemVerError::InvalidFormat),
+            },
         ];
 
         for test in tc {
             let actual = SemVer::parse(test.version);
             assert_eq!(actual, test.expected, "parse: `{}`", test.name);
+        }
+    }
+
+    #[test]
+    fn parse_overflow_is_fail_closed() {
+        // Long digit runs that overflow usize must return Err, never panic.
+        let overflow = "9".repeat(40);
+        for version in [
+            format!("v{overflow}.0"),       // major overflow
+            format!("v0.{overflow}"),       // minor overflow
+            format!("v0.0.{overflow}"),     // patch overflow
+            format!("v0.0.{overflow}-rc1"), // patch overflow with pre-release
+        ] {
+            assert_eq!(
+                SemVer::parse(&version),
+                Err(SemVerError::InvalidFormat),
+                "expected fail-closed for `{version}`"
+            );
         }
     }
 }

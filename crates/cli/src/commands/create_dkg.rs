@@ -34,16 +34,23 @@ use super::constants::{DEFAULT_NETWORK, MIN_NODES, MIN_THRESHOLD, ZERO_ADDRESS};
 pub struct CreateDkgArgs {
     #[arg(
         long,
+        env = "CHARON_OUTPUT_DIR",
         default_value = ".charon",
         help = "The folder to write the output cluster-definition.json file to."
     )]
     pub output_dir: PathBuf,
 
-    #[arg(long, default_value = "", help = "Optional cosmetic cluster name")]
+    #[arg(
+        long,
+        env = "CHARON_NAME",
+        default_value = "",
+        help = "Optional cosmetic cluster name"
+    )]
     pub name: String,
 
     #[arg(
         long,
+        env = "CHARON_NUM_VALIDATORS",
         default_value_t = 1,
         help = "The number of distributed validators the cluster will manage (32ETH+ staked for each)."
     )]
@@ -51,6 +58,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_THRESHOLD",
         short = 't',
         default_value_t = 0,
         help = "Optional override of threshold required for signature reconstruction. Defaults to ceil(n*2/3) if zero. Warning, non-default values decrease security."
@@ -59,6 +67,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_FEE_RECIPIENT_ADDRESSES",
         value_delimiter = ',',
         help = "Comma separated list of Ethereum addresses of the fee recipient for each validator. Either provide a single fee recipient address or fee recipient addresses for each validator."
     )]
@@ -66,16 +75,19 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_WITHDRAWAL_ADDRESSES",
         value_delimiter = ',',
         help = "Comma separated list of Ethereum addresses to receive the returned stake and accrued rewards for each validator. Either provide a single withdrawal address or withdrawal addresses for each validator."
     )]
     pub withdrawal_addresses: Vec<String>,
 
-    #[arg(long, default_value = DEFAULT_NETWORK, help = "Ethereum network to create validators for. Options: mainnet, goerli, sepolia, hoodi, gnosis, chiado.")]
+    #[arg(long,
+        env = "CHARON_NETWORK", default_value = DEFAULT_NETWORK, help = "Ethereum network to create validators for. Options: mainnet, goerli, sepolia, hoodi, gnosis, chiado.")]
     pub network: String,
 
     #[arg(
         long = "dkg-algorithm",
+        env = "CHARON_DKG_ALGORITHM",
         default_value = "default",
         help = "DKG algorithm to use; default, frost"
     )]
@@ -83,6 +95,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_DEPOSIT_AMOUNTS",
         value_delimiter = ',',
         help = "List of partial deposit amounts (integers) in ETH. Values must sum up to at least 32ETH."
     )]
@@ -90,6 +103,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_OPERATOR_ENRS",
         value_delimiter = ',',
         help = "Comma-separated list of each operator's Charon ENR address."
     )]
@@ -97,6 +111,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_CONSENSUS_PROTOCOL",
         default_value = "",
         help = "Preferred consensus protocol name for the cluster. Selected automatically when not specified."
     )]
@@ -104,6 +119,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_TARGET_GAS_LIMIT",
         default_value_t = 60_000_000,
         help = "Preferred target gas limit for transactions."
     )]
@@ -111,6 +127,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_COMPOUNDING",
         default_value_t = false,
         help = "Enable compounding rewards for validators by using 0x02 withdrawal credentials."
     )]
@@ -118,6 +135,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long = "execution-client-rpc-endpoint",
+        env = "CHARON_EXECUTION_CLIENT_RPC_ENDPOINT",
         default_value = "",
         help = "The address of the execution engine JSON-RPC API."
     )]
@@ -125,6 +143,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_PUBLISH",
         default_value_t = false,
         help = "Creates an invitation to the DKG ceremony on the DV Launchpad. Terms and conditions apply."
     )]
@@ -132,6 +151,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_PUBLISH_ADDRESS",
         default_value = "https://api.obol.tech/v1",
         help = "The URL to publish the cluster to."
     )]
@@ -139,6 +159,7 @@ pub struct CreateDkgArgs {
 
     #[arg(
         long,
+        env = "CHARON_OPERATOR_ADDRESSES",
         value_delimiter = ',',
         help = "Comma-separated list of each operator's Ethereum address."
     )]
@@ -819,6 +840,35 @@ mod tests {
             publish: false,
             publish_address: "https://api.obol.tech/v1".to_string(),
             operator_addresses: vec![],
+        }
+    }
+
+    /// Every `create dkg` flag must read its Charon-compatible `CHARON_*`
+    /// env var; see the equivalent test in `create_cluster.rs`.
+    #[test]
+    fn create_dkg_flags_use_charon_env_prefix() {
+        use clap::CommandFactory as _;
+
+        let create = crate::cli::Cli::command()
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "create")
+            .expect("create subcommand")
+            .clone();
+        let dkg = create
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "dkg")
+            .expect("create dkg subcommand")
+            .clone();
+
+        for arg in dkg.get_arguments() {
+            let Some(long) = arg.get_long() else { continue };
+            if long == "help" {
+                continue;
+            }
+
+            let expected = format!("CHARON_{}", long.replace('-', "_").to_uppercase());
+            let actual = arg.get_env().map(|env| env.to_string_lossy().into_owned());
+            assert_eq!(actual.as_deref(), Some(expected.as_str()), "flag --{long}");
         }
     }
 }

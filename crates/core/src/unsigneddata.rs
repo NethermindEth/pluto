@@ -5,15 +5,17 @@ use std::collections::HashMap;
 use pluto_eth2api::spec::phase0;
 use pluto_ssz::decode::{decode_u32, decode_u64};
 use serde::{Deserialize, Deserializer, de};
-use ssz::Decode;
+use ssz::{Decode, Encode};
 
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
+    parsigex_codec::looks_like_json,
     signeddata::{
         AttestationData, AttesterDuty, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
     },
+    ssz_codec,
     types::{DutyType, PubKey},
 };
 
@@ -21,7 +23,7 @@ const ATTESTATION_DATA_SSZ_OFFSET: usize = 8;
 const ATTESTER_DUTY_SSZ_SIZE: usize = 96;
 
 /// Unsigned duty data variant — matches Go's `core.UnsignedData` interface.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnsignedDutyData {
     /// Unsigned proposal (DutyProposer).
     Proposal(Box<VersionedProposal>),
@@ -37,8 +39,85 @@ pub enum UnsignedDutyData {
 /// `core.UnsignedDataSet`.
 pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
 
+/// Converts a domain unsigned-data-set into its protobuf wire form.
+///
+/// Mirrors charon's `UnsignedDataSetToProto` + `marshal`: every supported
+/// unsigned-data type is SSZ-capable, and charon enables SSZ marshalling by
+/// default (since v0.17), so each entry is encoded as SSZ binary using the
+/// byte layout from `charon/core/ssz.go`. The decode counterpart
+/// ([`unsigned_duty_data_from_proto`]) accepts both SSZ and the legacy JSON
+/// encoding, matching charon's `unmarshal`.
+pub fn unsigned_data_set_to_proto(
+    set: &UnsignedDataSet,
+) -> Result<pbcore::UnsignedDataSet, ParSigExCodecError> {
+    let mut inner = std::collections::BTreeMap::new();
+    for (pubkey, data) in set {
+        inner.insert(pubkey.to_string(), marshal_unsigned_duty_data(data)?.into());
+    }
+
+    Ok(pbcore::UnsignedDataSet { set: inner })
+}
+
+/// SSZ-marshals a single unsigned duty data value, matching charon's `marshal`
+/// (SSZ-first; every variant here is SSZ-capable).
+fn marshal_unsigned_duty_data(data: &UnsignedDutyData) -> Result<Vec<u8>, ParSigExCodecError> {
+    Ok(match data {
+        UnsignedDutyData::Attestation(att) => encode_attestation_data_ssz(att)?,
+        UnsignedDutyData::Proposal(proposal) => ssz_codec::encode_versioned_proposal(proposal)?,
+        UnsignedDutyData::AggAttestation(agg) => {
+            ssz_codec::encode_versioned_aggregated_attestation(agg)?
+        }
+        UnsignedDutyData::SyncContribution(contribution) => {
+            ssz_codec::encode_sync_contribution(contribution)?
+        }
+    })
+}
+
+/// SSZ-encodes an [`AttestationData`] using charon's layout:
+/// `offset(4)=8 + offset(4) + AttestationData SSZ + AttesterDuty SSZ`, where
+/// the `AttesterDuty` body is a 48-byte zero pubkey followed by six
+/// little-endian `u64` fields (`charon/core/ssz.go` `attesterDutySSZ`). The
+/// leading pubkey is zeroed because pluto's [`AttesterDuty`] omits it (it is
+/// recovered from the aggregation bits downstream), matching the attester
+/// decode path.
+///
+/// This is hand-rolled rather than derived with `ssz_derive` on purpose: charon
+/// emits a two-slot offset table (`4 + 4`) here even though both
+/// `AttestationData` and `AttesterDuty` are *fixed*-size (`charon/core/ssz.go`
+/// `AttestationData.MarshalSSZTo`). `ssz_derive` omits offsets for all-fixed
+/// containers, so a derived `{data, duty}` struct would drop the 8-byte prefix
+/// and break wire-compat. (Contrast the Deneb+ block contents in `ssz_codec`,
+/// whose fields are all variable-length, so deriving is correct there.)
+fn encode_attestation_data_ssz(att: &AttestationData) -> Result<Vec<u8>, ParSigExCodecError> {
+    let overflow = || ParSigExCodecError::UnsignedData("attestation data too large".to_string());
+
+    let attestation = att.data.as_ssz_bytes();
+    let data_offset = ATTESTATION_DATA_SSZ_OFFSET;
+    let duty_offset = data_offset
+        .checked_add(attestation.len())
+        .ok_or_else(overflow)?;
+    let capacity = duty_offset
+        .checked_add(ATTESTER_DUTY_SSZ_SIZE)
+        .ok_or_else(overflow)?;
+    let data_offset = u32::try_from(data_offset).map_err(|_| overflow())?;
+    let duty_offset = u32::try_from(duty_offset).map_err(|_| overflow())?;
+
+    let mut out = Vec::with_capacity(capacity);
+    out.extend_from_slice(&data_offset.to_le_bytes());
+    out.extend_from_slice(&duty_offset.to_le_bytes());
+    out.extend_from_slice(&attestation);
+    // AttesterDuty: 48-byte pubkey (zeroed) + 6 u64 fields.
+    out.extend_from_slice(&[0u8; 48]);
+    out.extend_from_slice(&att.duty.slot.to_le_bytes());
+    out.extend_from_slice(&att.duty.validator_index.to_le_bytes());
+    out.extend_from_slice(&att.duty.committee_index.to_le_bytes());
+    out.extend_from_slice(&att.duty.committee_length.to_le_bytes());
+    out.extend_from_slice(&att.duty.committees_at_slot.to_le_bytes());
+    out.extend_from_slice(&att.duty.validator_committee_index.to_le_bytes());
+    Ok(out)
+}
+
 /// Converts an unsigned-data-set protobuf into domain unsigned duty data.
-/// Currently decodes attester data; other duty types return unsupported.
 pub fn unsigned_data_set_from_proto(
     duty_type: &DutyType,
     set: &pbcore::UnsignedDataSet,
@@ -63,8 +142,94 @@ fn unsigned_duty_data_from_proto(
 ) -> Result<UnsignedDutyData, ParSigExCodecError> {
     match duty_type {
         DutyType::Attester => decode_attestation_data(data).map(UnsignedDutyData::Attestation),
+        DutyType::Proposer => decode_versioned_proposal(data)
+            .map(Box::new)
+            .map(UnsignedDutyData::Proposal),
+        DutyType::Aggregator => {
+            decode_aggregated_attestation(data).map(UnsignedDutyData::AggAttestation)
+        }
+        DutyType::SyncContribution => {
+            decode_sync_contribution(data).map(UnsignedDutyData::SyncContribution)
+        }
         _ => Err(ParSigExCodecError::UnsupportedDutyType),
     }
+}
+
+/// Decodes an unsigned [`VersionedProposal`], SSZ-first with JSON fallback
+/// (charon `DutyProposer` branch of `unmarshalUnsignedData`).
+fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExCodecError> {
+    if let Ok(proposal) = ssz_codec::decode_versioned_proposal(data) {
+        return Ok(proposal);
+    }
+
+    if looks_like_json(data) {
+        // Reuses `VersionedProposal`'s `Deserialize` impl (shared per-fork JSON
+        // dispatch in `signeddata`).
+        return serde_json::from_slice(data).map_err(ParSigExCodecError::from);
+    }
+
+    Err(ParSigExCodecError::UnsignedData(
+        "unmarshal proposal".to_string(),
+    ))
+}
+
+/// Decodes an unsigned aggregated attestation, SSZ-first with JSON fallback
+/// (charon `DutyAggregator` branch). Charon tries the *versioned* aggregated
+/// attestation first, then falls back to the non-versioned
+/// `AggregatedAttestation` (a raw `phase0::Attestation`). Pluto only models the
+/// versioned variant, so a non-versioned attestation is wrapped as a phase0
+/// versioned attestation (functionally equivalent).
+fn decode_aggregated_attestation(
+    data: &[u8],
+) -> Result<VersionedAggregatedAttestation, ParSigExCodecError> {
+    if let Ok(agg) = ssz_codec::decode_versioned_aggregated_attestation(data) {
+        return Ok(agg);
+    }
+    if let Ok(att) = phase0::Attestation::from_ssz_bytes(data) {
+        return Ok(wrap_phase0_aggregated_attestation(att));
+    }
+
+    if looks_like_json(data) {
+        if let Ok(decoded) = serde_json::from_slice::<crate::signeddata::VersionedAttestation>(data)
+        {
+            return Ok(VersionedAggregatedAttestation(decoded.0));
+        }
+        let att: phase0::Attestation =
+            serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        return Ok(wrap_phase0_aggregated_attestation(att));
+    }
+
+    Err(ParSigExCodecError::UnsignedData(
+        "unmarshal aggregated attestation".to_string(),
+    ))
+}
+
+/// Wraps a non-versioned phase0 attestation as a phase0
+/// [`VersionedAggregatedAttestation`].
+fn wrap_phase0_aggregated_attestation(att: phase0::Attestation) -> VersionedAggregatedAttestation {
+    use pluto_eth2api::versioned::{AttestationPayload, DataVersion, VersionedAttestation};
+    VersionedAggregatedAttestation(VersionedAttestation {
+        version: DataVersion::Phase0,
+        validator_index: None,
+        attestation: Some(AttestationPayload::Phase0(att)),
+    })
+}
+
+/// Decodes an unsigned [`SyncContribution`], SSZ-first with JSON fallback
+/// (charon `DutySyncContribution` branch).
+fn decode_sync_contribution(data: &[u8]) -> Result<SyncContribution, ParSigExCodecError> {
+    if let Ok(contribution) = ssz_codec::decode_sync_contribution(data) {
+        return Ok(contribution);
+    }
+
+    if looks_like_json(data) {
+        let contribution = serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        return Ok(SyncContribution(contribution));
+    }
+
+    Err(ParSigExCodecError::UnsignedData(
+        "unmarshal sync contribution".to_string(),
+    ))
 }
 
 fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodecError> {
@@ -72,7 +237,7 @@ fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodec
         return Ok(data);
     }
 
-    if data.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{') {
+    if looks_like_json(data) {
         let decoded: AttestationDataJson =
             serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
         return Ok(AttestationData {
@@ -326,5 +491,296 @@ mod tests {
             )]
             .into(),
         }
+    }
+
+    // ── all-duty-type round trips ──────────────────────────────────────
+
+    use pluto_eth2api::{
+        spec::{altair, phase0 as p0},
+        versioned,
+    };
+    use pluto_ssz::{BitList, BitVector};
+
+    use crate::signeddata::{ProposalBlock, SyncContribution, VersionedAggregatedAttestation};
+
+    /// The SSZ encoder must reproduce charon's `AttestationData` byte layout —
+    /// it must be identical to the standalone test helper (which mirrors
+    /// `charon/core/ssz.go`), so peers and pluto agree on the wire bytes.
+    #[test]
+    fn attester_ssz_encoding_matches_charon_layout() {
+        let data = att_data(123, 4, 5);
+        assert_eq!(
+            encode_attestation_data_ssz(&data).unwrap(),
+            attestation_proto_bytes(&data).to_vec()
+        );
+    }
+
+    fn sample_versioned_proposal_phase0(slot: u64) -> VersionedProposal {
+        let block = p0::BeaconBlock {
+            slot,
+            proposer_index: 2,
+            parent_root: [0x11; 32],
+            state_root: [0x22; 32],
+            body: p0::BeaconBlockBody {
+                randao_reveal: [0x33; 96],
+                eth1_data: p0::ETH1Data {
+                    deposit_root: [0x44; 32],
+                    deposit_count: 0,
+                    block_hash: [0x55; 32],
+                },
+                graffiti: [0x66; 32],
+                proposer_slashings: vec![].into(),
+                attester_slashings: vec![].into(),
+                attestations: vec![].into(),
+                deposits: vec![].into(),
+                voluntary_exits: vec![].into(),
+            },
+        };
+        VersionedProposal {
+            block: ProposalBlock::Phase0(block),
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
+        }
+    }
+
+    fn sample_versioned_aggregated_attestation() -> VersionedAggregatedAttestation {
+        VersionedAggregatedAttestation(versioned::VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: None,
+            attestation: Some(versioned::AttestationPayload::Deneb(p0::Attestation {
+                aggregation_bits: BitList::with_bits(16, &[1, 3]),
+                data: att_data(99, 7, 8).data,
+                signature: [0x77; 96],
+            })),
+        })
+    }
+
+    fn sample_sync_contribution() -> SyncContribution {
+        SyncContribution(altair::SyncCommitteeContribution {
+            slot: 200,
+            beacon_block_root: [0xab; 32],
+            subcommittee_index: 2,
+            aggregation_bits: BitVector::with_bits(&[0, 5]),
+            signature: [0xcd; 96],
+        })
+    }
+
+    /// Encodes a single-entry [`UnsignedDataSet`] and decodes it back for the
+    /// given duty type, asserting the round trip preserves the value.
+    fn assert_round_trip(duty_type: DutyType, pubkey: PubKey, data: UnsignedDutyData) {
+        let mut set = UnsignedDataSet::new();
+        set.insert(pubkey, data.clone());
+
+        let proto = unsigned_data_set_to_proto(&set).unwrap();
+        let decoded = unsigned_data_set_from_proto(&duty_type, &proto).unwrap();
+
+        // Default-marshalling is SSZ (charon parity): the entry must not be JSON.
+        let bytes = proto.set.get(&pubkey.to_string()).unwrap();
+        assert_ne!(bytes.first(), Some(&b'{'), "default encoding must be SSZ");
+
+        assert_eq!(decoded.get(&pubkey), Some(&data));
+    }
+
+    #[test]
+    fn round_trip_attester() {
+        let pubkey = random_core_pub_key();
+        assert_round_trip(
+            DutyType::Attester,
+            pubkey,
+            UnsignedDutyData::Attestation(att_data(123, 4, 5)),
+        );
+    }
+
+    #[test]
+    fn round_trip_proposer() {
+        let pubkey = random_core_pub_key();
+        assert_round_trip(
+            DutyType::Proposer,
+            pubkey,
+            UnsignedDutyData::Proposal(Box::new(sample_versioned_proposal_phase0(42))),
+        );
+    }
+
+    #[test]
+    fn round_trip_aggregator() {
+        let pubkey = random_core_pub_key();
+        assert_round_trip(
+            DutyType::Aggregator,
+            pubkey,
+            UnsignedDutyData::AggAttestation(sample_versioned_aggregated_attestation()),
+        );
+    }
+
+    #[test]
+    fn round_trip_sync_contribution() {
+        let pubkey = random_core_pub_key();
+        assert_round_trip(
+            DutyType::SyncContribution,
+            pubkey,
+            UnsignedDutyData::SyncContribution(sample_sync_contribution()),
+        );
+    }
+
+    /// Regression: `SyncCommitteeContribution` is a fixed-size SSZ container
+    /// whose leading field is a little-endian `u64` slot, so its SSZ encoding
+    /// begins with `0x7B` (`{`) whenever `slot % 256 == 123`. A
+    /// `{`-prefix-first dispatch would misroute such a valid SSZ payload to
+    /// JSON and fail; charon tries SSZ first (`core/proto.go` `unmarshal`),
+    /// so this must round-trip.
+    #[test]
+    fn sync_contribution_ssz_leading_brace_round_trips() {
+        let contribution = SyncContribution(altair::SyncCommitteeContribution {
+            slot: 0x7B, // little-endian u64 → first SSZ byte is `{`
+            beacon_block_root: [0xab; 32],
+            subcommittee_index: 2,
+            aggregation_bits: BitVector::with_bits(&[0, 5]),
+            signature: [0xcd; 96],
+        });
+
+        // The SSZ encoding really does begin with `{` (the flaw's trigger).
+        let encoded = ssz_codec::encode_sync_contribution(&contribution).unwrap();
+        assert_eq!(
+            encoded.first(),
+            Some(&b'{'),
+            "leading SSZ byte should be 0x7B"
+        );
+
+        let pubkey = random_core_pub_key();
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            pubkey,
+            UnsignedDutyData::SyncContribution(contribution.clone()),
+        );
+
+        let proto = unsigned_data_set_to_proto(&set).unwrap();
+        let decoded = unsigned_data_set_from_proto(&DutyType::SyncContribution, &proto).unwrap();
+
+        assert_eq!(
+            decoded.get(&pubkey),
+            Some(&UnsignedDutyData::SyncContribution(contribution)),
+        );
+    }
+
+    /// The proposer JSON fallback (legacy, pre-SSZ charon) decodes the
+    /// `{version, block, blinded}` wrapper.
+    #[test]
+    fn proposer_json_fallback_decodes() {
+        let pubkey = random_core_pub_key();
+        let proposal = sample_versioned_proposal_phase0(7);
+        let ProposalBlock::Phase0(block) = &proposal.block else {
+            panic!("expected phase0 block");
+        };
+        let value = serde_json::json!({
+            "version": "phase0",
+            "blinded": false,
+            "block": block,
+        });
+        let proto = pbcore::UnsignedDataSet {
+            set: [(
+                pubkey.to_string(),
+                Bytes::from(serde_json::to_vec(&value).unwrap()),
+            )]
+            .into(),
+        };
+
+        let decoded = unsigned_data_set_from_proto(&DutyType::Proposer, &proto).unwrap();
+        match decoded.get(&pubkey).unwrap() {
+            UnsignedDutyData::Proposal(decoded) => assert_eq!(decoded.block, proposal.block),
+            other => panic!("unexpected unsigned data: {other:?}"),
+        }
+    }
+
+    /// The aggregator JSON fallback decodes the
+    /// `{version, validator_index, attestation}` wrapper.
+    #[test]
+    fn aggregator_json_fallback_decodes() {
+        let pubkey = random_core_pub_key();
+        let agg = sample_versioned_aggregated_attestation();
+        let versioned::AttestationPayload::Deneb(att) = agg.0.attestation.as_ref().unwrap() else {
+            panic!("expected deneb attestation");
+        };
+        let value = serde_json::json!({
+            "version": "deneb",
+            "attestation": att,
+        });
+        let proto = pbcore::UnsignedDataSet {
+            set: [(
+                pubkey.to_string(),
+                Bytes::from(serde_json::to_vec(&value).unwrap()),
+            )]
+            .into(),
+        };
+
+        let decoded = unsigned_data_set_from_proto(&DutyType::Aggregator, &proto).unwrap();
+        match decoded.get(&pubkey).unwrap() {
+            UnsignedDutyData::AggAttestation(decoded) => assert_eq!(decoded, &agg),
+            other => panic!("unexpected unsigned data: {other:?}"),
+        }
+    }
+
+    /// The sync-contribution JSON fallback decodes the bare contribution
+    /// object.
+    #[test]
+    fn sync_contribution_json_fallback_decodes() {
+        let pubkey = random_core_pub_key();
+        let contribution = sample_sync_contribution();
+        let proto = pbcore::UnsignedDataSet {
+            set: [(
+                pubkey.to_string(),
+                Bytes::from(serde_json::to_vec(&contribution.0).unwrap()),
+            )]
+            .into(),
+        };
+
+        let decoded = unsigned_data_set_from_proto(&DutyType::SyncContribution, &proto).unwrap();
+        match decoded.get(&pubkey).unwrap() {
+            UnsignedDutyData::SyncContribution(decoded) => assert_eq!(decoded, &contribution),
+            other => panic!("unexpected unsigned data: {other:?}"),
+        }
+    }
+
+    /// A non-versioned (raw phase0) aggregated attestation — what older charon
+    /// nodes send — decodes into a phase0 [`VersionedAggregatedAttestation`].
+    #[test]
+    fn aggregator_non_versioned_ssz_fallback() {
+        let pubkey = random_core_pub_key();
+        let att = p0::Attestation {
+            aggregation_bits: BitList::with_bits(8, &[0, 2]),
+            data: att_data(55, 1, 2).data,
+            signature: [0x99; 96],
+        };
+        let proto = pbcore::UnsignedDataSet {
+            set: [(pubkey.to_string(), Bytes::from(att.as_ssz_bytes()))].into(),
+        };
+
+        let decoded = unsigned_data_set_from_proto(&DutyType::Aggregator, &proto).unwrap();
+        match decoded.get(&pubkey).unwrap() {
+            UnsignedDutyData::AggAttestation(decoded) => {
+                assert_eq!(decoded.0.version, versioned::DataVersion::Phase0);
+                assert_eq!(
+                    decoded.0.attestation,
+                    Some(versioned::AttestationPayload::Phase0(att))
+                );
+            }
+            other => panic!("unexpected unsigned data: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsigned_data_set_to_proto_round_trips_full_set() {
+        // Two attester entries in a single set survive an encode→decode round
+        // trip, exercising the map plumbing in `unsigned_data_set_to_proto`.
+        let pk1 = random_core_pub_key();
+        let pk2 = random_core_pub_key();
+        let mut set = UnsignedDataSet::new();
+        set.insert(pk1, UnsignedDutyData::Attestation(att_data(1, 2, 3)));
+        set.insert(pk2, UnsignedDutyData::Attestation(att_data(4, 5, 6)));
+
+        let proto = unsigned_data_set_to_proto(&set).unwrap();
+        assert_eq!(proto.set.len(), 2);
+        let decoded = unsigned_data_set_from_proto(&DutyType::Attester, &proto).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded.get(&pk1), set.get(&pk1));
+        assert_eq!(decoded.get(&pk2), set.get(&pk2));
     }
 }

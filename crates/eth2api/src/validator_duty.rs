@@ -41,8 +41,7 @@ impl EthBeaconNodeApiClient {
             body: indices.into_iter().map(|index| index.to_string()).collect(),
         };
 
-        match self
-            .get_attester_duties(request)
+        match crate::instrument("attester_duties", self.get_attester_duties(request))
             .await
             .map_err(error_message)?
         {
@@ -104,10 +103,12 @@ impl EthBeaconNodeApiClient {
             body,
         };
 
-        match self
-            .submit_pool_attestations_v2(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_attestations",
+            self.submit_pool_attestations_v2(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::SubmitPoolAttestationsV2Response::Ok => Ok(()),
             crate::SubmitPoolAttestationsV2Response::BadRequest(response) => Err(failure_response(
@@ -140,8 +141,7 @@ impl EthBeaconNodeApiClient {
             body,
         };
 
-        match self
-            .publish_block_v2(request)
+        match crate::instrument("submit_proposal", self.publish_block_v2(request))
             .await
             .map_err(error_message)?
         {
@@ -168,10 +168,12 @@ impl EthBeaconNodeApiClient {
             body,
         };
 
-        match self
-            .publish_blinded_block_v2(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_blinded_proposal",
+            self.publish_blinded_block_v2(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::PublishBlockV2Response::Ok | crate::PublishBlockV2Response::Accepted => Ok(()),
             other => Err(unexpected_response(
@@ -192,10 +194,12 @@ impl EthBeaconNodeApiClient {
             .collect::<Result<Vec<_>>>()?;
         let request = crate::RegisterValidatorRequest { body };
 
-        match self
-            .register_validator(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_validator_registrations",
+            self.register_validator(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::RegisterValidatorResponse::Ok => Ok(()),
             other => Err(unexpected_response(
@@ -211,10 +215,12 @@ impl EthBeaconNodeApiClient {
             body: voluntary_exit_request_body(exit),
         };
 
-        match self
-            .submit_pool_voluntary_exit(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_voluntary_exit",
+            self.submit_pool_voluntary_exit(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::SubmitPoolVoluntaryExitResponse::Ok => Ok(()),
             other => Err(unexpected_response(
@@ -242,10 +248,12 @@ impl EthBeaconNodeApiClient {
             body,
         };
 
-        match self
-            .publish_aggregate_and_proofs_v2(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_aggregate_attestations",
+            self.publish_aggregate_and_proofs_v2(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::SubmitPoolAttestationsV2Response::Ok => Ok(()),
             crate::SubmitPoolAttestationsV2Response::BadRequest(response) => Err(failure_response(
@@ -271,10 +279,12 @@ impl EthBeaconNodeApiClient {
             .collect();
         let request = crate::SubmitPoolSyncCommitteeSignaturesRequest { body };
 
-        match self
-            .submit_pool_sync_committee_signatures(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_sync_committee_messages",
+            self.submit_pool_sync_committee_signatures(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::PublishContributionAndProofsResponse::Ok => Ok(()),
             other => Err(unexpected_response(
@@ -295,10 +305,12 @@ impl EthBeaconNodeApiClient {
             .collect();
         let request = crate::PublishContributionAndProofsRequest { body };
 
-        match self
-            .publish_contribution_and_proofs(request)
-            .await
-            .map_err(error_message)?
+        match crate::instrument(
+            "submit_sync_committee_contributions",
+            self.publish_contribution_and_proofs(request),
+        )
+        .await
+        .map_err(error_message)?
         {
             crate::PublishContributionAndProofsResponse::Ok => Ok(()),
             other => Err(unexpected_response(
