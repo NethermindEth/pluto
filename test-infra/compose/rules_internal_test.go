@@ -67,14 +67,12 @@ func TestWriteAlertRulesExcludesDegradedJobs(t *testing.T) {
 	require.Contains(t, content, "expr: up == 0")
 }
 
-// TestWriteAlertRulesWarnTopicExtension asserts scenario-scoped warn-topic
-// exclusions append to the built-in mock-noise list.
-func TestWriteAlertRulesWarnTopicExtension(t *testing.T) {
-	conf := NewDefaultConfig()
-	conf.AlertWarnExcludeTopics = []string{"sched"}
-
-	content := writeRules(t, conf)
-	require.Contains(t, content, `increase(app_log_warn_total{topic!~"vmock|tracker|sched"}[30s]) > 2`)
+// TestWriteAlertRulesWarnTopics asserts the Warn Log Rate gate excludes exactly
+// the two charon mock-noise topics, so every other topic — including the empty
+// one pluto emits — stays gated.
+func TestWriteAlertRulesWarnTopics(t *testing.T) {
+	content := writeRules(t, NewDefaultConfig())
+	require.Contains(t, content, `increase(app_log_warn_total{topic!~"vmock|tracker"}[30s]) > 2`)
 }
 
 // TestWriteAlertRulesDropsOutstandingDuty pins the removal of charon's dead
