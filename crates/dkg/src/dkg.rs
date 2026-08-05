@@ -364,7 +364,7 @@ impl AppendConfig {
 
 fn default_p2p_config() -> P2PConfig {
     P2PConfig {
-        relays: pluto_p2p::config::default_relay_multiaddrs(),
+        relays: pluto_p2p::config::default_relays(),
         ..Default::default()
     }
 }
@@ -1090,10 +1090,7 @@ mod tests {
         assert_eq!(config.def_file, DEFAULT_DEFINITION_FILE);
         assert!(!config.no_verify);
         assert_eq!(config.data_dir, path::PathBuf::from(DEFAULT_DATA_DIR));
-        assert_eq!(
-            config.p2p.relays,
-            pluto_p2p::config::default_relay_multiaddrs()
-        );
+        assert_eq!(config.p2p.relays, pluto_p2p::config::default_relays());
         assert_eq!(config.log.override_env_filter.as_deref(), Some("info"));
         assert!(config.log.console.is_some());
         assert_eq!(config.publish.address, DEFAULT_PUBLISH_ADDRESS);

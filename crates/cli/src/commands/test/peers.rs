@@ -21,7 +21,7 @@ use pluto_k1util::load as load_key;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode::new_relays,
-    config::{DEFAULT_RELAYS, P2PConfig},
+    config::{DEFAULT_RELAYS, P2PConfig, RelayAddr},
     gater::ConnGater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -41,6 +41,7 @@ use super::{
     write_result_to_writer,
 };
 use crate::{
+    commands::common::parse_relay_addrs,
     duration::Duration as CliDuration,
     error::{CliError, Result},
 };
@@ -276,11 +277,15 @@ pub async fn run(
         disable_reuse_port: args.p2p_disable_reuseport,
     };
 
+    // The relay HTTP tests below probe the raw `--p2p-relays` strings, so keep
+    // them alongside the parsed addresses the P2P stack needs.
+    let relay_addrs = parse_relay_addrs(&args.p2p_relays)?;
+
     let (node, relay_peers) = setup_p2p(
         timeout_ct.clone(),
         private_key,
         p2p_cfg,
-        &args.p2p_relays,
+        &relay_addrs,
         &cluster_peers,
         self_peer_id,
         &enr_hash,
@@ -1044,12 +1049,12 @@ async fn setup_p2p(
     cancel: CancellationToken,
     private_key: k256::SecretKey,
     p2p_cfg: P2PConfig,
-    relay_urls: &[String],
+    relay_addrs: &[RelayAddr],
     cluster_peers: &[Peer],
     self_peer_id: PeerId,
     enr_hash: &str,
 ) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
-    let relay_peers = new_relays(cancel.clone(), relay_urls, enr_hash).await?;
+    let relay_peers = new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
 
     let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
     all_peer_ids.push(self_peer_id);

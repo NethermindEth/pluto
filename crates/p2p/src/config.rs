@@ -1,12 +1,14 @@
 //! # Charon P2P Configuration
 
 use std::{
+    fmt,
     net::{IpAddr, SocketAddr},
     str::FromStr,
     time::Duration,
 };
 
 use libp2p::{Multiaddr, multiaddr, ping};
+use url::Url;
 
 /// Shared default relay endpoints used by commands and P2P-facing configs.
 pub const DEFAULT_RELAYS: [&str; 5] = [
@@ -16,6 +18,93 @@ pub const DEFAULT_RELAYS: [&str; 5] = [
     "https://2.relay.obol.dev",
     "https://1.relay.obol.tech",
 ];
+
+/// Relay address parse error.
+#[derive(Debug, thiserror::Error)]
+pub enum RelayAddrError {
+    /// The address is empty.
+    #[error("empty relay address")]
+    Empty,
+
+    /// The `http`-prefixed address is not a valid URL.
+    #[error("invalid relay url: {0}")]
+    Url(#[source] url::ParseError),
+
+    /// The URL scheme is neither `http` nor `https`.
+    #[error("invalid relay url scheme {0:?}, want http or https")]
+    Scheme(String),
+
+    /// The address is not a valid libp2p multiaddr.
+    #[error("invalid relay multiaddr: {0}")]
+    Multiaddr(#[source] multiaddr::Error),
+}
+
+/// A configured libp2p relay address.
+///
+/// A relay is given either as an HTTP(S) endpoint, whose ENR is resolved in the
+/// background, or as a libp2p multiaddr that is dialed directly. Modelling that
+/// split in the type keeps URL paths intact — a multiaddr cannot represent one,
+/// so `http://relay:3640/enr` would otherwise be rejected outright or silently
+/// truncated to `http://relay:3640`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayAddr {
+    /// An HTTP(S) endpoint serving the relay's ENR or multiaddrs.
+    ///
+    /// [`FromStr`] guarantees an `http`/`https` scheme, but the variant is
+    /// publicly constructible, so consumers re-check it rather than relying on
+    /// the invariant.
+    Url(Url),
+
+    /// A raw libp2p multiaddr, dialed directly.
+    Multiaddr(Multiaddr),
+}
+
+impl RelayAddr {
+    /// Returns true for a plain-`http://` URL, i.e. one whose ENR is fetched
+    /// over an unencrypted connection.
+    pub fn is_insecure_url(&self) -> bool {
+        matches!(self, Self::Url(url) if url.scheme() != "https")
+    }
+}
+
+impl FromStr for RelayAddr {
+    type Err = RelayAddrError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // The multiaddr parser accepts "" as a zero-component `Multiaddr`, so
+        // reject it up front: an empty address must not masquerade as a
+        // dialable relay.
+        if s.is_empty() {
+            return Err(RelayAddrError::Empty);
+        }
+
+        // Dispatch on the literal `http` prefix rather than probing both
+        // parsers, so classification here matches how the address is later
+        // consumed.
+        if s.starts_with("http") {
+            let url = Url::parse(s).map_err(RelayAddrError::Url)?;
+
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(RelayAddrError::Scheme(url.scheme().to_owned()));
+            }
+
+            return Ok(Self::Url(url));
+        }
+
+        s.parse()
+            .map(Self::Multiaddr)
+            .map_err(RelayAddrError::Multiaddr)
+    }
+}
+
+impl fmt::Display for RelayAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Url(url) => url.fmt(f),
+            Self::Multiaddr(addr) => addr.fmt(f),
+        }
+    }
+}
 
 /// P2P configuration error.
 #[derive(Debug, thiserror::Error)]
@@ -61,7 +150,7 @@ type Result<T> = std::result::Result<T, P2PConfigError>;
 #[derive(Debug, Clone, Default)]
 pub struct P2PConfig {
     /// Defines the libp2p relay multiaddrs or URLs.
-    pub relays: Vec<Multiaddr>,
+    pub relays: Vec<RelayAddr>,
 
     /// The external IP address of the node.
     pub external_ip: Option<String>,
@@ -110,11 +199,11 @@ impl P2PConfig {
     }
 }
 
-/// Returns the default relay endpoints parsed as [`Multiaddr`]s.
-pub fn default_relay_multiaddrs() -> Vec<Multiaddr> {
+/// Returns the default relay endpoints parsed as [`RelayAddr`]s.
+pub fn default_relays() -> Vec<RelayAddr> {
     DEFAULT_RELAYS
         .iter()
-        .map(|relay| multiaddr::from_url(relay).expect("default relay should parse"))
+        .map(|relay| relay.parse().expect("default relay should parse"))
         .collect()
 }
 
@@ -133,7 +222,7 @@ impl P2PConfigBuilder {
     }
 
     /// Sets the relay multiaddrs.
-    pub fn with_relays(mut self, relays: Vec<Multiaddr>) -> Self {
+    pub fn with_relays(mut self, relays: Vec<RelayAddr>) -> Self {
         self.config.relays = relays;
         self
     }
@@ -313,6 +402,99 @@ mod tests {
         ];
 
         assert_eq!(merged_addrs_str, expected_addrs_str);
+    }
+
+    #[test]
+    fn relay_addr_parses_url_and_multiaddr_forms() {
+        // A path (and query) must survive parsing: `http://relay:3640/enr` is a
+        // supported relay address, and no multiaddr can express it.
+        let cases = [
+            "http://relay:3640/enr",
+            "https://relay.example.org/enr",
+            "https://relay.example.org/enr?cluster=abc",
+            "/ip4/10.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs",
+            "/dns/relay.example.org/tcp/443/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs",
+        ];
+        for case in cases {
+            let addr: RelayAddr = case.parse().expect("relay addr should parse");
+            assert_eq!(addr.to_string(), case, "{case} should round-trip");
+        }
+
+        // A host-only URL round-trips with the root path the `url` crate
+        // normalises it to; the request it produces is identical.
+        let addr: RelayAddr = "http://relay:3640"
+            .parse()
+            .expect("relay addr should parse");
+        assert_eq!(addr.to_string(), "http://relay:3640/");
+    }
+
+    #[test]
+    fn relay_addr_flags_insecure_urls() {
+        let insecure: RelayAddr = "http://relay:3640/enr".parse().expect("relay addr");
+        assert!(insecure.is_insecure_url());
+
+        let secure: RelayAddr = "https://relay:3640/enr".parse().expect("relay addr");
+        assert!(!secure.is_insecure_url());
+
+        let multiaddr: RelayAddr = "/ip4/10.0.0.1/tcp/3610".parse().expect("relay addr");
+        assert!(!multiaddr.is_insecure_url());
+    }
+
+    #[test]
+    fn relay_addr_rejects_invalid_forms() {
+        // `http`-prefixed but not a URL: the prefix dispatch classifies it as a
+        // URL, so it is rejected as one.
+        assert!(matches!(
+            "httpfoo".parse::<RelayAddr>(),
+            Err(RelayAddrError::Url(_))
+        ));
+        assert!(matches!(
+            "https://".parse::<RelayAddr>(),
+            Err(RelayAddrError::Url(_))
+        ));
+
+        // Everything else must be a multiaddr.
+        assert!(matches!(
+            "ftp://relay.example.org".parse::<RelayAddr>(),
+            Err(RelayAddrError::Multiaddr(_))
+        ));
+        assert!(matches!(
+            "not-an-address".parse::<RelayAddr>(),
+            Err(RelayAddrError::Multiaddr(_))
+        ));
+
+        // The multiaddr parser accepts "" as a zero-component multiaddr, so an
+        // empty address needs its own guard.
+        assert!(matches!(
+            "".parse::<RelayAddr>(),
+            Err(RelayAddrError::Empty)
+        ));
+        assert!("".parse::<Multiaddr>().is_ok(), "guard is still needed");
+    }
+
+    #[test]
+    fn relay_addr_error_exposes_its_cause() {
+        let err = "not-an-address"
+            .parse::<RelayAddr>()
+            .expect_err("should not parse");
+
+        // The message is self-contained, and the typed cause stays reachable
+        // through the error chain.
+        assert!(err.to_string().starts_with("invalid relay multiaddr:"));
+        assert!(
+            std::error::Error::source(&err)
+                .expect("source")
+                .downcast_ref::<multiaddr::Error>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn default_relays_parse() {
+        let relays = default_relays();
+
+        assert_eq!(relays.len(), DEFAULT_RELAYS.len());
+        assert!(relays.iter().all(|relay| !relay.is_insecure_url()));
     }
 
     #[test]
