@@ -91,6 +91,21 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
+    // Polled once a minute by the readiness checker (`run_ready_checker`).
+    // `connected` must stay non-zero: zero peers is a readiness failure
+    // (`ReadinessError::BeaconNodeZeroPeers`). 80 matches charon's beaconmock.
+    mount_json(server, "GET", "/eth/v1/node/peer_count", |_| {
+        json!({
+            "data": {
+                "connected": "80",
+                "connecting": "0",
+                "disconnected": "0",
+                "disconnecting": "0"
+            }
+        })
+    })
+    .await;
+
     mount_json(server, "GET", "/eth/v1/beacon/headers/head", |_| {
         json!({
             "data": {
@@ -782,7 +797,7 @@ mod tests {
     use crate::beaconmock::BeaconMock;
     use pluto_eth2api::{
         client::EthBeaconNodeApiClient,
-        types::{GetBlockV2Request, GetBlockV2Response},
+        types::{GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest, GetPeerCountResponse},
     };
 
     #[test]
@@ -865,6 +880,31 @@ mod tests {
         assert!(
             matches!(response, GetBlockV2Response::Ok(_)),
             "expected a decoded 200, got {response:?}"
+        );
+    }
+
+    /// The readiness checker polls this every minute and treats zero connected
+    /// peers as unready, so an unmounted route both warns and pins
+    /// `app_beacon_node_peers` to a misleading zero.
+    #[tokio::test]
+    async fn peer_count_reports_connected_peers() {
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("build beacon mock");
+
+        let client = EthBeaconNodeApiClient::with_base_url(mock.uri()).expect("client");
+
+        let response = client
+            .get_peer_count(GetPeerCountRequest {})
+            .await
+            .expect("get_peer_count");
+        let GetPeerCountResponse::Ok(peers) = response else {
+            panic!("expected a decoded 200, got {response:?}");
+        };
+        assert_ne!(
+            peers.data.connected, "0",
+            "zero connected peers fails the readiness check"
         );
     }
 }
