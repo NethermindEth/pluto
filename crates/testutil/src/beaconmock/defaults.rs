@@ -601,6 +601,8 @@ fn bellatrix_signed_block_response() -> Value {
 
     json!({
         "version": "bellatrix",
+        "execution_optimistic": false,
+        "finalized": false,
         "data": {
             "message": {
                 "slot": random_slot().to_string(),
@@ -778,6 +780,10 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
+    use pluto_eth2api::{
+        client::EthBeaconNodeApiClient,
+        types::{GetBlockV2Request, GetBlockV2Response},
+    };
 
     #[test]
     fn default_spec_contains_load_bearing_keys() {
@@ -836,5 +842,29 @@ mod tests {
             .await
             .expect("blocks request (numeric)");
         assert_eq!(resp.status(), 200);
+    }
+
+    /// The inclusion checker consumes this endpoint through the generated
+    /// client, which requires `execution_optimistic` and `finalized` — the
+    /// beacon-API spec marks both required and non-nullable. Asserting on the
+    /// raw body is not enough: only a decode proves the mock is consumable.
+    #[tokio::test]
+    async fn bellatrix_signed_block_decodes_through_the_generated_client() {
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("build beacon mock");
+
+        let client = EthBeaconNodeApiClient::with_base_url(mock.uri()).expect("client");
+        let request = GetBlockV2Request::builder()
+            .block_id("123".to_string())
+            .build()
+            .expect("block request");
+
+        let response = client.get_block_v2(request).await.expect("get_block_v2");
+        assert!(
+            matches!(response, GetBlockV2Response::Ok(_)),
+            "expected a decoded 200, got {response:?}"
+        );
     }
 }
