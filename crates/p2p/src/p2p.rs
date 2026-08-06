@@ -93,7 +93,9 @@ use std::{
 
 use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat, identify,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat,
+    core::transport::ListenerId,
+    identify,
     identity::Keypair,
     noise, ping, relay,
     swarm::{ListenError, NetworkBehaviour, SwarmEvent},
@@ -229,6 +231,9 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Node type.
     node_type: NodeType,
+
+    /// Listeners registered through [`Node::listen_on`], in registration order.
+    listener_ids: Vec<ListenerId>,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -338,7 +343,6 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
         let mut addrs = cfg.tcp_multiaddrs()?;
-        let mut external_addrs = utils::external_tcp_multiaddrs(cfg)?;
 
         if self.node_type == NodeType::QUIC {
             let udp_addrs = cfg.udp_multiaddrs()?;
@@ -348,10 +352,6 @@ impl<B: NetworkBehaviour> Node<B> {
             }
 
             addrs.extend(udp_addrs);
-
-            let external_udp_addrs = utils::external_udp_multiaddrs(cfg)?;
-
-            external_addrs.extend(external_udp_addrs);
         }
 
         if addrs.is_empty() {
@@ -362,15 +362,38 @@ impl<B: NetworkBehaviour> Node<B> {
 
         // Listen on internal addresses only
         for addr in &addrs {
-            self.swarm.listen_on(addr.clone())?;
+            self.listen_on(addr.clone())?;
         }
 
-        // Advertise filtered addresses (external + optionally filtered internal)
+        self.set_advertised_addrs(cfg, filter_private_addrs, &addrs)
+    }
+
+    /// Advertises the external IP / hostname from `cfg` on the ports of
+    /// `listen_addrs`, together with `listen_addrs` themselves.
+    ///
+    /// Replaces everything the node advertises, including addresses added
+    /// through [`Node::add_external_address`].
+    ///
+    /// Callers that listen on port 0 should call this again once libp2p has
+    /// reported the kernel-assigned ports, since the configured addresses
+    /// advertise port 0.
+    pub fn set_advertised_addrs(
+        &mut self,
+        cfg: &P2PConfig,
+        filter_private_addrs: bool,
+        listen_addrs: &[Multiaddr],
+    ) -> Result<()> {
+        let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
+
         let advertised_addrs = utils::filter_advertised_addresses(
             utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(addrs),
+            utils::InternalAddresses(listen_addrs.to_vec()),
             filter_private_addrs,
         )?;
+
+        for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
+            self.swarm.remove_external_address(&addr);
+        }
 
         for addr in advertised_addrs {
             self.swarm.add_external_address(addr);
@@ -429,6 +452,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -464,6 +488,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -482,6 +507,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -500,6 +526,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -566,9 +593,19 @@ impl<B: NetworkBehaviour> Node<B> {
     }
 
     /// Listens on an address.
-    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<()> {
-        self.swarm.listen_on(addr)?;
-        Ok(())
+    ///
+    /// The listener is bound before this returns, but reports the address it
+    /// bound — the kernel-assigned one for port 0 — later, as a
+    /// [`SwarmEvent::NewListenAddr`] carrying the returned [`ListenerId`].
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<ListenerId> {
+        let listener_id = self.swarm.listen_on(addr)?;
+        self.listener_ids.push(listener_id);
+        Ok(listener_id)
+    }
+
+    /// Returns the listeners registered through [`Node::listen_on`].
+    pub fn listener_ids(&self) -> &[ListenerId] {
+        &self.listener_ids
     }
 
     /// Adds an external address to the peer store.

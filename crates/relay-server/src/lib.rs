@@ -10,7 +10,7 @@ pub mod config;
 pub mod metrics;
 
 /// Web.
-pub(crate) mod web;
+pub mod web;
 
 /// Error.
 pub mod error;
@@ -19,8 +19,6 @@ pub mod error;
 pub mod utils;
 
 pub use error::RelayP2PError;
+pub use p2p::RelayServer;
 
 pub(crate) use error::Result;
-
-#[doc(hidden)]
-pub use web::enr_server;

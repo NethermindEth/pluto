@@ -1,10 +1,10 @@
 //! End-to-end integration tests for the relay HTTP layer.
 //!
-//! Spins up the real `enr_server` axum app on an ephemeral port and asserts
-//! `/` and `/enr` over a live HTTP socket via `reqwest`. Tests are isolated
-//! by binding to `127.0.0.1:0`-equivalent (find free port, then bind),
-//! shutting down via `CancellationToken`, and using config-only knobs so no
-//! libp2p swarm is started.
+//! Spins up the real `enr_server` axum app on a kernel-assigned port and
+//! asserts `/` and `/enr` over a live HTTP socket via `reqwest`. Tests are
+//! isolated by binding `127.0.0.1:0` and reading back the address the kernel
+//! gave, shutting down via `CancellationToken`, and using config-only knobs so
+//! no libp2p swarm is started.
 //!
 //! DNS scenarios use `localhost` (resolved via `/etc/hosts`) so the suite
 //! does not rely on a working public-DNS path in CI.
@@ -14,106 +14,68 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 use k256::SecretKey;
 use libp2p::{Multiaddr, identity::Keypair};
 use pluto_eth2util::enr::Record;
-use pluto_p2p::{
-    config::P2PConfig,
-    utils::{external_tcp_multiaddrs, external_udp_multiaddrs},
-};
-use pluto_relay_server::config::Config;
+use pluto_p2p::{config::P2PConfig, utils::external_multiaddrs};
+use pluto_relay_server::{RelayP2PError, web::AppState};
 use rand::rngs::OsRng;
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::watch};
 use tokio_util::sync::CancellationToken;
 
-/// Ephemeral port helper: bind 127.0.0.1:0, capture the assigned port, then
-/// drop the listener so `enr_server` can bind it. Small TOCTOU window, fine
-/// for tests.
-async fn pick_free_port() -> u16 {
-    let l = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
-    let port = l.local_addr().expect("local_addr").port();
-    drop(l);
-    port
+/// The libp2p listen addresses a relay bound to `port` would report.
+fn listen_addrs(port: u16) -> Vec<Multiaddr> {
+    vec![
+        format!("/ip4/127.0.0.1/tcp/{port}")
+            .parse()
+            .expect("valid multiaddr"),
+        format!("/ip4/127.0.0.1/udp/{port}/quic-v1")
+            .parse()
+            .expect("valid multiaddr"),
+    ]
 }
 
-/// Constructs a `P2PConfig` with sensible listen addrs so the external-addr
-/// helpers produce something to advertise. The listen ports are advisory:
-/// `enr_server` only binds the HTTP listener, not p2p sockets.
-fn p2p_config(external_ip: Option<&str>, external_host: Option<&str>, port: u16) -> P2PConfig {
-    P2PConfig {
-        tcp_addrs: vec![format!("127.0.0.1:{port}")],
-        udp_addrs: vec![format!("127.0.0.1:{port}")],
-        external_ip: external_ip.map(String::from),
-        external_host: external_host.map(String::from),
-        ..Default::default()
-    }
-}
-
-/// Spawn an `enr_server` task bound to a free port and return the base URL
-/// plus a cancellation handle.
+/// Serve an `enr_server` on a kernel-assigned port and return its base URL plus
+/// a cancellation handle.
+///
+/// The listener is bound before the server task is spawned, so the returned URL
+/// accepts connections immediately — there is nothing to wait for.
 async fn spawn_server(
     p2p_config: P2PConfig,
-    listeners: Vec<Multiaddr>,
-) -> (String, CancellationToken, tokio::task::JoinHandle<()>) {
-    let http_port = pick_free_port().await;
-    let http_addr = format!("127.0.0.1:{http_port}");
+    listen_addrs: Vec<Multiaddr>,
+) -> (
+    String,
+    CancellationToken,
+    tokio::task::JoinHandle<Result<(), RelayP2PError>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base_url = format!("http://{}", listener.local_addr().expect("local_addr"));
 
-    let config = Config::builder()
-        .http_addr(http_addr.clone())
-        .p2p_config(p2p_config.clone())
-        .max_res_per_peer(8)
-        .max_conns(64)
-        .build();
+    let external_addrs = external_multiaddrs(&p2p_config, &listen_addrs).expect("externals");
+    let (_listen_addrs_tx, listen_addrs_rx) = watch::channel(listen_addrs);
 
-    let external_addrs = {
-        let mut v = external_tcp_multiaddrs(&p2p_config).expect("tcp externals");
-        v.extend(external_udp_multiaddrs(&p2p_config).expect("udp externals"));
-        v
-    };
-
-    let secret_key = SecretKey::random(&mut OsRng);
-    let peer_id = Keypair::generate_secp256k1().public().to_peer_id();
-    let listeners = Arc::new(RwLock::new(listeners));
-    let ct = CancellationToken::new();
-    let (errs, _errs_rx) = mpsc::channel(4);
-
-    let ct_inner = ct.clone();
-    let handle = tokio::spawn(pluto_relay_server::enr_server(
-        errs,
-        config,
-        secret_key,
-        peer_id,
-        listeners,
+    let state = Arc::new(AppState::new(
+        p2p_config,
+        SecretKey::random(&mut OsRng),
+        Keypair::generate_secp256k1().public().to_peer_id(),
+        listen_addrs_rx,
         external_addrs,
-        ct_inner,
+        // Loopback listen addresses are private, so they are withheld from the
+        // advertised set — as they are for a relay in production.
+        true,
     ));
 
-    // Wait until the server is actually accepting connections — the spawn is
-    // racy with the bind, and `reqwest` would otherwise hit `ConnectionRefused`.
-    let base_url = format!("http://{http_addr}");
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(5);
-    loop {
-        match reqwest::Client::new()
-            .get(format!("{base_url}/"))
-            .timeout(Duration::from_millis(200))
-            .send()
-            .await
-        {
-            Ok(_) => break,
-            Err(_) if start.elapsed() < timeout => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(e) => panic!("server never came up: {e}"),
-        }
-    }
+    let ct = CancellationToken::new();
+    let handle = tokio::spawn(pluto_relay_server::web::enr_server(
+        listener,
+        state,
+        ct.clone(),
+    ));
 
     (base_url, ct, handle)
 }
 
-async fn shutdown(ct: CancellationToken, handle: tokio::task::JoinHandle<()>) {
+async fn shutdown(
+    ct: CancellationToken,
+    handle: tokio::task::JoinHandle<Result<(), RelayP2PError>>,
+) {
     ct.cancel();
     // The server may take a moment to drain; bound the wait so a hung test
     // fails loudly instead of hanging CI.
@@ -126,8 +88,11 @@ async fn shutdown(ct: CancellationToken, handle: tokio::task::JoinHandle<()>) {
 
 #[tokio::test]
 async fn external_ip_only_serves_ip4_multiaddrs_and_enr() {
-    let cfg = p2p_config(Some("1.2.3.4"), None, 3610);
-    let (base, ct, handle) = spawn_server(cfg, vec![]).await;
+    let cfg = P2PConfig {
+        external_ip: Some("1.2.3.4".into()),
+        ..Default::default()
+    };
+    let (base, ct, handle) = spawn_server(cfg, listen_addrs(3610)).await;
 
     // GET /
     let body: Vec<String> = reqwest::get(format!("{base}/"))
@@ -172,8 +137,7 @@ async fn external_ip_only_serves_ip4_multiaddrs_and_enr() {
 
 #[tokio::test]
 async fn empty_config_returns_empty_list_and_500_for_enr() {
-    let cfg = P2PConfig::default();
-    let (base, ct, handle) = spawn_server(cfg, vec![]).await;
+    let (base, ct, handle) = spawn_server(P2PConfig::default(), vec![]).await;
 
     // GET / — empty array.
     let body: Vec<String> = reqwest::get(format!("{base}/"))
@@ -199,8 +163,11 @@ async fn empty_config_returns_empty_list_and_500_for_enr() {
 
 #[tokio::test]
 async fn external_host_localhost_resolves_for_enr() {
-    let cfg = p2p_config(None, Some("localhost"), 3610);
-    let (base, ct, handle) = spawn_server(cfg, vec![]).await;
+    let cfg = P2PConfig {
+        external_host: Some("localhost".into()),
+        ..Default::default()
+    };
+    let (base, ct, handle) = spawn_server(cfg, listen_addrs(3610)).await;
 
     // GET / — DNS-form multiaddrs are emitted verbatim, no resolution needed.
     let body: Vec<String> = reqwest::get(format!("{base}/"))
