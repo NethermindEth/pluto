@@ -43,6 +43,7 @@ libp2p.workspace = true
 k256.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 futures.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true
