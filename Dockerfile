@@ -47,16 +47,22 @@ RUN cargo build --locked --release --package pluto-cli && \
     cp /build/target/release/pluto /usr/local/bin/pluto && \
     rm -rf /build/target
 
-# Digest pinned 2026-08-05.
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS app
+# Static busybox supplies `/bin/sh` and `/bin/wget` for CMD-SHELL healthchecks.
+FROM busybox:1.37-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84 AS busybox
+RUN mkdir -p /tools/bin && cp /bin/busybox /tools/bin/busybox && \
+    ln -s busybox /tools/bin/sh && ln -s busybox /tools/bin/wget
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl3 \
-    fio \
-    wget && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# `alpha test infra` shells out to fio.
+# Alpine's build needs only musl and three small libs; Debian's is +2x larger.
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS fio
+RUN apk add --no-cache fio~=3.39
+
+FROM gcr.io/distroless/cc-debian13@sha256:ed7c407fd64eb0af9dddb9456b94cee188a40a7f53cf38c9836e1e9ae14fca02 AS app
+
+COPY --from=busybox /tools/bin/ /bin/
+COPY --from=fio /usr/bin/fio /usr/bin/fio
+COPY --from=fio /lib/ld-musl-*.so.1 /lib/
+COPY --from=fio /usr/lib/libaio.so.1 /usr/lib/libnuma.so.1 /usr/lib/libz.so.1 /usr/lib/
 
 COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
