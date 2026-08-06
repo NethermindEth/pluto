@@ -54,10 +54,13 @@ pub fn build_console_tracing_config(
 
 /// Parses the configured relay addresses, warning about insecure ones.
 ///
-/// A single empty value (`--p2p-relays=""`) means "no relays", and that is the
-/// only empty form accepted. Interior empties (`a,,b`, `,`) are CSV fields that
-/// were meant to hold an address, so they are rejected rather than dropped —
-/// dropping them would silently leave fewer relays configured than requested.
+/// Exactly one empty value (`--p2p-relays=""`) means "no relays". That is the
+/// only accepted empty form: every other empty is an error, including interior
+/// ones (`a,,b`, `,`) and an empty value repeated or mixed with real addresses
+/// (`--p2p-relays="" --p2p-relays=https://x`, which flattens to the same list
+/// as `--p2p-relays=,https://x` and so cannot be told apart from it). Each of
+/// those is a field that was meant to hold an address; dropping them would
+/// silently leave fewer relays configured than requested.
 pub fn parse_relay_addrs(relays: &[String]) -> std::result::Result<Vec<RelayAddr>, CliError> {
     if let [only] = relays
         && only.is_empty()
@@ -89,48 +92,8 @@ pub fn parse_relay_addrs(relays: &[String]) -> std::result::Result<Vec<RelayAddr
 mod tests {
     use super::*;
 
-    fn parse_one(relay: &str) -> RelayAddr {
-        let parsed = parse_relay_addrs(&[relay.to_string()]).expect("relay should parse");
-
-        assert_eq!(parsed.len(), 1);
-
-        parsed.into_iter().next().expect("one relay")
-    }
-
-    #[test]
-    fn parses_relay_url_forms() {
-        // The reported regression: a relay URL with a path is accepted and the
-        // path survives.
-        assert_eq!(
-            parse_one("http://relay:3640/enr"),
-            RelayAddr::Url("http://relay:3640/enr".parse().expect("url"))
-        );
-        assert_eq!(
-            parse_one("http://relay:3640"),
-            RelayAddr::Url("http://relay:3640".parse().expect("url"))
-        );
-        assert_eq!(
-            parse_one("https://relay.example.org/enr"),
-            RelayAddr::Url("https://relay.example.org/enr".parse().expect("url"))
-        );
-    }
-
-    #[test]
-    fn parses_raw_multiaddr() {
-        let relay =
-            "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs";
-
-        assert_eq!(
-            parse_one(relay),
-            RelayAddr::Multiaddr(relay.parse().expect("multiaddr"))
-        );
-    }
-
-    #[test]
-    fn flags_only_plain_http_relays_as_insecure() {
-        assert!(parse_one("http://relay:3640/enr").is_insecure_url());
-        assert!(!parse_one("https://relay.example.org/enr").is_insecure_url());
-    }
+    // Per-address parsing is covered by `RelayAddr`'s own tests; what is left
+    // to check here is the empty-value contract and the error wrapping.
 
     #[test]
     fn treats_a_lone_empty_value_as_no_relays() {

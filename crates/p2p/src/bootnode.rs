@@ -38,9 +38,13 @@ pub enum BootnodeError {
     #[error("peer from multiaddr: {0}")]
     PeerFromMultiaddr(String),
 
-    /// A relay address query failed and should be retried.
-    #[error("relay address query failed")]
-    RelayQueryFailed,
+    /// The relay responded with a non-success status.
+    #[error("relay address query failed with status {0}")]
+    RelayQueryStatus(u16),
+
+    /// The relay address response was not valid JSON.
+    #[error("parse relay addresses json: {0}")]
+    ParseRelayAddrsJson(#[source] serde_json::Error),
 
     /// The relay URL scheme is neither `http` nor `https`.
     #[error("invalid relay url: {0}")]
@@ -105,7 +109,15 @@ pub async fn new_relays(
     for relay_addr in relays {
         match relay_addr {
             RelayAddr::Url(url) => {
-                if relay_addr.is_insecure_url() {
+                // Reject a scheme the resolver cannot use before spawning it.
+                // The task would fail on its first request and exit, leaving
+                // the wait below to run its full timeout and report a
+                // resolution timeout instead of the real problem.
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(BootnodeError::InvalidRelayUrl(url.to_string()));
+                }
+
+                if url.scheme() != "https" {
                     warn!(addr = %url, "Relay URL does not use https protocol");
                 }
 
@@ -268,7 +280,7 @@ async fn query_relay_addrs(
                 status_code = resp.status().as_u16(),
                 "Non-200 response querying relay addresses (will try again)"
             );
-            return Err(BootnodeError::RelayQueryFailed);
+            return Err(BootnodeError::RelayQueryStatus(resp.status().as_u16()));
         }
 
         let body = read_relay_body_capped(resp, RELAY_MAX_BODY).await?;
@@ -285,7 +297,7 @@ async fn query_relay_addrs(
 
         let addrs: Vec<String> = serde_json::from_str(&body).map_err(|e| {
             tracing::warn!(err = %e, "Failure parsing relay addresses json (will try again)");
-            BootnodeError::RelayQueryFailed
+            BootnodeError::ParseRelayAddrsJson(e)
         })?;
 
         let mut maddrs = Vec::new();
@@ -489,6 +501,31 @@ mod tests {
             .expect("no relays should resolve");
 
         assert!(relays.is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_relays_rejects_unsupported_url_scheme() {
+        // A hand-built `RelayAddr::Url` can carry a scheme the resolver cannot
+        // use. It must be rejected up front, not spawned and then waited on
+        // until the resolve timeout reports a misleading failure.
+        let relay = RelayAddr::Url("ftp://relay.example.org".parse().expect("url"));
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            new_relays(
+                CancellationToken::new(),
+                std::slice::from_ref(&relay),
+                LOCK_HASH,
+            ),
+        )
+        .await
+        .expect("should fail fast, not wait out BOOTNODE_RESOLVE_TIMEOUT")
+        .expect_err("unsupported scheme should be rejected");
+
+        assert!(
+            matches!(err, BootnodeError::InvalidRelayUrl(_)),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

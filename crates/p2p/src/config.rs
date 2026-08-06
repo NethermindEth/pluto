@@ -62,6 +62,10 @@ pub enum RelayAddr {
 impl RelayAddr {
     /// Returns true for a plain-`http://` URL, i.e. one whose ENR is fetched
     /// over an unencrypted connection.
+    ///
+    /// Always false for a [`RelayAddr::Multiaddr`]: only the HTTP resolution
+    /// step is at issue here, so a directly dialed relay is never reported as
+    /// insecure regardless of the transport it names.
     pub fn is_insecure_url(&self) -> bool {
         matches!(self, Self::Url(url) if url.scheme() != "https")
     }
@@ -453,7 +457,14 @@ mod tests {
             Err(RelayAddrError::Url(_))
         ));
 
-        // Everything else must be a multiaddr.
+        // `http`-prefixed and a valid URL, but not an HTTP(S) one.
+        assert!(matches!(
+            "httpx://relay.example.org".parse::<RelayAddr>(),
+            Err(RelayAddrError::Scheme(scheme)) if scheme == "httpx"
+        ));
+
+        // Everything else must be a multiaddr — including other URL schemes,
+        // which never reach the scheme check.
         assert!(matches!(
             "ftp://relay.example.org".parse::<RelayAddr>(),
             Err(RelayAddrError::Multiaddr(_))
