@@ -477,9 +477,7 @@ func writeAlertRules(dir string, conf Config) error {
 	//    never included on-chain" (the better the cluster works, the more it
 	//    warns).
 	// Both are mock artifacts, not node behavior; every other warn topic stays
-	// gated. Both name charon components and only ever occur on charon nodes:
-	// pluto sets a log topic on almost nothing, so its warnings carry no topic
-	// label and this exclusion never applies to them.
+	// gated.
 	const warnTopics = "vmock|tracker"
 
 	// The broadcast-liveness expression must fail when a node exposes NO

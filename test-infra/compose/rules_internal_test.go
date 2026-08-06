@@ -68,8 +68,7 @@ func TestWriteAlertRulesExcludesDegradedJobs(t *testing.T) {
 }
 
 // TestWriteAlertRulesWarnTopics asserts the Warn Log Rate gate excludes exactly
-// the two charon mock-noise topics, so every other topic — including the empty
-// one pluto emits — stays gated.
+// the two charon mock-noise topics.
 func TestWriteAlertRulesWarnTopics(t *testing.T) {
 	content := writeRules(t, NewDefaultConfig())
 	require.Contains(t, content, `increase(app_log_warn_total{topic!~"vmock|tracker"}[30s]) > 2`)
