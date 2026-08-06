@@ -795,9 +795,9 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
-    use pluto_eth2api::{
-        client::EthBeaconNodeApiClient,
-        types::{GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest, GetPeerCountResponse},
+    use pluto_eth2api::types::{
+        ConsensusVersion, GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest,
+        GetPeerCountResponse,
     };
 
     #[test]
@@ -820,67 +820,32 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn bellatrix_signed_block_endpoint_returns_versioned_block() {
-        let mock = BeaconMock::builder()
-            .build()
-            .await
-            .expect("build beacon mock");
-
-        let base = mock.uri();
-        let http = reqwest::Client::new();
-
-        // The `block_id` segment is opaque to the mock; "head" exercises the
-        // path_regex match.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/head"))
-            .send()
-            .await
-            .expect("blocks request");
-        assert_eq!(resp.status(), 200, "blocks endpoint should succeed");
-
-        let body: Value = resp.json().await.expect("blocks json");
-        assert_eq!(
-            body.get("version").and_then(Value::as_str),
-            Some("bellatrix"),
-            "version field should be bellatrix"
-        );
-        assert!(
-            body.get("data").and_then(Value::as_object).is_some(),
-            "data field should be a JSON object"
-        );
-
-        // Same endpoint should also match a numeric block_id.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/123"))
-            .send()
-            .await
-            .expect("blocks request (numeric)");
-        assert_eq!(resp.status(), 200);
-    }
-
     /// The inclusion checker consumes this endpoint through the generated
     /// client, which requires `execution_optimistic` and `finalized` — the
-    /// beacon-API spec marks both required and non-nullable. Asserting on the
-    /// raw body is not enough: only a decode proves the mock is consumable.
+    /// beacon-API spec marks both required and non-nullable.
     #[tokio::test]
-    async fn bellatrix_signed_block_decodes_through_the_generated_client() {
+    async fn block_endpoint_serves_a_decodable_bellatrix_block() {
         let mock = BeaconMock::builder()
             .build()
             .await
             .expect("build beacon mock");
 
-        let client = EthBeaconNodeApiClient::with_base_url(mock.uri()).expect("client");
-        let request = GetBlockV2Request::builder()
-            .block_id("123".to_string())
-            .build()
-            .expect("block request");
+        let client = mock.client();
 
-        let response = client.get_block_v2(request).await.expect("get_block_v2");
-        assert!(
-            matches!(response, GetBlockV2Response::Ok(_)),
-            "expected a decoded 200, got {response:?}"
-        );
+        // The `block_id` segment is opaque to the mock; "head" and a numeric
+        // id both exercise the path_regex match.
+        for block_id in ["head", "123"] {
+            let request = GetBlockV2Request::builder()
+                .block_id(block_id.to_string())
+                .build()
+                .expect("block request");
+
+            let response = client.get_block_v2(request).await.expect("get_block_v2");
+            let GetBlockV2Response::Ok(block) = response else {
+                panic!("expected a decoded 200 for {block_id}, got {response:?}");
+            };
+            assert_eq!(block.version, ConsensusVersion::Bellatrix);
+        }
     }
 
     /// The readiness checker polls this every minute and treats zero connected
@@ -893,7 +858,7 @@ mod tests {
             .await
             .expect("build beacon mock");
 
-        let client = EthBeaconNodeApiClient::with_base_url(mock.uri()).expect("client");
+        let client = mock.client();
 
         let response = client
             .get_peer_count(GetPeerCountRequest {})
@@ -902,8 +867,13 @@ mod tests {
         let GetPeerCountResponse::Ok(peers) = response else {
             panic!("expected a decoded 200, got {response:?}");
         };
-        assert_ne!(
-            peers.data.connected, "0",
+        let connected_peers: u64 = peers
+            .data
+            .connected
+            .parse()
+            .expect("connected parses as u64");
+        assert!(
+            connected_peers > 0,
             "zero connected peers fails the readiness check"
         );
     }
