@@ -21,11 +21,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
-use vise_exporter::MetricsExporter;
+use vise_exporter::{MetricsExporter, MetricsServer};
 
 use crate::{
     config::{Config, EXTERNAL_HOST_RESOLVE_INTERVAL},
-    error::RelayP2PError,
+    error::{RelayP2PError, Result},
 };
 use pluto_p2p::{config::P2PConfig, name::peer_name};
 
@@ -114,6 +114,23 @@ pub async fn enr_server(
 
     info!("Starting ENR server");
 
+    // Bind before spawning anything else, so a failed bind has nothing to
+    // clean up. The error keeps its `io::ErrorKind` so callers can tell a lost
+    // race for the port from an unusable address.
+    let listener = match TcpListener::bind(&http_addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            warn!("Failed to bind HTTP listener to {http_addr}: {err}");
+            let _ = server_errors
+                .send(RelayP2PError::FailedToBindHttpListener {
+                    addr: http_addr,
+                    source: err,
+                })
+                .await;
+            return;
+        }
+    };
+
     let state = AppState::new(
         config.p2p_config.clone(),
         secret_key,
@@ -138,14 +155,6 @@ pub async fn enr_server(
         .route("/", get(multiaddr_handler))
         .route("/enr", get(enr_handler))
         .with_state(state_arc);
-
-    let Ok(listener) = TcpListener::bind(&http_addr).await else {
-        warn!("Failed to bind HTTP listener to {}", http_addr);
-        let _ = server_errors
-            .send(RelayP2PError::FailedToBindHttpListener(http_addr))
-            .await;
-        return;
-    };
 
     info!(
         "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
@@ -175,16 +184,47 @@ pub async fn enr_server(
     }
 }
 
-/// Starts the Prometheus monitoring server on the given address.
+/// Binds the Prometheus monitoring listener on the given address.
+///
+/// Binding is separate from serving so that a bind failure is reported to the
+/// caller synchronously — before any other listener is started — and keeps its
+/// `io::ErrorKind`, letting callers tell a lost race for the port from a real
+/// misconfiguration.
 #[instrument(skip(ct))]
-pub async fn monitoring_server(bind_addr: SocketAddr, ct: CancellationToken) {
-    info!("Starting monitoring server on {bind_addr}");
+pub(crate) async fn bind_monitoring_server(
+    bind_addr: SocketAddr,
+    ct: CancellationToken,
+) -> Result<MetricsServer<'static>> {
+    info!("Binding monitoring server");
 
     MetricsExporter::default()
         .with_graceful_shutdown(ct.cancelled_owned())
-        .start(bind_addr)
+        .bind(bind_addr)
         .await
-        .unwrap_or_else(|e| warn!("Monitoring server error: {e}"));
+        .map_err(|source| RelayP2PError::FailedToBindMonitoringListener {
+            addr: bind_addr,
+            source,
+        })
+}
+
+/// Serves an already bound monitoring listener until shutdown.
+///
+/// Serve failures are reported on `server_errors` (mirroring Charon, where the
+/// monitoring server's `ListenAndServe` error terminates the relay) so they
+/// cannot go unnoticed behind a log line.
+#[instrument(skip_all, fields(addr = %server.local_addr()))]
+pub(crate) async fn serve_monitoring_server(
+    server_errors: mpsc::Sender<RelayP2PError>,
+    server: MetricsServer<'static>,
+) {
+    info!("Starting monitoring server");
+
+    if let Err(err) = server.start().await {
+        warn!("Monitoring server error: {err}");
+        let _ = server_errors
+            .send(RelayP2PError::FailedToServeMonitoring(err))
+            .await;
+    }
 }
 
 /// Error response for HTTP handlers.

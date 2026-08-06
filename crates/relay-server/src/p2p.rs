@@ -15,7 +15,7 @@ use crate::{
     config::{Config, create_relay_config},
     error::RelayP2PError,
     metrics::{PeerWithPeerClusterLabels, RELAY_METRICS},
-    web::{enr_server, monitoring_server},
+    web::{bind_monitoring_server, enr_server, serve_monitoring_server},
 };
 use pluto_p2p::{
     BandwidthFactory, PeerConnectionMetrics,
@@ -77,6 +77,25 @@ pub async fn run_relay_p2p_node(
     let mut external_addrs = external_tcp_multiaddrs(&config.p2p_config)?;
     external_addrs.extend(external_udp_multiaddrs(&config.p2p_config)?);
 
+    // Bind the monitoring listener before starting the ENR server: an unusable
+    // address or a lost race for the port then fails the relay while nothing
+    // has been spawned, instead of returning past a running ENR server and
+    // leaving its listener bound. It also means a serving ENR endpoint implies
+    // every listener of this relay is bound.
+    let monitoring_server = match config.monitoring_addr.clone() {
+        Some(monitoring_addr) => {
+            let bind_addr = monitoring_addr
+                .parse::<SocketAddr>()
+                .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
+
+            Some(bind_monitoring_server(bind_addr, ct.child_token()).await?)
+        }
+        None => {
+            info!("Prometheus monitoring not available, since monitoring-address flag is not set");
+            None
+        }
+    };
+
     let enr_server_handle = tokio::spawn(enr_server(
         server_errors.clone(),
         config.clone(),
@@ -93,16 +112,13 @@ pub async fn run_relay_p2p_node(
         info!("Runtime multiaddrs not available via http, since http-address flag is not set");
     }
 
-    // Start monitoring server if configured
-    let monitoring_handle = if let Some(monitoring_addr) = config.monitoring_addr.clone() {
-        let bind_addr = monitoring_addr
-            .parse::<SocketAddr>()
-            .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
-        Some(tokio::spawn(monitoring_server(bind_addr, ct.child_token())))
-    } else {
-        info!("Prometheus monitoring not available, since monitoring-address flag is not set");
-        None
-    };
+    // Serve the monitoring listener bound above.
+    let monitoring_handle = monitoring_server
+        .map(|server| tokio::spawn(serve_monitoring_server(server_errors.clone(), server)));
+
+    // Set when one of the HTTP servers fails; returned once the shutdown below
+    // has run, so a failed relay never leaves listeners bound behind it.
+    let mut server_error = None;
 
     loop {
         tokio::select! {
@@ -114,7 +130,8 @@ pub async fn run_relay_p2p_node(
             error = server_errors_receiver.recv() => {
                 if let Some(error) = error {
                     warn!("Server error: {}", error);
-                    return Err(error);
+                    server_error = Some(error);
+                    break;
                 }
             },
             event = node.select_next_some() => {
@@ -168,7 +185,10 @@ pub async fn run_relay_p2p_node(
         }
     }
 
-    Ok(node)
+    match server_error {
+        Some(error) => Err(error),
+        None => Ok(node),
+    }
 }
 
 /// Result of a swarm event that may require updating the listener address list.

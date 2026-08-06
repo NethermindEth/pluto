@@ -203,3 +203,58 @@ pub fn filter_direct_quic_addrs(addrs: impl Iterator<Item = Multiaddr>) -> Vec<M
 pub fn is_direct_addr(addr: &Multiaddr) -> bool {
     !is_relay_addr(addr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Config with the listen addresses and external overrides under test.
+    fn config(external_ip: Option<&str>, external_host: Option<&str>) -> P2PConfig {
+        P2PConfig {
+            external_ip: external_ip.map(String::from),
+            external_host: external_host.map(String::from),
+            tcp_addrs: vec!["127.0.0.1:3610".to_string(), "127.0.0.1:3611".to_string()],
+            udp_addrs: vec!["127.0.0.1:3620".to_string(), "127.0.0.1:3621".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn as_strings(addrs: &[Multiaddr]) -> Vec<String> {
+        addrs.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn external_multiaddrs_keep_the_listen_ports() {
+        let cfg = config(Some("1.2.3.4"), Some("relay.example.com"));
+
+        // The external address replaces the listen IP but must advertise the
+        // port the node actually listens on — one address per listen port, IP
+        // forms first, then hostname forms.
+        assert_eq!(
+            as_strings(&external_tcp_multiaddrs(&cfg).unwrap()),
+            vec![
+                "/ip4/1.2.3.4/tcp/3610",
+                "/ip4/1.2.3.4/tcp/3611",
+                "/dns/relay.example.com/tcp/3610",
+                "/dns/relay.example.com/tcp/3611",
+            ]
+        );
+        assert_eq!(
+            as_strings(&external_udp_multiaddrs(&cfg).unwrap()),
+            vec![
+                "/ip4/1.2.3.4/udp/3620/quic-v1",
+                "/ip4/1.2.3.4/udp/3621/quic-v1",
+                "/dns/relay.example.com/udp/3620/quic-v1",
+                "/dns/relay.example.com/udp/3621/quic-v1",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_external_multiaddrs_without_external_config() {
+        let cfg = config(None, None);
+
+        assert!(external_tcp_multiaddrs(&cfg).unwrap().is_empty());
+        assert!(external_udp_multiaddrs(&cfg).unwrap().is_empty());
+    }
+}
