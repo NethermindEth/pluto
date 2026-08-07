@@ -431,8 +431,7 @@ mod tests {
 
         // Covers the CLI entry point that the fixture bypasses: tracing init and
         // the Loki drain. A pre-cancelled token is deterministic because the
-        // shutdown arm of the serve loop is the `biased` first branch — the same
-        // way charon's relay test starts (`cmd/relay/relay_internal_test.go:40`).
+        // shutdown arm of the serve loop is the `biased` first branch.
         let ct = CancellationToken::new();
         ct.cancel();
 
@@ -493,12 +492,29 @@ mod tests {
                 .await
                 .unwrap();
 
-        // Resolution happens asynchronously on a tick, so wait until the ENR
-        // reflects a non-loopback IP (mirrors the Go test using
-        // `assert.Eventually`).
-        relay
-            .get_until("/enr", |body| !parse_enr(body).ip().unwrap().is_loopback())
-            .await;
+        // The relay is already serving, so this waits on one thing only: the
+        // hostname is resolved by a background task on a tick, and the ENR
+        // reflects it once DNS answers. A transport error or a non-2xx panics
+        // rather than being retried.
+        let deadline = Instant::now() + DNS_TIMEOUT;
+        loop {
+            let body = http_get(&relay.url("/enr"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+
+            if !parse_enr(&body).ip().unwrap().is_loopback() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "external host not resolved into the ENR {DNS_TIMEOUT:?} in; last body: {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
@@ -617,9 +633,9 @@ mod tests {
     /// Budget for the relay to stop once a test is done with it.
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Budget for an endpoint to reach the state a test waits for. Sized for a
-    /// heavily loaded CI machine.
-    const SERVING_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Budget for a DNS lookup to answer and reach the ENR. Sized for a heavily
+    /// loaded CI machine.
+    const DNS_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Per-request budget, so a server that accepts the connection but never
     /// answers fails the test instead of hanging it until the harness gives up.
@@ -764,54 +780,6 @@ mod tests {
                 .iter()
                 .find_map(port_of)
                 .expect("`relay_args` configures both transports")
-        }
-
-        /// Fetches `path` until it answers 2xx *and* `ready` accepts the body,
-        /// returning that body.
-        ///
-        /// This is not race tolerance — the relay is fully bound and serving
-        /// before a test gets hold of it, so a request can never be refused and
-        /// a transport error panics instead of being retried. The one thing it
-        /// waits out is DNS: `--p2p-external-hostname` is resolved on a tick by
-        /// a background task, so the ENR reflects it only after the first
-        /// lookup answers. Charon waits the same way (`assert.Eventually`,
-        /// `cmd/relay/relay_internal_test.go:208`).
-        async fn get_until(&self, path: &str, ready: impl Fn(&str) -> bool) -> String {
-            let started = Instant::now();
-
-            loop {
-                let response = CLIENT
-                    .get(self.url(path))
-                    .timeout(REQUEST_TIMEOUT)
-                    .send()
-                    .await
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "GET {path} failed: {err} (relay exited: {})",
-                            self.handle.is_finished()
-                        )
-                    });
-
-                let status = response.status();
-                let body = response.text().await.unwrap();
-
-                if status.is_success() && ready(&body) {
-                    return body;
-                }
-
-                // The relay is the only thing serving this address, so if it is
-                // gone nothing will ever satisfy the poll.
-                assert!(
-                    !self.handle.is_finished(),
-                    "relay exited while waiting for {path} to serve"
-                );
-                assert!(
-                    started.elapsed() < SERVING_TIMEOUT,
-                    "{path} not ready {SERVING_TIMEOUT:?} into startup; last status {status}: {body}"
-                );
-
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
         }
 
         /// Cancels the relay, waits for it to stop, and returns its exit

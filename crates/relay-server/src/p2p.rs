@@ -36,7 +36,7 @@ pub async fn run_relay_p2p_node(
     config: &Config,
     key: SecretKey,
     ct: CancellationToken,
-) -> Result<Node<relay::Behaviour>> {
+) -> Result<()> {
     bind_relay(config, key, ct).await?.serve().await
 }
 
@@ -102,7 +102,7 @@ impl BoundRelay {
 
     /// Serves every bound listener until the relay is cancelled or one of its
     /// servers fails.
-    pub async fn serve(self) -> Result<Node<relay::Behaviour>> {
+    pub async fn serve(self) -> Result<()> {
         let http_addr = self.http_addr();
         let Self {
             mut node,
@@ -159,17 +159,25 @@ impl BoundRelay {
 
         ct.cancel();
 
-        if let Some(handle) = enr_server_handle {
-            join_or_abort("ENR server", handle).await;
-        }
-
-        if let Some(handle) = monitoring_handle {
-            join_or_abort("Monitoring server", handle).await;
-        }
+        // Concurrently: the two are unrelated, and each gets its own grace
+        // period, so joining them in sequence would double the worst-case
+        // shutdown against an orchestrator's SIGTERM budget.
+        tokio::join!(
+            async {
+                if let Some(handle) = enr_server_handle {
+                    join_or_abort("ENR server", handle).await;
+                }
+            },
+            async {
+                if let Some(handle) = monitoring_handle {
+                    join_or_abort("Monitoring server", handle).await;
+                }
+            },
+        );
 
         match server_error {
             Some(error) => Err(error),
-            None => Ok(node),
+            None => Ok(()),
         }
     }
 }
@@ -183,8 +191,9 @@ impl BoundRelay {
 ///
 /// Order matters: the HTTP listeners are bound before the swarm is created, and
 /// the swarm is polled only once they are. Polling is what makes the relay
-/// service p2p connections, so a bind that failed after it would take down
-/// peers the relay had already accepted.
+/// service p2p connections — it completes handshakes and can hand out circuit
+/// reservations — so a bind that failed after it would take down peers the
+/// relay had already accepted.
 #[doc(hidden)]
 #[instrument(skip(config, key, ct))]
 pub async fn bind_relay(
@@ -200,15 +209,8 @@ pub async fn bind_relay(
         "Pluto relay starting"
     );
 
-    // The HTTP listeners are bound before the swarm exists, and the swarm is not
-    // polled until they are. Polling accepts and services p2p connections — it
-    // completes handshakes, counts them, and can hand out circuit reservations —
-    // so binding these afterwards would mean a bind failure tore down peers the
-    // relay had already taken on.
-    //
-    // Binding here rather than inside each server's task is also what lets an
-    // unusable address or a lost race for a port fail the relay while nothing
-    // has been spawned.
+    // Bound here rather than inside each server's task, so an unusable address
+    // or a lost race for a port fails the relay while nothing has been spawned.
     let monitoring_server = match config.monitoring_addr.clone() {
         Some(monitoring_addr) => {
             let bind_addr = monitoring_addr

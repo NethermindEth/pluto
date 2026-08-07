@@ -76,9 +76,9 @@ impl AppState {
     /// Returns the union of configured external multiaddrs and the live libp2p
     /// listen addresses, externals first, deduped while preserving order.
     ///
-    /// Mirrors Go charon's `filterAdvertisedAddrs(externalAddrs, internalAddrs,
-    /// excludeInternalPrivate)`: `filter_private_addrs` withholds private
-    /// listen addresses (loopback, RFC 1918) but never the external ones.
+    /// `filter_private_addrs` withholds private listen addresses (loopback,
+    /// RFC 1918) but never the external ones, which are advertised as
+    /// configured.
     ///
     /// Filtering happens here rather than when a listen address is ingested so
     /// that the relay always knows every address it bound — startup waits on
@@ -91,7 +91,7 @@ impl AppState {
             .filter(|addr| !(self.filter_private_addrs && addr.is_private()));
 
         let mut seen: HashSet<&Multiaddr> = HashSet::new();
-        let mut union: Vec<Multiaddr> = Vec::new();
+        let mut union: Vec<Multiaddr> = Vec::with_capacity(self.external_addrs.len());
         for addr in self.external_addrs.iter().chain(listeners) {
             if seen.insert(addr) {
                 union.push(addr.clone());
@@ -189,9 +189,9 @@ pub(crate) async fn bind_monitoring_server(
 
 /// Serves an already bound monitoring listener until shutdown.
 ///
-/// Serve failures are reported on `server_errors` (mirroring Charon, where the
-/// monitoring server's `ListenAndServe` error terminates the relay) so they
-/// cannot go unnoticed behind a log line.
+/// Serve failures are reported on `server_errors`, so a monitoring server that
+/// dies takes the relay down with it instead of going unnoticed behind a log
+/// line and leaving the port unserved.
 #[instrument(skip_all, fields(addr = %server.local_addr()))]
 pub(crate) async fn serve_monitoring_server(
     server_errors: mpsc::Sender<RelayP2PError>,

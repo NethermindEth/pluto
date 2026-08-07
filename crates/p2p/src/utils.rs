@@ -31,10 +31,7 @@ use crate::{
 /// `ports` must be the ports the node actually listens on: a configured port of
 /// 0 means the kernel picks one, so the configured value would advertise
 /// nothing dialable.
-pub fn external_tcp_multiaddrs(
-    cfg: &P2PConfig,
-    ports: &[u16],
-) -> crate::p2p::Result<Vec<Multiaddr>> {
+fn external_tcp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
     let mut resp = vec![];
 
     if let Some(external_ip) = cfg.external_ip.as_ref() {
@@ -60,10 +57,7 @@ pub fn external_tcp_multiaddrs(
 ///
 /// `ports` must be the ports the node actually listens on, as in
 /// [`external_tcp_multiaddrs`].
-pub fn external_udp_multiaddrs(
-    cfg: &P2PConfig,
-    ports: &[u16],
-) -> crate::p2p::Result<Vec<Multiaddr>> {
+fn external_udp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
     let mut resp = vec![];
 
     if let Some(external_ip) = cfg.external_ip.as_ref() {
