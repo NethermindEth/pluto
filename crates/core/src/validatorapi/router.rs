@@ -37,7 +37,10 @@ use ssz::Decode;
 use super::{
     error::ApiError,
     handler::Handler,
-    metrics::{ApiLatencyTimer, ProxyLatencyTimer},
+    metrics::{
+        ApiLatencyTimer, ProxyLatencyTimer, inc_api_errors, inc_content_type,
+        normalise_content_type, observe_user_agent,
+    },
     types::{
         AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
         AttesterDutiesResponse, BeaconCommitteeSelection, BeaconCommitteeSelectionsResponse,
@@ -158,97 +161,175 @@ pub fn new_router(
         proxy_client: reqwest::Client::new(),
     });
 
+    // Every route carries a stable `endpoint` metric name matching Charon's
+    // endpoint table, so `core_validatorapi_request_*` series line up across
+    // the two implementations (and with the shared Grafana dashboards).
     Router::new()
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",
-            bounded_post(attester_duties, DUTIES_BODY_LIMIT),
+            named(
+                "attester_duties",
+                bounded_post(attester_duties, DUTIES_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
-            get(proposer_duties),
+            named("proposer_duties", get(proposer_duties)),
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
-            bounded_post(sync_committee_duties, DUTIES_BODY_LIMIT),
+            named(
+                "sync_committee_duties",
+                bounded_post(sync_committee_duties, DUTIES_BODY_LIMIT),
+            ),
         )
-        .route("/eth/v1/validator/attestation_data", get(attestation_data))
-        .route("/eth/v1/beacon/pool/attestations", post(respond_404))
+        .route(
+            "/eth/v1/validator/attestation_data",
+            named("attestation_data", get(attestation_data)),
+        )
+        .route(
+            "/eth/v1/beacon/pool/attestations",
+            named("submit_attestations", post(respond_404)),
+        )
         .route(
             "/eth/v2/beacon/pool/attestations",
-            post(submit_attestations),
+            named("submit_attestations_v2", post(submit_attestations)),
         )
         .route(
             "/eth/v1/beacon/states/{state_id}/validators",
-            get(get_validators).post(get_validators),
+            named("get_validators", get(get_validators).post(get_validators)),
         )
         .route(
             "/eth/v1/beacon/states/{state_id}/validators/{validator_id}",
-            get(get_validator),
+            named("get_validator", get(get_validator)),
         )
-        .route("/eth/v2/validator/blocks/{slot}", get(respond_404))
-        .route("/eth/v1/validator/blinded_blocks/{slot}", get(respond_404))
-        .route("/eth/v3/validator/blocks/{slot}", get(propose_block_v3))
+        .route(
+            "/eth/v2/validator/blocks/{slot}",
+            named("propose_block", get(respond_404)),
+        )
+        .route(
+            "/eth/v1/validator/blinded_blocks/{slot}",
+            named("propose_blinded_block", get(respond_404)),
+        )
+        .route(
+            "/eth/v3/validator/blocks/{slot}",
+            named("propose_block_v3", get(propose_block_v3)),
+        )
         .route(
             "/eth/v1/beacon/blocks",
-            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+            named(
+                "submit_proposal_v1",
+                sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v2/beacon/blocks",
-            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+            named(
+                "submit_proposal_v2",
+                sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v1/beacon/blinded_blocks",
-            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+            named(
+                "submit_blinded_block_v1",
+                sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v2/beacon/blinded_blocks",
-            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+            named(
+                "submit_blinded_block_v2",
+                sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v1/validator/register_validator",
-            sized_post(submit_validator_registrations, REGISTRATIONS_BODY_LIMIT),
+            named(
+                "submit_validator_registration",
+                sized_post(submit_validator_registrations, REGISTRATIONS_BODY_LIMIT),
+            ),
         )
         .route(
             "/eth/v1/beacon/pool/voluntary_exits",
-            bounded_post(submit_exit, EXIT_BODY_LIMIT),
+            named(
+                "submit_voluntary_exit",
+                bounded_post(submit_exit, EXIT_BODY_LIMIT),
+            ),
         )
-        .route("/teku_proposer_config", get(respond_404))
-        .route("/proposer_config", get(respond_404))
+        .route(
+            "/teku_proposer_config",
+            named("teku_proposer_config", get(respond_404)),
+        )
+        .route(
+            "/proposer_config",
+            named("proposer_config", get(respond_404)),
+        )
         .route(
             "/eth/v1/validator/beacon_committee_selections",
-            bounded_post(beacon_committee_selections, SELECTIONS_BODY_LIMIT),
+            named(
+                "aggregate_beacon_committee_selections",
+                bounded_post(beacon_committee_selections, SELECTIONS_BODY_LIMIT),
+            ),
         )
-        .route("/eth/v1/validator/aggregate_attestation", get(respond_404))
+        .route(
+            "/eth/v1/validator/aggregate_attestation",
+            named("aggregate_attestation", get(respond_404)),
+        )
         .route(
             "/eth/v2/validator/aggregate_attestation",
-            get(aggregate_attestation),
+            named("aggregate_attestation_v2", get(aggregate_attestation)),
         )
-        .route("/eth/v1/validator/aggregate_and_proofs", post(respond_404))
+        .route(
+            "/eth/v1/validator/aggregate_and_proofs",
+            named("submit_aggregate_and_proofs", post(respond_404)),
+        )
         .route(
             "/eth/v2/validator/aggregate_and_proofs",
-            post(submit_aggregate_attestations),
+            named(
+                "submit_aggregate_and_proofs_v2",
+                post(submit_aggregate_attestations),
+            ),
         )
         .route(
             "/eth/v1/beacon/pool/sync_committees",
-            post(submit_sync_committee_messages),
+            named(
+                "submit_sync_committee_messages",
+                post(submit_sync_committee_messages),
+            ),
         )
         .route(
             "/eth/v1/validator/sync_committee_contribution",
-            get(sync_committee_contribution),
+            named(
+                "sync_committee_contribution",
+                get(sync_committee_contribution),
+            ),
         )
         .route(
             "/eth/v1/validator/contribution_and_proofs",
-            post(submit_contribution_and_proofs),
+            named(
+                "submit_contribution_and_proofs",
+                post(submit_contribution_and_proofs),
+            ),
         )
         .route(
             "/eth/v1/validator/prepare_beacon_proposer",
-            post(submit_proposal_preparations),
+            named(
+                "submit_proposal_preparations",
+                post(submit_proposal_preparations),
+            ),
         )
         .route(
             "/eth/v1/validator/sync_committee_selections",
-            bounded_post(sync_committee_selections, SELECTIONS_BODY_LIMIT),
+            named(
+                "aggregate_sync_committee_selections",
+                bounded_post(sync_committee_selections, SELECTIONS_BODY_LIMIT),
+            ),
         )
-        .route("/eth/v1/node/version", get(node_version))
+        .route(
+            "/eth/v1/node/version",
+            named("node_version", get(node_version)),
+        )
         .fallback(proxy_handler)
         .with_state(state)
 }
@@ -313,6 +394,59 @@ async fn attestation_data(
         .await?;
 
     Ok(Json(response))
+}
+
+/// Attaches the per-endpoint metrics layer to a route.
+///
+/// `endpoint` is the stable metric label — it never contains path parameters,
+/// so cardinality is bounded by the size of the route table. Applied as the
+/// outermost `route_layer` so it also observes rejections produced by the
+/// inner layers (body-limit, content-type).
+fn named<S>(endpoint: &'static str, method_router: MethodRouter<S>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    method_router.route_layer(middleware::from_fn(
+        move |req: Request, next: Next| async move { endpoint_metrics(endpoint, req, next).await },
+    ))
+}
+
+/// Records the Charon-parity metric set for one request.
+///
+/// Ordering mirrors `charon/core/validatorapi/router.go`'s `wrap`:
+/// content-type is normalised first and an unrecognised type is *not* counted
+/// in `request_total` (it is rejected downstream with `415`, which the error
+/// counter picks up); the user agent is recorded before the handler runs; and
+/// latency is observed for every request regardless of outcome.
+async fn endpoint_metrics(endpoint: &'static str, req: Request, next: Next) -> Response {
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    if let Some(content_type) = normalise_content_type(content_type) {
+        inc_content_type(endpoint, content_type);
+    }
+
+    if let Some(user_agent) = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+    {
+        observe_user_agent(user_agent);
+    }
+
+    let _timer = ApiLatencyTimer::start(endpoint);
+    let response = next.run(req).await;
+
+    // Every non-2xx counts, whatever produced it: a handler `ApiError`, an
+    // axum extractor rejection, or an upstream status relayed by the proxy
+    // (which never becomes an `ApiError`, so hooking `IntoResponse` alone
+    // would miss it).
+    if !response.status().is_success() {
+        inc_api_errors(endpoint, response.status().as_u16());
+    }
+
+    response
 }
 
 /// Wraps a `POST` handler with a body-size cap and the JSON content-type
@@ -1045,16 +1179,44 @@ async fn respond_404() -> impl IntoResponse {
 /// long-lived endpoints such as the SSE `/eth/v1/events` stream proxy
 /// incrementally. The proxied request inherits the axum request's own
 /// lifetime, which is cancelled when the connection/server is torn down.
+/// Fallback entry point: runs [`proxy_request`] and counts any non-2xx result
+/// against `endpoint="proxy"`.
+///
+/// The fallback cannot use [`named`] (`route_layer` only applies to matched
+/// routes), so the metric bookkeeping is explicit here. Charon labels proxy
+/// *errors* with the raw request path (`router.go`'s `writeError` call in
+/// `proxy`), which is unbounded; Pluto deliberately uses the constant `proxy`
+/// for the counter and keeps the collapsed path only on the latency histogram.
 async fn proxy_handler(
+    state: State<Arc<AppState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let path = uri.path().to_owned();
+    let _proxy_timer = ProxyLatencyTimer::start(&path);
+    let _api_timer = ApiLatencyTimer::start("proxy");
+
+    let response = match proxy_request(state, method, uri, headers, body).await {
+        Ok(response) => response,
+        Err(err) => err.into_response(),
+    };
+
+    if !response.status().is_success() {
+        inc_api_errors("proxy", response.status().as_u16());
+    }
+
+    response
+}
+
+async fn proxy_request(
     State(state): State<Arc<AppState>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let path = uri.path().to_owned();
-    let _proxy_timer = ProxyLatencyTimer::start(&path);
-    let _api_timer = ApiLatencyTimer::start("proxy");
 
     // Build the target URL: upstream base + request path (+ query). The
     // userinfo is stripped from the URL and applied as a basic-auth header
@@ -3776,5 +3938,110 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A named route records `request_total` under its Charon endpoint label
+    /// with the normalised content type. Regression guard: these counters were
+    /// defined but never incremented, so a sustained error storm on the
+    /// validator API produced no metric signal at all.
+    #[tokio::test]
+    async fn named_routes_record_request_total_and_errors() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        use super::super::metrics::{
+            CONTENT_TYPE_JSON, EndpointContentTypeLabels, EndpointStatusLabels, METRICS,
+        };
+
+        let total = |endpoint: &str| {
+            METRICS.request_total[&EndpointContentTypeLabels {
+                endpoint: endpoint.to_owned(),
+                content_type: CONTENT_TYPE_JSON.to_owned(),
+            }]
+                .get()
+        };
+        let errors = |endpoint: &str, status: u16| {
+            METRICS.request_error_total[&EndpointStatusLabels {
+                endpoint: endpoint.to_owned(),
+                status_code: status.to_string(),
+            }]
+                .get()
+        };
+
+        let before_total = total("node_version");
+        let app = test_router(Arc::new(TestHandler::with_version("pluto/test/v1")), false);
+        let req = Request::builder()
+            .uri("/eth/v1/node/version")
+            .header("user-agent", "Lighthouse/v8.1.3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(total("node_version"), before_total + 1);
+
+        // A route that always 404s is counted against its own endpoint label,
+        // not swallowed.
+        let before_errors = errors("aggregate_attestation", 404);
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .uri("/eth/v1/validator/aggregate_attestation")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(errors("aggregate_attestation", 404), before_errors + 1);
+    }
+
+    /// An unrecognised content type is rejected with 415 and, matching Charon,
+    /// is counted as an error but *not* in `request_total` (there is no bounded
+    /// label to file it under).
+    #[tokio::test]
+    async fn unsupported_content_type_is_counted_as_error_only() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        use super::super::metrics::{
+            CONTENT_TYPE_JSON, EndpointContentTypeLabels, EndpointStatusLabels, METRICS,
+        };
+
+        let endpoint = "submit_voluntary_exit";
+        let before_total = METRICS.request_total[&EndpointContentTypeLabels {
+            endpoint: endpoint.to_owned(),
+            content_type: CONTENT_TYPE_JSON.to_owned(),
+        }]
+            .get();
+        let before_errors = METRICS.request_error_total[&EndpointStatusLabels {
+            endpoint: endpoint.to_owned(),
+            status_code: "415".to_owned(),
+        }]
+            .get();
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/voluntary_exits")
+            .header("content-type", "text/plain")
+            .body(Body::from("nope"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        assert_eq!(
+            METRICS.request_total[&EndpointContentTypeLabels {
+                endpoint: endpoint.to_owned(),
+                content_type: CONTENT_TYPE_JSON.to_owned(),
+            }]
+                .get(),
+            before_total,
+            "unrecognised content type must not be counted in request_total",
+        );
+        assert_eq!(
+            METRICS.request_error_total[&EndpointStatusLabels {
+                endpoint: endpoint.to_owned(),
+                status_code: "415".to_owned(),
+            }]
+                .get(),
+            before_errors + 1,
+        );
     }
 }
