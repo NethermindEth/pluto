@@ -26,23 +26,21 @@ use crate::{
     manet::Manet,
 };
 
-/// Returns the external IP and Hostname fields as multiaddrs using the listen
-/// TCP addresses ports.
-pub fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let addrs = cfg.parse_tcp_addrs()?;
-
-    let mut ports = vec![];
-
-    for addr in &addrs {
-        ports.push(addr.port());
-    }
-
+/// Returns the external IP and Hostname fields as TCP multiaddrs on `ports`.
+///
+/// `ports` must be the ports the node actually listens on: a configured port of
+/// 0 means the kernel picks one, so the configured value would advertise
+/// nothing dialable.
+pub fn external_tcp_multiaddrs(
+    cfg: &P2PConfig,
+    ports: &[u16],
+) -> crate::p2p::Result<Vec<Multiaddr>> {
     let mut resp = vec![];
 
     if let Some(external_ip) = cfg.external_ip.as_ref() {
         let ip = external_ip.parse::<IpAddr>()?;
 
-        for port in &ports {
+        for port in ports {
             let maddr = config::multi_addr_from_ip_tcp_port(SocketAddr::new(ip, *port))?;
 
             resp.push(maddr);
@@ -50,7 +48,7 @@ pub fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multia
     }
 
     if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in &ports {
+        for port in ports {
             resp.push(multiaddr::multiaddr!(Dns(external_host), Tcp(*port)));
         }
     }
@@ -58,23 +56,20 @@ pub fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multia
     Ok(resp)
 }
 
-/// Returns the external IP and Hostname fields as multiaddrs using the listen
-/// UDP addresses ports.
-pub fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let addrs = cfg.parse_udp_addrs()?;
-
-    let mut ports = vec![];
-
-    for addr in &addrs {
-        ports.push(addr.port());
-    }
-
+/// Returns the external IP and Hostname fields as QUIC multiaddrs on `ports`.
+///
+/// `ports` must be the ports the node actually listens on, as in
+/// [`external_tcp_multiaddrs`].
+pub fn external_udp_multiaddrs(
+    cfg: &P2PConfig,
+    ports: &[u16],
+) -> crate::p2p::Result<Vec<Multiaddr>> {
     let mut resp = vec![];
 
     if let Some(external_ip) = cfg.external_ip.as_ref() {
         let ip = external_ip.parse::<IpAddr>()?;
 
-        for port in &ports {
+        for port in ports {
             let maddr = config::multi_addr_from_ip_udp_port(SocketAddr::new(ip, *port))?;
 
             resp.push(maddr);
@@ -82,7 +77,7 @@ pub fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multia
     }
 
     if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in &ports {
+        for port in ports {
             resp.push(multiaddr::multiaddr!(
                 Dns(external_host),
                 Udp(*port),
@@ -92,6 +87,37 @@ pub fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multia
     }
 
     Ok(resp)
+}
+
+/// Returns the external IP and Hostname fields as multiaddrs on the ports of
+/// `listen_addrs`, TCP forms first.
+pub fn external_multiaddrs(
+    cfg: &P2PConfig,
+    listen_addrs: &[Multiaddr],
+) -> crate::p2p::Result<Vec<Multiaddr>> {
+    let tcp_ports: Vec<u16> = listen_addrs.iter().filter_map(tcp_port).collect();
+    let udp_ports: Vec<u16> = listen_addrs.iter().filter_map(udp_port).collect();
+
+    let mut addrs = external_tcp_multiaddrs(cfg, &tcp_ports)?;
+    addrs.extend(external_udp_multiaddrs(cfg, &udp_ports)?);
+
+    Ok(addrs)
+}
+
+/// Returns the TCP port of a multiaddr.
+pub fn tcp_port(addr: &Multiaddr) -> Option<u16> {
+    addr.iter().find_map(|protocol| match protocol {
+        MaProtocol::Tcp(port) => Some(port),
+        _ => None,
+    })
+}
+
+/// Returns the UDP port of a multiaddr.
+pub fn udp_port(addr: &Multiaddr) -> Option<u16> {
+    addr.iter().find_map(|protocol| match protocol {
+        MaProtocol::Udp(port) => Some(port),
+        _ => None,
+    })
 }
 
 pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);
@@ -208,13 +234,11 @@ pub fn is_direct_addr(addr: &Multiaddr) -> bool {
 mod tests {
     use super::*;
 
-    /// Config with the listen addresses and external overrides under test.
+    /// Config with the external overrides under test.
     fn config(external_ip: Option<&str>, external_host: Option<&str>) -> P2PConfig {
         P2PConfig {
             external_ip: external_ip.map(String::from),
             external_host: external_host.map(String::from),
-            tcp_addrs: vec!["127.0.0.1:3610".to_string(), "127.0.0.1:3611".to_string()],
-            udp_addrs: vec!["127.0.0.1:3620".to_string(), "127.0.0.1:3621".to_string()],
             ..Default::default()
         }
     }
@@ -224,37 +248,48 @@ mod tests {
     }
 
     #[test]
-    fn external_multiaddrs_keep_the_listen_ports() {
+    fn external_multiaddrs_keep_the_bound_ports() {
         let cfg = config(Some("1.2.3.4"), Some("relay.example.com"));
+        // What libp2p reports once bound: the kernel-assigned ports of a `:0`
+        // listen config, which is what must be advertised — not the 0 that was
+        // asked for.
+        let listen_addrs = vec![
+            "/ip4/127.0.0.1/tcp/40001".parse().unwrap(),
+            "/ip4/127.0.0.1/tcp/40002".parse().unwrap(),
+            "/ip4/127.0.0.1/udp/40003/quic-v1".parse().unwrap(),
+        ];
 
-        // The external address replaces the listen IP but must advertise the
-        // port the node actually listens on — one address per listen port, IP
-        // forms first, then hostname forms.
+        // The external address replaces the listen IP but keeps its port — one
+        // address per listen port, IP forms first, then hostname forms, TCP
+        // before QUIC.
         assert_eq!(
-            as_strings(&external_tcp_multiaddrs(&cfg).unwrap()),
+            as_strings(&external_multiaddrs(&cfg, &listen_addrs).unwrap()),
             vec![
-                "/ip4/1.2.3.4/tcp/3610",
-                "/ip4/1.2.3.4/tcp/3611",
-                "/dns/relay.example.com/tcp/3610",
-                "/dns/relay.example.com/tcp/3611",
-            ]
-        );
-        assert_eq!(
-            as_strings(&external_udp_multiaddrs(&cfg).unwrap()),
-            vec![
-                "/ip4/1.2.3.4/udp/3620/quic-v1",
-                "/ip4/1.2.3.4/udp/3621/quic-v1",
-                "/dns/relay.example.com/udp/3620/quic-v1",
-                "/dns/relay.example.com/udp/3621/quic-v1",
+                "/ip4/1.2.3.4/tcp/40001",
+                "/ip4/1.2.3.4/tcp/40002",
+                "/dns/relay.example.com/tcp/40001",
+                "/dns/relay.example.com/tcp/40002",
+                "/ip4/1.2.3.4/udp/40003/quic-v1",
+                "/dns/relay.example.com/udp/40003/quic-v1",
             ]
         );
     }
 
     #[test]
     fn no_external_multiaddrs_without_external_config() {
-        let cfg = config(None, None);
+        let listen_addrs = vec!["/ip4/127.0.0.1/tcp/40001".parse().unwrap()];
 
-        assert!(external_tcp_multiaddrs(&cfg).unwrap().is_empty());
-        assert!(external_udp_multiaddrs(&cfg).unwrap().is_empty());
+        // Nothing to advertise without an override, and nothing to advertise on
+        // when the node listens nowhere.
+        assert!(
+            external_multiaddrs(&config(None, None), &listen_addrs)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            external_multiaddrs(&config(Some("1.2.3.4"), None), &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -1,42 +1,251 @@
 //! Relay P2P node implementation.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use k256::SecretKey;
-use libp2p::{PeerId, relay, swarm::SwarmEvent};
+use libp2p::{Multiaddr, PeerId, core::transport::ListenerId, relay, swarm::SwarmEvent};
 use pluto_p2p::{behaviours::pluto::PlutoBehaviourEvent, name::peer_name};
-use tokio::sync::{RwLock, mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, mpsc},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
+use vise_exporter::MetricsServer;
 
 use crate::{
     Result,
     config::{Config, create_relay_config},
     error::RelayP2PError,
     metrics::{PeerWithPeerClusterLabels, RELAY_METRICS},
-    web::{bind_monitoring_server, enr_server, serve_monitoring_server},
+    web::{AppState, bind_monitoring_server, enr_server, serve_monitoring_server},
 };
 use pluto_p2p::{
     BandwidthFactory, PeerConnectionMetrics,
-    manet::Manet,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    utils::{external_tcp_multiaddrs, external_udp_multiaddrs},
+    utils::external_multiaddrs,
 };
 
-/// Runs a relay P2P node.
+/// Runs a relay P2P node: binds every listener, then serves until `ct` is
+/// cancelled or a server fails.
 #[instrument(skip(config, key, ct))]
 pub async fn run_relay_p2p_node(
     config: &Config,
     key: SecretKey,
     ct: CancellationToken,
 ) -> Result<Node<relay::Behaviour>> {
+    bind_relay(config, key, ct).await?.serve().await
+}
+
+/// A relay whose listeners are all bound, but which is not serving yet.
+///
+/// Startup is split in two so that binding — the fallible, all-or-nothing part
+/// — completes before anything is served. A caller therefore learns of an
+/// unusable or already-taken address while there is still nothing to clean up,
+/// and can read back the addresses that were actually bound.
+///
+/// "Before anything is served" includes p2p: [`bind_relay`] binds the HTTP
+/// listeners before it creates the swarm, so no peer is ever accepted by a
+/// relay that then fails to start.
+///
+/// Dropping a `BoundRelay` without calling [`BoundRelay::serve`] releases every
+/// listener it holds, but does not cancel the [`CancellationToken`] passed to
+/// [`bind_relay`] — that token belongs to the caller.
+///
+/// Production code should use [`run_relay_p2p_node`]; the halves are only
+/// pulled apart by tests that need the ports the kernel assigned.
+#[doc(hidden)]
+pub struct BoundRelay {
+    /// The relay swarm, listening on every configured address and having
+    /// reported each of them.
+    node: Node<relay::Behaviour>,
+    /// Addresses libp2p is listening on, shared with the HTTP handlers.
+    listen_addrs: Arc<RwLock<Vec<Multiaddr>>>,
+    /// State the HTTP handlers answer from.
+    state: Arc<AppState>,
+    /// Bound ENR/multiaddr HTTP listener, unless no HTTP address is configured.
+    enr_listener: Option<TcpListener>,
+    /// Bound Prometheus monitoring server, unless monitoring is disabled.
+    monitoring_server: Option<MetricsServer<'static>>,
+    /// Cancels the relay and everything it spawns.
+    ct: CancellationToken,
+}
+
+impl BoundRelay {
+    /// Address the ENR/multiaddr HTTP server is bound to, or `None` when no
+    /// HTTP address is configured.
+    ///
+    /// This is the address that was actually bound, which is the configured one
+    /// only when it named a fixed port.
+    pub fn http_addr(&self) -> Option<SocketAddr> {
+        self.enr_listener
+            .as_ref()
+            .and_then(|listener| listener.local_addr().ok())
+    }
+
+    /// Address the Prometheus monitoring server is bound to, or `None` when
+    /// monitoring is disabled.
+    pub fn monitoring_addr(&self) -> Option<SocketAddr> {
+        self.monitoring_server
+            .as_ref()
+            .map(|server| server.local_addr())
+    }
+
+    /// Addresses libp2p is listening on, as it reported them — so the
+    /// kernel-assigned ports when the configured ones were 0.
+    pub async fn p2p_addrs(&self) -> Vec<Multiaddr> {
+        self.listen_addrs.read().await.clone()
+    }
+
+    /// Serves every bound listener until the relay is cancelled or one of its
+    /// servers fails.
+    pub async fn serve(self) -> Result<Node<relay::Behaviour>> {
+        let http_addr = self.http_addr();
+        let Self {
+            mut node,
+            listen_addrs,
+            state,
+            enr_listener,
+            monitoring_server,
+            ct,
+        } = self;
+
+        let (server_errors, mut server_errors_receiver) = mpsc::channel(3);
+
+        let enr_server_handle = enr_listener.map(|listener| {
+            tokio::spawn(enr_server(
+                server_errors.clone(),
+                listener,
+                state,
+                ct.child_token(),
+            ))
+        });
+
+        // The bound address, not the configured one: they differ whenever the
+        // configured port was 0.
+        if let Some(http_addr) = http_addr {
+            info!("Runtime multiaddrs available via http at {http_addr}");
+        } else {
+            info!("Runtime multiaddrs not available via http, since http-address flag is not set");
+        }
+
+        // Serve the monitoring listener bound by `bind_relay`.
+        let monitoring_handle = monitoring_server
+            .map(|server| tokio::spawn(serve_monitoring_server(server_errors.clone(), server)));
+
+        // A server failure is returned only once the shutdown below has run, so
+        // a failed relay never leaves listeners bound behind it.
+        let server_error = loop {
+            tokio::select! {
+                biased;
+                _ = ct.cancelled() => {
+                    info!("Relay server shutdown signal received, shutting down gracefully");
+                    break None;
+                },
+                error = server_errors_receiver.recv() => {
+                    if let Some(error) = error {
+                        warn!("Server error: {}", error);
+                        break Some(error);
+                    }
+                },
+                event = node.select_next_some() => {
+                    apply_addr_update(&listen_addrs, handle_swarm_event(&event)).await;
+                }
+            }
+        };
+
+        ct.cancel();
+
+        if let Some(handle) = enr_server_handle {
+            join_or_abort("ENR server", handle).await;
+        }
+
+        if let Some(handle) = monitoring_handle {
+            join_or_abort("Monitoring server", handle).await;
+        }
+
+        match server_error {
+            Some(error) => Err(error),
+            None => Ok(node),
+        }
+    }
+}
+
+/// Binds every listener the relay is configured with, without serving any of
+/// them.
+///
+/// Returns once the swarm, the ENR HTTP listener and the monitoring listener
+/// are all bound, so any bind failure — an unusable address, or a port another
+/// process holds — fails here rather than partway through a running relay.
+///
+/// Order matters: the HTTP listeners are bound before the swarm is created, and
+/// the swarm is polled only once they are. Polling is what makes the relay
+/// service p2p connections, so a bind that failed after it would take down
+/// peers the relay had already accepted.
+#[doc(hidden)]
+#[instrument(skip(config, key, ct))]
+pub async fn bind_relay(
+    config: &Config,
+    key: SecretKey,
+    ct: CancellationToken,
+) -> Result<BoundRelay> {
+    let (git_hash, build_time) = pluto_core::version::git_commit();
+    info!(
+        version = %*pluto_core::version::VERSION,
+        git_hash = %git_hash,
+        build_time = %build_time,
+        "Pluto relay starting"
+    );
+
+    // The HTTP listeners are bound before the swarm exists, and the swarm is not
+    // polled until they are. Polling accepts and services p2p connections — it
+    // completes handshakes, counts them, and can hand out circuit reservations —
+    // so binding these afterwards would mean a bind failure tore down peers the
+    // relay had already taken on.
+    //
+    // Binding here rather than inside each server's task is also what lets an
+    // unusable address or a lost race for a port fail the relay while nothing
+    // has been spawned.
+    let monitoring_server = match config.monitoring_addr.clone() {
+        Some(monitoring_addr) => {
+            let bind_addr = monitoring_addr
+                .parse::<SocketAddr>()
+                .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
+
+            Some(bind_monitoring_server(bind_addr, ct.child_token()).await?)
+        }
+        None => {
+            info!("Prometheus monitoring not available, since monitoring-address flag is not set");
+            None
+        }
+    };
+
+    let enr_listener = match config.http_addr.as_deref() {
+        Some(http_addr) => {
+            info!("Binding ENR server on {http_addr}");
+            let listener = TcpListener::bind(http_addr).await.map_err(|source| {
+                RelayP2PError::FailedToBindHttpListener {
+                    addr: http_addr.to_owned(),
+                    source,
+                }
+            })?;
+            Some(listener)
+        }
+        None => {
+            warn!("HTTP address is not set, skipping ENR server");
+            None
+        }
+    };
+
     let relay_config = create_relay_config(config);
     let bandwidth: BandwidthFactory = std::sync::Arc::new(|peer_id| PeerConnectionMetrics {
         sent: RELAY_METRICS.network_sent_bytes_total[&relay_labels(peer_id)].clone(),
         received: RELAY_METRICS.network_receive_bytes_total[&relay_labels(peer_id)].clone(),
     });
+    // Binds the configured TCP listeners; `listen_on` below binds the UDP ones.
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
@@ -53,141 +262,136 @@ pub async fn run_relay_p2p_node(
         },
     )?;
 
-    let (git_hash, build_time) = pluto_core::version::git_commit();
-    info!(
-        version = %*pluto_core::version::VERSION,
-        git_hash = %git_hash,
-        build_time = %build_time,
-        "Pluto relay starting"
-    );
-
     for udp_addr in config.p2p_config.udp_multiaddrs()? {
         debug!("Listening on UDP address {}", udp_addr);
         node.listen_on(udp_addr)?;
     }
 
-    let (server_errors, mut server_errors_receiver) = mpsc::channel(3);
+    // First poll of the swarm, and so the first point at which this relay
+    // services anything. Every other listener is already bound.
+    let listen_addrs = Arc::new(RwLock::new(Vec::new()));
+    wait_for_listen_addrs(&mut node, &listen_addrs).await?;
+    let bound_addrs = listen_addrs.read().await.clone();
 
-    let listeners = Arc::new(RwLock::new(Vec::new()));
+    // Advertise the ports libp2p bound rather than the configured ones, which
+    // carry port 0 whenever the kernel picked the port.
+    node.set_advertised_addrs(
+        &config.p2p_config,
+        config.filter_private_addrs,
+        &bound_addrs,
+    )?;
 
     // Compute external multiaddrs from external_ip / external_host config so
     // they're advertised on `/` and folded into ENR responses on `/enr` even
     // when libp2p only sees private listen addresses (e.g., K8s pods behind
     // NodePort).
-    let mut external_addrs = external_tcp_multiaddrs(&config.p2p_config)?;
-    external_addrs.extend(external_udp_multiaddrs(&config.p2p_config)?);
+    let external_addrs = external_multiaddrs(&config.p2p_config, &bound_addrs)?;
 
-    // Bind the monitoring listener before starting the ENR server: an unusable
-    // address or a lost race for the port then fails the relay while nothing
-    // has been spawned, instead of returning past a running ENR server and
-    // leaving its listener bound. It also means a serving ENR endpoint implies
-    // every listener of this relay is bound.
-    let monitoring_server = match config.monitoring_addr.clone() {
-        Some(monitoring_addr) => {
-            let bind_addr = monitoring_addr
-                .parse::<SocketAddr>()
-                .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
-
-            Some(bind_monitoring_server(bind_addr, ct.child_token()).await?)
-        }
-        None => {
-            info!("Prometheus monitoring not available, since monitoring-address flag is not set");
-            None
-        }
-    };
-
-    let enr_server_handle = tokio::spawn(enr_server(
-        server_errors.clone(),
-        config.clone(),
-        key.clone(),
+    let state = Arc::new(AppState::new(
+        config.p2p_config.clone(),
+        key,
         *node.local_peer_id(),
-        listeners.clone(),
+        listen_addrs.clone(),
         external_addrs,
-        ct.child_token(),
+        config.filter_private_addrs,
     ));
 
-    if let Some(http_addr) = config.http_addr.clone() {
-        info!("Runtime multiaddrs available via http at {http_addr}");
-    } else {
-        info!("Runtime multiaddrs not available via http, since http-address flag is not set");
-    }
+    Ok(BoundRelay {
+        node,
+        listen_addrs,
+        state,
+        enr_listener,
+        monitoring_server,
+        ct,
+    })
+}
 
-    // Serve the monitoring listener bound above.
-    let monitoring_handle = monitoring_server
-        .map(|server| tokio::spawn(serve_monitoring_server(server_errors.clone(), server)));
+/// Waits until every listener registered on `node` has reported the address it
+/// bound, collecting them into `listen_addrs`.
+///
+/// libp2p binds inside `listen_on` but reports the bound address — the
+/// kernel-assigned one when the configured port was 0 — only as a swarm event,
+/// so this is what turns a bound relay into one that knows its own addresses
+/// and can answer `/enr`.
+///
+/// This terminates for any listener that bound, whether its address is public
+/// or private: private addresses are withheld when the ENR is rendered, not
+/// when they are ingested, so a node that only ever listens on RFC 1918
+/// addresses still finishes starting.
+async fn wait_for_listen_addrs(
+    node: &mut Node<relay::Behaviour>,
+    listen_addrs: &Arc<RwLock<Vec<Multiaddr>>>,
+) -> Result<()> {
+    let mut pending: HashSet<ListenerId> = node.listener_ids().iter().copied().collect();
 
-    // Set when one of the HTTP servers fails; returned once the shutdown below
-    // has run, so a failed relay never leaves listeners bound behind it.
-    let mut server_error = None;
+    while !pending.is_empty() {
+        let event = node.select_next_some().await;
 
-    loop {
-        tokio::select! {
-            biased;
-            _ = ct.cancelled() => {
-                info!("Relay server shutdown signal received, shutting down gracefully");
-                break;
-            },
-            error = server_errors_receiver.recv() => {
-                if let Some(error) = error {
-                    warn!("Server error: {}", error);
-                    server_error = Some(error);
-                    break;
-                }
-            },
-            event = node.select_next_some() => {
-                let address_update = handle_swarm_event(&event, config.filter_private_addrs);
+        match &event {
+            SwarmEvent::NewListenAddr { listener_id, .. } => {
+                pending.remove(listener_id);
+            }
+            // A listener that closes will never report an address. If it closed
+            // because of an error the relay cannot start; a clean close just
+            // means one fewer listener to wait for.
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason,
+                ..
+            } => {
+                pending.remove(listener_id);
 
-                // Update listener address list
-                match address_update {
-                    AddrUpdate::Add(address) => {
-                        listeners.write().await.push(address);
-                    }
-                    AddrUpdate::Remove(address) => {
-                        listeners.write().await.retain(|a| *a != address);
-                    }
-                    AddrUpdate::RemoveAll(addresses) => {
-                        listeners
-                            .write()
-                            .await
-                            .retain(|a| !addresses.contains(a));
-                    }
-                    AddrUpdate::None => {}
+                if let Err(err) = reason {
+                    return Err(RelayP2PError::ListenerClosedDuringStartup {
+                        reason: err.to_string(),
+                    });
                 }
             }
+            _ => {}
         }
+
+        apply_addr_update(listen_addrs, handle_swarm_event(&event)).await;
     }
 
-    ct.cancel();
+    Ok(())
+}
 
-    match tokio::time::timeout(Duration::from_secs(2), enr_server_handle).await {
-        Ok(Ok(())) => {
-            info!("ENR server shutdown complete");
+/// Applies an [`AddrUpdate`] to the listen addresses shared with the HTTP
+/// handlers.
+async fn apply_addr_update(listen_addrs: &Arc<RwLock<Vec<Multiaddr>>>, update: AddrUpdate) {
+    match update {
+        AddrUpdate::Add(address) => listen_addrs.write().await.push(address),
+        AddrUpdate::Remove(address) => {
+            listen_addrs.write().await.retain(|addr| *addr != address);
         }
-        Ok(Err(e)) => {
-            warn!("ENR server shutdown error: {}", e);
+        AddrUpdate::RemoveAll(addresses) => {
+            listen_addrs
+                .write()
+                .await
+                .retain(|addr| !addresses.contains(addr));
         }
+        AddrUpdate::None => {}
+    }
+}
+
+/// Grace period for a server task to finish shutting down before it is aborted.
+const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Waits for a server task to shut down, aborting it if it overruns
+/// [`SERVER_SHUTDOWN_TIMEOUT`].
+///
+/// The abort is awaited: dropping a `JoinHandle` only *detaches* the task,
+/// which would leave it holding its listener after the relay has reported that
+/// it stopped.
+async fn join_or_abort(name: &str, mut handle: JoinHandle<()>) {
+    match tokio::time::timeout(SERVER_SHUTDOWN_TIMEOUT, &mut handle).await {
+        Ok(Ok(())) => info!("{name} shutdown complete"),
+        Ok(Err(err)) => warn!("{name} shutdown error: {err}"),
         Err(_) => {
-            warn!("ENR server shutdown timeout");
+            warn!("{name} shutdown timed out, aborting");
+            handle.abort();
+            let _ = handle.await;
         }
-    }
-
-    if let Some(handle) = monitoring_handle {
-        match tokio::time::timeout(Duration::from_secs(2), handle).await {
-            Ok(Ok(())) => {
-                info!("Monitoring server shutdown complete");
-            }
-            Ok(Err(e)) => {
-                warn!("Monitoring server shutdown error: {}", e);
-            }
-            Err(_) => {
-                warn!("Monitoring server shutdown timeout");
-            }
-        }
-    }
-
-    match server_error {
-        Some(error) => Err(error),
-        None => Ok(node),
     }
 }
 
@@ -208,21 +412,13 @@ enum AddrUpdate {
 /// Returns an [`AddrUpdate`] describing any change to the listener address
 /// list that the caller should apply.
 ///
-/// `filter_private_addrs` drops private listen addresses (e.g. loopback,
-/// RFC 1918) from the advertised set — parity with Go charon's
-/// `filterAdvertisedAddrs(excludeInternalPrivate=true)`.
-fn handle_swarm_event(
-    event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>,
-    filter_private_addrs: bool,
-) -> AddrUpdate {
+/// Every listen address is tracked, private ones included; whether they are
+/// advertised is decided when a response is rendered.
+fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>) -> AddrUpdate {
     match event {
         // Track listener address changes
         SwarmEvent::NewListenAddr { address, .. } => {
             debug!(%address, "listening on new address");
-            if filter_private_addrs && address.is_private() {
-                debug!(%address, "skipping private listen address");
-                return AddrUpdate::None;
-            }
             AddrUpdate::Add(address.clone())
         }
         SwarmEvent::ListenerClosed { addresses, .. } => {

@@ -22,11 +22,11 @@ pub enum RelayP2PError {
     /// Failed to bind HTTP listener.
     #[error("Failed to bind HTTP listener {addr}: {source}")]
     FailedToBindHttpListener {
-        /// Address the listener could not be bound to.
+        /// Address the listener could not be bound to. A `String` because
+        /// [`crate::config::Config::http_addr`] is never parsed — the listener
+        /// binds the configured string directly.
         addr: String,
-        /// Underlying bind error. Kept typed so callers can tell an
-        /// [`std::io::ErrorKind::AddrInUse`] race apart from a real
-        /// misconfiguration.
+        /// Underlying bind error.
         #[source]
         source: std::io::Error,
     },
@@ -35,13 +35,19 @@ pub enum RelayP2PError {
     #[error("Failed to serve HTTP: {0}")]
     FailedToServeHTTP(#[source] std::io::Error),
 
+    /// A libp2p listener closed before reporting the address it bound.
+    #[error("libp2p listener closed during startup: {reason}")]
+    ListenerClosedDuringStartup {
+        /// Why the listener closed.
+        reason: String,
+    },
+
     /// Failed to bind the monitoring listener.
     #[error("Failed to bind monitoring listener {addr}: {source}")]
     FailedToBindMonitoringListener {
         /// Address the monitoring listener could not be bound to.
         addr: SocketAddr,
-        /// Underlying bind error, kept typed for the same reason as
-        /// [`RelayP2PError::FailedToBindHttpListener`].
+        /// Underlying bind error.
         #[source]
         source: std::io::Error,
     },
