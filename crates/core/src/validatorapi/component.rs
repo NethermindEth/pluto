@@ -3461,8 +3461,10 @@ mod tests {
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_BEACON_ATTESTER": "0x01000000",
             "DOMAIN_RANDAO": "0x02000000",
+            // No `DOMAIN_APPLICATION_BUILDER`: real beacon nodes omit it and
+            // the client injects it, so exercising the fallback here is the
+            // realistic case.
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "DOMAIN_SYNC_COMMITTEE": "0x07000000",
             "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
             "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",

@@ -220,8 +220,10 @@ mod tests {
     fn spec_fixture() -> serde_json::Value {
         json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
+            // No `DOMAIN_APPLICATION_BUILDER`: real beacon nodes omit it and
+            // the client injects it, so exercising the fallback here is the
+            // realistic case.
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "ALTAIR_FORK_VERSION": "0x01020304",
             "ALTAIR_FORK_EPOCH": "10",
             "BELLATRIX_FORK_VERSION": "0x02030405",
