@@ -48,6 +48,23 @@ pub struct AppConfig {
     /// Whether the builder API (MEV-boost) is enabled.
     pub builder_api: bool,
 
+    /// Path to the builder-registration overrides file. When the file exists,
+    /// its registrations replace the cluster lock's for any validator where
+    /// they are strictly newer, letting an operator change a fee recipient
+    /// without a new lock. Watched for changes at runtime.
+    pub builder_reg_overrides_file: Option<PathBuf>,
+
+    /// Obol API base URL, used for background fee-recipient fetching.
+    pub publish_address: Option<String>,
+
+    /// Timeout for Obol API requests.
+    pub publish_timeout: Duration,
+
+    /// Whether to fetch updated fee recipients from the Obol API. Off by
+    /// default: it makes the node depend on an external service for
+    /// configuration it can otherwise read from the lock.
+    pub fetch_feerecipient_updates: bool,
+
     /// Human-readable node nickname, surfaced via the peerinfo protocol.
     pub nickname: String,
 

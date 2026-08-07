@@ -1217,7 +1217,6 @@ async fn proxy_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-
     // Build the target URL: upstream base + request path (+ query). The
     // userinfo is stripped from the URL and applied as a basic-auth header
     // instead (below), avoiding a duplicate Authorization header from

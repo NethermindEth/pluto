@@ -128,10 +128,10 @@ pub fn observe_user_agent(user_agent: &str) {
 fn sanitise_user_agent(user_agent: &str) -> String {
     let mut end = user_agent.len().min(MAX_USER_AGENT_LEN);
     while end > 0 && !user_agent.is_char_boundary(end) {
-        end -= 1;
+        end = end.saturating_sub(1);
     }
 
-    user_agent[..end].to_owned()
+    user_agent.get(..end).unwrap_or_default().to_owned()
 }
 
 /// Normalises a `Content-Type` header into a bounded label value.
@@ -164,20 +164,22 @@ pub fn proxy_path_label(path: &str) -> String {
 
     let segments: Vec<&str> = trimmed.split('/').collect();
     let mut labels = Vec::with_capacity(segments.len());
-    for (i, segment) in segments.iter().enumerate() {
+    let mut previous: Option<&str> = None;
+    for segment in &segments {
         let label = if segment.starts_with("0x") {
             // Block/state roots, validator pubkeys.
             "{hex}"
         } else if !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit()) {
             // Slots, epochs, validator indices.
             "{n}"
-        } else if i > 0 && segments[i - 1] == "peers" {
+        } else if previous == Some("peers") {
             // libp2p peer IDs are base58/base32, neither hex nor numeric.
             "{peer_id}"
         } else {
             segment
         };
         labels.push(label);
+        previous = Some(segment);
     }
 
     labels.join("_")

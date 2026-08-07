@@ -10,7 +10,11 @@ use tokio_util::{future::FutureExt, sync::CancellationToken};
 use crate::{scheduler::metrics::SCHEDULER_METRICS, types};
 use pluto_eth2api::valcache;
 
-mod metrics;
+/// Scheduler Prometheus metrics. Public so out-of-crate slot subscribers (e.g.
+/// the builder-registration submitter, which lives in `pluto-app` because it
+/// needs the Obol API client) can record against the same `core_scheduler_*`
+/// series Charon uses.
+pub mod metrics;
 
 // Trim cached duties after 3 epochs. Note inclusion delay calculation requires
 // now-32 slot duties.

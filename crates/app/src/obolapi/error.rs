@@ -12,6 +12,12 @@ pub enum Error {
     #[error("no exit for the given validator public key")]
     NoExit,
 
+    /// The API does not know this cluster (HTTP 404 on a lock-hash-scoped
+    /// endpoint). The lock file has to be published before the API can serve
+    /// anything for it.
+    #[error("cluster is unknown to the API, publish the lock file first")]
+    UnknownCluster,
+
     /// HTTP request failed with status code and response body.
     #[error("HTTP {method} request failed: status {status}, body: {body}")]
     HttpError {

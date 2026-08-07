@@ -1,28 +1,24 @@
 //! Broadcasts aggregated signed duty data to the beacon node.
 
 mod metrics;
-mod recast;
 
 use std::{any::Any, error::Error as StdError};
 
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 use pluto_eth2api::{
-    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
-    GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
+    AttesterDuty, BeaconNodeClient, GetStateValidatorsResponseResponseDatum, ValidatorStatus,
+    data_version_is_before_electra,
     spec::{altair, phase0},
     versioned,
 };
 use tree_hash::TreeHash;
-
-pub use recast::Recaster;
 
 use crate::{
     bcast::metrics::instrument_duty,
     signeddata::{
         SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
         VersionedAttestation, VersionedSignedAggregateAndProof, VersionedSignedProposal,
-        VersionedSignedValidatorRegistration,
     },
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
@@ -268,18 +264,16 @@ impl Broadcaster {
     /// success record the broadcast count and submission delay. Internal-only
     /// duties (randao, prepare-aggregator, prepare-sync-contribution) are
     /// no-ops; deprecated and unknown duty types return an error.
-    pub async fn broadcast(&self, mut duty: Duty, set: SignedDataSet) -> Result<()> {
+    pub async fn broadcast(&self, duty: Duty, set: SignedDataSet) -> Result<()> {
         match duty.duty_type {
             DutyType::Attester => self.broadcast_attester(&duty, &set).await?,
             DutyType::Proposer => self.broadcast_proposer(&duty, &set).await?,
             DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
-            DutyType::BuilderRegistration => {
-                // Use first slot in current epoch for accurate delay calculations while
-                // submitting builder registrations. This is because builder
-                // registrations are submitted in first slot of every epoch.
-                duty.slot = first_slot_in_current_epoch(self.client.api()).await?;
-                self.broadcast_builder_registration(&duty, &set).await?;
-            }
+            // Builder registrations are submitted by the per-epoch scheduler
+            // subscriber straight to the beacon node, not through the duty
+            // workflow (see `pluto_app::builderregistration`). The duty type
+            // is retained because it is a wire-format enum value.
+            DutyType::BuilderRegistration => {}
             DutyType::Exit => self.broadcast_exits(&duty, &set).await?,
             // Internal DVT duties; nothing is submitted to the beacon node.
             DutyType::Randao | DutyType::PrepareAggregator | DutyType::PrepareSyncContribution => {}
@@ -392,24 +386,6 @@ impl Broadcaster {
         }
 
         tracing::info!(%duty, %pubkey, blinded, "Successfully submitted block proposal to beacon node");
-        Ok(())
-    }
-
-    /// Submits builder validator registrations.
-    ///
-    /// Convert the set to registrations; submit them in one request.
-    async fn broadcast_builder_registration(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
-        let registrations = set_to_registrations(set)?;
-        self.client
-            .api()
-            .submit_validator_registrations(registrations)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit validator registrations",
-                source: Box::new(source),
-            })?;
-
-        tracing::info!(%duty, "Successfully submitted validator registrations to beacon node");
         Ok(())
     }
 
@@ -599,16 +575,6 @@ fn set_to_attestations(set: &SignedDataSet) -> Result<Vec<versioned::VersionedAt
     )
 }
 
-fn set_to_registrations(
-    set: &SignedDataSet,
-) -> Result<Vec<versioned::VersionedSignedValidatorRegistration>> {
-    set_values_to(
-        set,
-        || Error::InvalidRegistration,
-        |registration: VersionedSignedValidatorRegistration| registration.0,
-    )
-}
-
 fn set_to_exits(set: &SignedDataSet) -> Result<Vec<(PubKey, phase0::SignedVoluntaryExit)>> {
     set.iter()
         .map(|(pubkey, data)| {
@@ -716,64 +682,6 @@ fn attestation_matches_duty(
     }
 }
 
-async fn first_slot_in_current_epoch(
-    client: &EthBeaconNodeApiClient,
-) -> Result<crate::types::SlotNumber> {
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .map_err(|source| Error::Client {
-            context: "fetch genesis time",
-            source: Box::new(source),
-        })?;
-    let (slot_duration, slots_per_epoch) =
-        client
-            .fetch_slots_config()
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch slots config",
-                source: Box::new(source),
-            })?;
-    let slot_duration =
-        Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
-            context: "slot duration",
-        })?;
-
-    let chain_age = Utc::now().signed_duration_since(genesis_time);
-    let chain_age_ms = chain_age.num_milliseconds();
-    let slot_duration_ms = slot_duration.num_milliseconds();
-    if slot_duration_ms <= 0 {
-        return Err(Error::InvalidTime {
-            context: "slot duration",
-            value: slot_duration_ms,
-        });
-    }
-    let current_slot_i64 =
-        chain_age_ms
-            .checked_div(slot_duration_ms)
-            .ok_or(Error::ArithmeticOverflow {
-                context: "current slot",
-            })?;
-    let current_slot = u64::try_from(current_slot_i64).map_err(|_| Error::InvalidTime {
-        context: "current slot",
-        value: current_slot_i64,
-    })?;
-    let current_epoch =
-        current_slot
-            .checked_div(slots_per_epoch)
-            .ok_or(Error::ArithmeticOverflow {
-                context: "current epoch",
-            })?;
-    let first_slot =
-        current_epoch
-            .checked_mul(slots_per_epoch)
-            .ok_or(Error::ArithmeticOverflow {
-                context: "first slot in epoch",
-            })?;
-
-    Ok(crate::types::SlotNumber::new(first_slot))
-}
-
 fn div_duration(duration: Duration, divisor: i32, context: &'static str) -> Result<Duration> {
     let divisor = i64::from(divisor);
     let nanos = duration
@@ -794,10 +702,7 @@ fn mul_duration(duration: Duration, multiplier: i32, context: &'static str) -> R
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
+    use std::collections::HashMap;
 
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
     use pluto_eth2api::{
@@ -821,9 +726,8 @@ mod tests {
         signeddata::{
             SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
             VersionedAttestation, VersionedSignedAggregateAndProof, VersionedSignedProposal,
-            VersionedSignedValidatorRegistration,
         },
-        types::{Duty, Slot, SlotNumber},
+        types::{Duty, SlotNumber},
     };
 
     fn validator_datum(
@@ -1318,14 +1222,20 @@ mod tests {
             .await
             .expect("blinded");
 
+        // Builder registrations are accepted but intentionally not forwarded:
+        // they are submitted per-epoch straight to the beacon node, outside
+        // the duty workflow. Asserted by the absence of
+        // `/eth/v1/validator/register_validator` below.
         let registration = registration();
         broadcaster
             .broadcast(
                 Duty::new_builder_registration_duty(SlotNumber::new(0)),
                 signed_set(
                     pubkey(2),
-                    VersionedSignedValidatorRegistration::new(registration.clone())
-                        .expect("registration"),
+                    crate::signeddata::VersionedSignedValidatorRegistration::new(
+                        registration.clone(),
+                    )
+                    .expect("registration"),
                 ),
             )
             .await
@@ -1389,7 +1299,6 @@ mod tests {
                 "/eth/v1/beacon/pool/sync_committees",
                 "/eth/v1/beacon/pool/voluntary_exits",
                 "/eth/v1/validator/contribution_and_proofs",
-                "/eth/v1/validator/register_validator",
                 "/eth/v2/beacon/blinded_blocks",
                 "/eth/v2/beacon/blocks",
                 "/eth/v2/validator/aggregate_and_proofs",
@@ -1445,10 +1354,6 @@ mod tests {
             "invalid attestation"
         );
         assert_eq!(
-            set_to_registrations(&bad).unwrap_err().to_string(),
-            "invalid registration"
-        );
-        assert_eq!(
             set_to_agg_and_proof(&bad).unwrap_err().to_string(),
             "invalid aggregate and proof"
         );
@@ -1487,124 +1392,5 @@ mod tests {
             .expect("indices");
         indices.sort_unstable();
         assert_eq!(indices, vec![1, 2]);
-    }
-
-    /// Builds a recaster whose active-validator set resolves to `pubkey(1)`.
-    async fn active_recaster(beacon: &BeaconMock) -> Recaster {
-        let client = cached_client(
-            beacon,
-            vec![validator_datum(
-                1,
-                &[1u8; 48],
-                ValidatorStatus::ActiveOngoing,
-                0,
-            )],
-        )
-        .await;
-        Recaster::new(client)
-    }
-
-    #[tokio::test]
-    async fn recaster_recasts_only_first_epoch_active_latest_registration() {
-        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
-        let recaster = active_recaster(&beacon).await;
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let seen_clone = Arc::clone(&seen);
-        recaster
-            .subscribe(move |duty, set| {
-                let seen = Arc::clone(&seen_clone);
-                async move {
-                    seen.lock().expect("seen").push((duty, set));
-                    Ok(())
-                }
-            })
-            .expect("subscribe");
-
-        recaster
-            .store(
-                Duty::new_builder_registration_duty(SlotNumber::new(4)),
-                &signed_set(
-                    pubkey(1),
-                    VersionedSignedValidatorRegistration::new(registration())
-                        .expect("registration"),
-                ),
-            )
-            .expect("store");
-        recaster
-            .store(
-                Duty::new_builder_registration_duty(SlotNumber::new(2)),
-                &signed_set(
-                    pubkey(1),
-                    VersionedSignedValidatorRegistration::new(registration())
-                        .expect("registration"),
-                ),
-            )
-            .expect("older ignored");
-        recaster
-            .store(
-                Duty::new_builder_registration_duty(SlotNumber::new(5)),
-                &signed_set(
-                    pubkey(2),
-                    VersionedSignedValidatorRegistration::new(registration())
-                        .expect("registration"),
-                ),
-            )
-            .expect("inactive stored");
-
-        recaster
-            .slot_ticked(Slot {
-                slot: SlotNumber::new(5),
-                time: Utc::now(),
-                slot_duration: Duration::seconds(12),
-                slots_per_epoch: 4,
-            })
-            .await
-            .expect("not first");
-        assert!(seen.lock().expect("seen").is_empty());
-
-        recaster
-            .slot_ticked(Slot {
-                slot: SlotNumber::new(8),
-                time: Utc::now(),
-                slot_duration: Duration::seconds(12),
-                slots_per_epoch: 4,
-            })
-            .await
-            .expect("first");
-
-        let seen = seen.lock().expect("seen");
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].0.slot, SlotNumber::new(4));
-        assert!(seen[0].1.contains_key(&pubkey(1)));
-        assert!(!seen[0].1.contains_key(&pubkey(2)));
-    }
-
-    #[tokio::test]
-    async fn recaster_subscriber_error_is_not_returned() {
-        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
-        let recaster = active_recaster(&beacon).await;
-        recaster
-            .subscribe(|_, _| async { Err(Error::UnsupportedDutyType) })
-            .expect("subscribe");
-        recaster
-            .store(
-                Duty::new_builder_registration_duty(SlotNumber::new(4)),
-                &signed_set(
-                    pubkey(1),
-                    VersionedSignedValidatorRegistration::new(registration())
-                        .expect("registration"),
-                ),
-            )
-            .expect("store");
-
-        recaster
-            .slot_ticked(Slot {
-                slot: SlotNumber::new(8),
-                time: Utc::now(),
-                slot_duration: Duration::seconds(12),
-                slots_per_epoch: 4,
-            })
-            .await
-            .expect("subscriber error logged only");
     }
 }

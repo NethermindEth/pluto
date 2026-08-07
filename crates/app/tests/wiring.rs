@@ -277,6 +277,10 @@ fn wire_inputs_with(
         }],
         feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
         infosync: None,
+        // No builder-registration service: the wiring test asserts the duty
+        // graph, and its absence exercises the static lock-derived fee
+        // recipients.
+        builder_registrations: None,
     }
 }
 

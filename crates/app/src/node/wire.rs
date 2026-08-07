@@ -49,7 +49,12 @@ use pluto_eth2api::{
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
 
-use crate::node::AppError;
+use crate::{
+    builderregistration::{
+        BuilderRegistrationService, RegistrationSubmitter, submit_proposal_preparations,
+    },
+    node::AppError,
+};
 
 /// A `Send + Sync` boxed future. The parsigdb subscriber seams require their
 /// futures to be `Sync` (see `internal_subscriber`/`threshold_subscriber`), so
@@ -305,6 +310,12 @@ pub struct WireInputs {
     /// Infosync component, triggered on each epoch's last slot to run the
     /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
+    /// Builder-registration source. Drives the per-epoch registration
+    /// submission and the `prepare_beacon_proposer` push, and supplies the
+    /// effective fee recipient (which an overrides file or the Obol API can
+    /// change at runtime). `None` in tests, which fall back to the static
+    /// lock-derived fee recipients.
+    pub builder_registrations: Option<BuilderRegistrationService>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -439,6 +450,7 @@ pub async fn wire_core_workflow(
         peers,
         feature_set,
         infosync,
+        builder_registrations,
     } = inputs;
 
     // ---- Derived validator maps ----
@@ -465,9 +477,18 @@ pub async fn wire_core_workflow(
         submission_client.set_validator_cache(validator_cache.clone()),
     );
 
-    let fee_recipient_fn: FeeRecipientFunc = {
-        let map = fee_recipient_by_pubkey.clone();
-        Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
+    // The builder-registration service is the authority on fee recipients when
+    // present: an overrides file or the Obol API can change them at runtime,
+    // and the fetcher's proposal check must compare against the value actually
+    // in force. Without it, fall back to the static lock-derived map.
+    let fee_recipient_fn: FeeRecipientFunc = match builder_registrations.clone() {
+        Some(service) => {
+            Arc::new(move |pubkey: &PubKey| service.fee_recipient(pubkey).unwrap_or_default())
+        }
+        None => {
+            let map = fee_recipient_by_pubkey.clone();
+            Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
+        }
     };
 
     // ---- Deadliners (one per component) ----
@@ -983,6 +1004,81 @@ pub async fn wire_core_workflow(
             "validator_cache",
         );
     }
+    // Slot subscribers: builder registrations and their fee recipients, both
+    // submitted straight to the beacon node once per epoch (Charon's
+    // `submitValidatorRegistrationsDelayed` and `setFeeRecipient`).
+    //
+    // Registrations do NOT go through the duty workflow: the lock already
+    // carries a group-signed registration per validator, so there is nothing
+    // to reach consensus on. Routing them through it would also deadlock a
+    // mixed cluster, where Charon peers never contribute a partial signature.
+    if let Some(service) = builder_registrations.clone() {
+        if builder_enabled {
+            let submitter = RegistrationSubmitter::new(service.clone(), eth2_cl.clone());
+            // Submit once at startup rather than waiting up to a full epoch;
+            // the epoch guard makes the first scheduled tick a no-op.
+            {
+                let submitter = submitter.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = submitter.submit(0).await {
+                        tracing::warn!(%err, "Initial validator registration submission failed");
+                    }
+                });
+            }
+            sched_builder.subscribe_slot(
+                move |slot: &Slot| {
+                    let submitter = submitter.clone();
+                    let slot = slot.clone();
+                    async move {
+                        if !slot.first_in_epoch() {
+                            return Ok::<(), AppError>(());
+                        }
+                        // Charon delays to 75% into the slot so the burst does
+                        // not collide with the epoch boundary's duty fetches.
+                        let delay = slot.slot_duration.num_milliseconds().saturating_mul(3) / 4;
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            u64::try_from(delay).unwrap_or(0),
+                        ))
+                        .await;
+                        let _ = submitter.submit(slot.epoch()).await;
+                        Ok(())
+                    }
+                },
+                "builder_registration",
+            );
+        }
+
+        let indices_cache = validator_cache.clone();
+        let eth2_cl_preps = eth2_cl.clone();
+        sched_builder.subscribe_slot(
+            move |slot: &Slot| {
+                let service = service.clone();
+                let cache = indices_cache.clone();
+                let eth2_cl = eth2_cl_preps.clone();
+                let slot = slot.clone();
+                async move {
+                    if !slot.first_in_epoch() {
+                        return Ok::<(), ValidatorCacheError>(());
+                    }
+                    let (active, ..) = cache.get_by_slot(slot.slot.inner()).await?;
+                    let indices: HashMap<PubKey, u64> = active
+                        .iter()
+                        .map(|(index, pubkey)| (PubKey::new(*pubkey), *index))
+                        .collect();
+
+                    if let Err(err) =
+                        submit_proposal_preparations(&service, &eth2_cl, &indices).await
+                    {
+                        // Preparations expire after three epochs, so a single
+                        // failed push is recoverable at the next boundary.
+                        tracing::warn!(%err, "Failed to submit proposal preparations");
+                    }
+                    Ok(())
+                }
+            },
+            "proposal_preparations",
+        );
+    }
 
     let (scheduler, scheduler_task) = sched_builder
         .build(beacon_client, ct.clone())
@@ -1001,7 +1097,6 @@ pub async fn wire_core_workflow(
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
-        builder_enabled,
         Arc::new(validator_cache),
     );
     // Back-edge: vapi.register_await_agg_sig_db(aggsigdb.wait_for).

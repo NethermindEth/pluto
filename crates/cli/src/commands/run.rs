@@ -58,6 +58,14 @@ const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
 /// Default `--simnet-validator-keys-dir` (matches Charon).
 const DEFAULT_SIMNET_KEYS_DIR: &str = ".charon/validator_keys";
 
+/// Default builder-registration overrides file. Absent by default, in which
+/// case the cluster lock's registrations are used unchanged.
+const DEFAULT_BUILDER_REG_OVERRIDES_FILE: &str = ".charon/builder_registrations_overrides.json";
+
+/// Default Obol API base URL, only contacted when
+/// `--fetch-feerecipient-updates` is set.
+const DEFAULT_PUBLISH_ADDRESS: &str = "https://api.obol.tech/v1";
+
 /// Arguments for the `run` command.
 ///
 /// Field order groups the flags (priv-key, run, debug/monitoring, no-verify,
@@ -261,6 +269,38 @@ pub struct RunGeneralArgs {
         help = "Enables the builder api. Will only produce builder blocks. Builder API must also be enabled on the validator client. Beacon node must be connected to a builder-relay to access the builder network."
     )]
     pub builder_api: bool,
+
+    #[arg(
+        long = "overrides-file",
+        env = "CHARON_OVERRIDES_FILE",
+        default_value = DEFAULT_BUILDER_REG_OVERRIDES_FILE,
+        help = "Path to the builder registrations overrides file."
+    )]
+    pub overrides_file: String,
+
+    #[arg(
+        long = "publish-address",
+        env = "CHARON_PUBLISH_ADDRESS",
+        default_value = DEFAULT_PUBLISH_ADDRESS,
+        help = "The URL of the remote API for background fee recipient fetching."
+    )]
+    pub publish_address: String,
+
+    #[arg(
+        long = "publish-timeout",
+        env = "CHARON_PUBLISH_TIMEOUT",
+        default_value = "5m",
+        help = "Timeout for accessing the remote API."
+    )]
+    pub publish_timeout: Duration,
+
+    #[arg(
+        long = "fetch-feerecipient-updates",
+        env = "CHARON_FETCH_FEERECIPIENT_UPDATES",
+        default_value_t = false,
+        help = "Fetches updated fee recipients from a remote API."
+    )]
+    pub fetch_feerecipient_updates: bool,
 
     #[arg(
         long = "synthetic-block-proposals",
@@ -678,6 +718,14 @@ pub struct RunConfig {
     pub synthetic_block_proposals: bool,
     /// Enables the builder API.
     pub builder_api: bool,
+    /// Path to the builder-registration overrides file.
+    pub builder_reg_overrides_file: String,
+    /// Obol API base URL for background fee-recipient fetching.
+    pub publish_address: String,
+    /// Timeout for Obol API requests.
+    pub publish_timeout: StdDuration,
+    /// Whether to fetch updated fee recipients from the Obol API.
+    pub fetch_feerecipient_updates: bool,
     /// Configures the simnet beacon mock to return fuzzed responses.
     pub simnet_beacon_mock_fuzz: bool,
     /// Custom test network configuration.
@@ -745,6 +793,14 @@ impl TryFrom<RunArgs> for RunConfig {
         }
 
         // --- run-level validation ---
+        if general.fetch_feerecipient_updates && general.publish_address.is_empty() {
+            return Err(CliError::Other(
+                "flag 'publish-address' must be specified when \
+                 flag 'fetch-feerecipient-updates' is enabled"
+                    .to_string(),
+            ));
+        }
+
         if general.beacon_node_endpoints.is_empty() && !general.simnet_beacon_mock {
             return Err(CliError::Other(
                 "either flag 'beacon-node-endpoints' or flag 'simnet-beacon-mock=true' must be specified"
@@ -842,6 +898,10 @@ impl TryFrom<RunArgs> for RunConfig {
             simnet_slot_duration: general.simnet_slot_duration.into(),
             synthetic_block_proposals: general.synthetic_block_proposals,
             builder_api: general.builder_api,
+            builder_reg_overrides_file: general.overrides_file,
+            publish_address: general.publish_address,
+            publish_timeout: general.publish_timeout.into(),
+            fetch_feerecipient_updates: general.fetch_feerecipient_updates,
             simnet_beacon_mock_fuzz: general.simnet_beacon_mock_fuzz,
             testnet: TestnetConfig {
                 name: general.testnet_name,
@@ -1040,6 +1100,10 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         simnet_slot_duration,
         synthetic_block_proposals: _,
         builder_api,
+        builder_reg_overrides_file,
+        publish_address,
+        publish_timeout,
+        fetch_feerecipient_updates,
         simnet_beacon_mock_fuzz,
         // Registered directly in `run` before the lock loads; not part of `AppConfig`.
         testnet: _,
@@ -1067,6 +1131,13 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         validator_api_addr,
         monitoring_addr,
         builder_api,
+        // Absent by default: the path always has a value, but a file that does
+        // not exist simply means "no overrides".
+        builder_reg_overrides_file: (!builder_reg_overrides_file.is_empty())
+            .then(|| PathBuf::from(builder_reg_overrides_file)),
+        publish_address: (!publish_address.is_empty()).then_some(publish_address),
+        publish_timeout,
+        fetch_feerecipient_updates,
         nickname,
         no_verify,
         // An empty endpoint means "no eth1 verification" on both sides: Charon
@@ -1196,7 +1267,7 @@ mod tests {
     use std::{collections::BTreeSet, time::Duration as StdDuration};
 
     /// Every flag the safe `run` command must expose.
-    const EXPECTED_RUN_FLAGS: [&str; 54] = [
+    const EXPECTED_RUN_FLAGS: [&str; 58] = [
         // priv key
         "private-key-file",
         "private-key-file-lock",
@@ -1217,6 +1288,10 @@ mod tests {
         "simnet-validator-mock",
         "simnet-validator-keys-dir",
         "builder-api",
+        "overrides-file",
+        "publish-address",
+        "publish-timeout",
+        "fetch-feerecipient-updates",
         "synthetic-block-proposals",
         "simnet-slot-duration",
         "simnet-beacon-mock-fuzz",
