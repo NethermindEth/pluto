@@ -770,6 +770,9 @@ pub async fn wire_core_workflow(
         }));
     }
     // ---- (11) Broadcaster ----
+    // Cloned before the move: the builder-registration submitter below needs
+    // the same submission client (see its use for the rationale).
+    let submission_api = submission_client.api().clone();
     let broadcaster = Arc::new(
         Broadcaster::new(submission_client)
             .await
@@ -1012,19 +1015,20 @@ pub async fn wire_core_workflow(
     // carries a group-signed registration per validator, so there is nothing
     // to reach consensus on. Routing them through it would also deadlock a
     // mixed cluster, where Charon peers never contribute a partial signature.
+    // Submitted once at startup (below, after the scheduler has waited for
+    // chain start and beacon-node sync) so a restart does not go a full epoch
+    // unregistered.
+    let mut startup_submitter = None;
     if let Some(service) = builder_registrations.clone() {
         if builder_enabled {
-            let submitter = RegistrationSubmitter::new(service.clone(), eth2_cl.clone());
-            // Submit once at startup rather than waiting up to a full epoch;
-            // the epoch guard makes the first scheduled tick a no-op.
-            {
-                let submitter = submitter.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = submitter.submit(0).await {
-                        tracing::warn!(%err, "Initial validator registration submission failed");
-                    }
-                });
-            }
+            // Use the *submission* client, not the scheduling one. Beacon
+            // nodes proxy `register_validator` to the builder relay and
+            // routinely take seconds to answer, so it belongs under
+            // `--beacon-node-submit-timeout` like every other submission;
+            // the shorter general timeout would abort before the beacon node
+            // replies and hide the real error.
+            let submitter = RegistrationSubmitter::new(service.clone(), submission_api.clone());
+            startup_submitter = Some(submitter.clone());
             sched_builder.subscribe_slot(
                 move |slot: &Slot| {
                     let submitter = submitter.clone();
@@ -1049,7 +1053,7 @@ pub async fn wire_core_workflow(
         }
 
         let indices_cache = validator_cache.clone();
-        let eth2_cl_preps = eth2_cl.clone();
+        let eth2_cl_preps = submission_api.clone();
         sched_builder.subscribe_slot(
             move |slot: &Slot| {
                 let service = service.clone();
@@ -1084,6 +1088,20 @@ pub async fn wire_core_workflow(
         .build(beacon_client, ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
+
+    // `build` has waited for chain start and beacon-node sync, so the beacon
+    // node is reachable — Charon submits its startup registrations at the same
+    // point. Epoch 0 is the sentinel Charon uses: the next `first_in_epoch`
+    // tick submits again for the real epoch.
+    if let Some(submitter) = startup_submitter {
+        tokio::spawn(async move {
+            if let Err(err) = submitter.submit(0).await {
+                // Not fatal: the next epoch boundary retries, because the
+                // epoch is only recorded on success.
+                tracing::warn!(%err, "Initial validator registration submission failed");
+            }
+        });
+    }
 
     // ---- (13) ValidatorAPI ----
     //
