@@ -3,6 +3,7 @@ members = [
     "crates/app",
     "crates/parsigex",
     "crates/build-proto",
+    "crates/proto",
     "crates/cli",
     "crates/cluster",
     "crates/consensus",
@@ -139,6 +140,7 @@ quick-xml = { version = "0.41", features = ["serialize"] }
 pluto-app = { path = "crates/app" }
 pluto-parsigex = { path = "crates/parsigex" }
 pluto-build-proto = { path = "crates/build-proto" }
+pluto-proto = { path = "crates/proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
 pluto-consensus = { path = "crates/consensus" }

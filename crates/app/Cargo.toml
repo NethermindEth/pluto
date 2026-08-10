@@ -27,6 +27,7 @@ pluto-infosync.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 vise.workspace = true
+pluto-proto.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 regex.workspace = true
