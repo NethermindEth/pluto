@@ -857,9 +857,12 @@ pub struct ValidatorAddresses {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x0or1 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X1>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -868,6 +871,7 @@ pub struct DefinitionV1x0or1 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -877,9 +881,11 @@ pub struct DefinitionV1x0or1 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -970,9 +976,12 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x2or3 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -981,6 +990,7 @@ pub struct DefinitionV1x2or3 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -990,9 +1000,11 @@ pub struct DefinitionV1x2or3 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1083,12 +1095,15 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x4 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Operators define the charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1097,6 +1112,7 @@ pub struct DefinitionV1x4 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1202,12 +1218,15 @@ impl TryFrom<DefinitionV1x4> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x5to7 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1216,6 +1235,7 @@ pub struct DefinitionV1x5to7 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1224,7 +1244,8 @@ pub struct DefinitionV1x5to7 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// Addresses of each validator.
-    #[serde(rename = "validators")]
+    #[serde(rename = "validators", default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
