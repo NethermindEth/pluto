@@ -1,8 +1,7 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
     error::CliError,
 };
-use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -39,20 +38,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
 
     fn try_into(self) -> std::result::Result<pluto_relay_server::config::Config, Self::Error> {
         let p2p_config = {
-            let mut relays = Vec::new();
-
-            for relay in &self.p2p.relays {
-                let multiaddr = parse_relay_addr(relay)?;
-
-                if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
-                    tracing::warn!(
-                      address = %relay,
-                      "Insecure relay address provided, not HTTPS"
-                    );
-                }
-
-                relays.push(multiaddr);
-            }
+            let relays = parse_relay_addrs(&self.p2p.relays)?;
 
             pluto_p2p::config::P2PConfig {
                 relays,

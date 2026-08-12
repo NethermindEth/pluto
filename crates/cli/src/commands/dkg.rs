@@ -3,13 +3,12 @@
 use std::{future::Future, path::PathBuf};
 
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
     duration::Duration,
     error::{CliError, Result},
 };
-use libp2p::multiaddr::Protocol;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Arguments for the `dkg` command.
 #[derive(clap::Args, Clone, Debug)]
@@ -127,17 +126,7 @@ impl TryFrom<DkgArgs> for pluto_dkg::dkg::Config {
         let tracing_config =
             build_console_tracing_config(args.log.level.clone(), &args.log.color, None);
         let p2p_config = {
-            let mut relays = Vec::new();
-
-            for relay in &args.p2p.relays {
-                let multiaddr = parse_relay_addr(relay)?;
-
-                if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
-                    warn!(address = %relay, "Insecure relay address provided, not HTTPS");
-                }
-
-                relays.push(multiaddr);
-            }
+            let relays = parse_relay_addrs(&args.p2p.relays)?;
 
             pluto_p2p::config::P2PConfig {
                 relays,
@@ -296,8 +285,8 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
-    use libp2p::{Multiaddr, multiaddr};
-    use std::{str::FromStr, sync::Arc, time::Duration as StdDuration};
+    use pluto_p2p::config::RelayAddr;
+    use std::{sync::Arc, time::Duration as StdDuration};
 
     #[test]
     fn dkg_is_registered_as_top_level_subcommand() {
@@ -432,8 +421,8 @@ mod tests {
         assert_eq!(
             config.p2p.relays,
             vec![
-                multiaddr::from_url("https://relay.one").expect("relay url"),
-                Multiaddr::from_str("/ip4/127.0.0.1/tcp/9000").expect("relay multiaddr")
+                RelayAddr::Url("https://relay.one".parse().expect("relay url")),
+                RelayAddr::Multiaddr("/ip4/127.0.0.1/tcp/9000".parse().expect("relay multiaddr")),
             ]
         );
         assert_eq!(config.p2p.external_ip.as_deref(), Some("1.2.3.4"));

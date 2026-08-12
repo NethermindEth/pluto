@@ -32,14 +32,13 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
 use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
     duration::Duration,
     error::{CliError, Result},
 };
@@ -726,23 +725,7 @@ impl TryFrom<RunArgs> for RunConfig {
         // --- p2p validation ---
         validate_hostname(p2p.external_host.as_deref())?;
 
-        let mut relays = Vec::with_capacity(p2p.relays.len());
-        for relay in &p2p.relays {
-            // Charon treats `--p2p-relays=""` as "no relays"; clap's comma parser
-            // yields a single empty string, so skip empties to match (also handles
-            // stray empties like `a,,b`).
-            if relay.is_empty() {
-                continue;
-            }
-
-            let multiaddr = parse_relay_addr(relay)?;
-
-            if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
-                warn!(address = %relay, "Insecure relay address provided, not HTTPS");
-            }
-
-            relays.push(multiaddr);
-        }
+        let relays = parse_relay_addrs(&p2p.relays)?;
 
         // --- run-level validation ---
         if general.beacon_node_endpoints.is_empty() && !general.simnet_beacon_mock {
@@ -1494,6 +1477,41 @@ mod tests {
             config.p2p.relays.is_empty(),
             "expected no relays, got {:?}",
             config.p2p.relays
+        );
+    }
+
+    #[test]
+    fn run_accepts_relay_urls_with_a_path() {
+        // `http://relay:3640/enr` is the form the docker-compose relay serves;
+        // the path must reach the config intact rather than being rejected or
+        // truncated by a multiaddr round-trip.
+        let cases = [
+            "http://relay:3640/enr",
+            "http://relay:3640",
+            "https://relay.example.org/enr",
+            "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs",
+        ];
+
+        for case in cases {
+            let config =
+                parse_run(&[&format!("--p2p-relays={case}")]).expect("relay should be accepted");
+
+            assert_eq!(
+                config.p2p.relays,
+                vec![case.parse().expect("relay addr")],
+                "unexpected relays for {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_rejects_invalid_relays() {
+        let err = parse_run(&["--p2p-relays=not-an-address"])
+            .expect_err("invalid relay should be rejected");
+
+        assert!(
+            err.to_string().contains("not-an-address"),
+            "unexpected error: {err}"
         );
     }
 

@@ -21,7 +21,7 @@ use pluto_k1util::load as load_key;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode::new_relays,
-    config::{DEFAULT_RELAYS, P2PConfig},
+    config::{DEFAULT_RELAYS, P2PConfig, RelayAddr},
     gater::ConnGater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -41,6 +41,7 @@ use super::{
     write_result_to_writer,
 };
 use crate::{
+    commands::common::parse_relay_addrs,
     duration::Duration as CliDuration,
     error::{CliError, Result},
 };
@@ -276,11 +277,13 @@ pub async fn run(
         disable_reuse_port: args.p2p_disable_reuseport,
     };
 
+    let relay_addrs = parse_relay_addrs(&args.p2p_relays)?;
+
     let (node, relay_peers) = setup_p2p(
         timeout_ct.clone(),
         private_key,
         p2p_cfg,
-        &args.p2p_relays,
+        &relay_addrs,
         &cluster_peers,
         self_peer_id,
         &enr_hash,
@@ -308,7 +311,7 @@ pub async fn run(
             self_tests_clone,
             only_self_tests,
         ),
-        run_relay_http_tests(&args.p2p_relays, &relay_tests, timeout_ct.clone()),
+        run_relay_http_tests(&relay_addrs, &relay_tests, timeout_ct.clone()),
     );
     let self_results = self_results.expect("self-test task should not panic");
     let mut all_targets: HashMap<String, Vec<TestResult>> = HashMap::new();
@@ -435,8 +438,16 @@ fn peer_target_name(peer: &Peer, enr_str: &str) -> String {
     format!("peer {} {}", peer.name, format_enr(enr_str))
 }
 
+/// Probes every configured relay over HTTP.
+///
+/// Targets are derived from the parsed addresses rather than the raw
+/// `--p2p-relays` strings so that this and the P2P stack agree on what was
+/// configured — probing the raw strings reported a bogus target when relaying
+/// was disabled with `--p2p-relays=""`. Multiaddr relays are probed too: they
+/// have no HTTP endpoint, so the probe reports a failure for them instead of
+/// quietly leaving them untested.
 async fn run_relay_http_tests(
-    relay_urls: &[String],
+    relays: &[RelayAddr],
     queued: &[TestCaseName],
     ct: CancellationToken,
 ) -> HashMap<String, Vec<TestResult>> {
@@ -444,10 +455,10 @@ async fn run_relay_http_tests(
         return HashMap::new();
     }
 
-    let mut futs: FuturesUnordered<_> = relay_urls
+    let mut futs: FuturesUnordered<_> = relays
         .iter()
-        .map(|url| {
-            let url = url.clone();
+        .map(|relay| {
+            let url = relay.to_string();
             let ct = ct.clone();
             let queued = queued.to_vec();
             tokio::spawn(async move {
@@ -1044,12 +1055,12 @@ async fn setup_p2p(
     cancel: CancellationToken,
     private_key: k256::SecretKey,
     p2p_cfg: P2PConfig,
-    relay_urls: &[String],
+    relay_addrs: &[RelayAddr],
     cluster_peers: &[Peer],
     self_peer_id: PeerId,
     enr_hash: &str,
 ) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
-    let relay_peers = new_relays(cancel.clone(), relay_urls, enr_hash).await?;
+    let relay_peers = new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
 
     let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
     all_peer_ids.push(self_peer_id);
@@ -1380,5 +1391,39 @@ mod tests {
             .filter(|e| !e.is_empty())
             .collect();
         assert_eq!(enrs, expected);
+    }
+
+    #[tokio::test]
+    async fn relay_http_tests_report_nothing_when_relaying_is_disabled() {
+        // `--p2p-relays=""` parses to no relays, so there is nothing to probe.
+        // Probing the raw flag strings instead used to key a target off the
+        // empty string and report it as a failing relay.
+        let relays = parse_relay_addrs(&["".to_string()]).expect("relays");
+        let queued = [TestCaseName::new("PingRelay", 1)];
+
+        let results = run_relay_http_tests(&relays, &queued, CancellationToken::new()).await;
+
+        assert!(results.is_empty(), "unexpected relay targets: {results:?}");
+    }
+
+    #[tokio::test]
+    async fn relay_http_tests_key_targets_by_address() {
+        let relays = parse_relay_addrs(&[
+            "http://127.0.0.1:1/enr".to_string(),
+            "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs"
+                .to_string(),
+        ])
+        .expect("relays");
+        let queued = [TestCaseName::new("PingRelay", 1)];
+
+        let results = run_relay_http_tests(&relays, &queued, CancellationToken::new()).await;
+
+        // Both forms are probed, and the path survives into the target key.
+        assert_eq!(results.len(), 2);
+        assert!(
+            results.contains_key("relay http://127.0.0.1:1/enr"),
+            "unexpected targets: {:?}",
+            results.keys().collect::<Vec<_>>()
+        );
     }
 }

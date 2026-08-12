@@ -98,7 +98,7 @@ use pluto_featureset::FeatureSet;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode,
-    config::P2PConfig,
+    config::{P2PConfig, RelayAddr},
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -170,7 +170,7 @@ struct Args {
 
     /// Relay URLs or relay multiaddrs.
     #[arg(long, value_delimiter = ',')]
-    relays: Vec<String>,
+    relays: Vec<RelayAddr>,
 
     /// TCP listen addresses.
     #[arg(long, value_delimiter = ',', default_value = "0.0.0.0:0")]

@@ -5,7 +5,7 @@
 //! Pluto validator nodes.
 
 use crate::error::CliError;
-use clap::{CommandFactory, FromArgMatches};
+use clap::FromArgMatches;
 use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
@@ -28,8 +28,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> std::result::Result<(), CliError> {
-    let cmd = commands::test::update_test_cases_help(Cli::command());
-    let matches = cmd.get_matches();
+    let matches = cli::build_command().get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
     // Top level cancellation token for graceful shutdown on Ctrl+C / SIGTERM.
