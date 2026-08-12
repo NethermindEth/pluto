@@ -1054,14 +1054,28 @@ pub async fn wire_core_workflow(
 
         let indices_cache = validator_cache.clone();
         let eth2_cl_preps = submission_api.clone();
+        // Mirror Charon's `setFeeRecipient` onStartup flag (app/app.go): the
+        // first tick submits proposal preparations regardless of epoch
+        // position, then only on epoch boundaries. Preparations expire after
+        // three epochs and are seeded nowhere else, so a node that starts
+        // mid-epoch would otherwise leave the beacon node with no fee-recipient
+        // preparation until the next boundary — up to a full epoch during which
+        // a locally-produced block pays the beacon node's default address.
+        let preps_on_startup = Arc::new(std::sync::atomic::AtomicBool::new(true));
         sched_builder.subscribe_slot(
             move |slot: &Slot| {
                 let service = service.clone();
                 let cache = indices_cache.clone();
                 let eth2_cl = eth2_cl_preps.clone();
                 let slot = slot.clone();
+                let on_startup = preps_on_startup.clone();
                 async move {
-                    if !slot.first_in_epoch() {
+                    // Either the first slot in the epoch or the first tick
+                    // after startup; the startup flag is consumed even when the
+                    // submission below fails, matching Charon (the next epoch
+                    // boundary retries).
+                    let startup = on_startup.swap(false, std::sync::atomic::Ordering::Relaxed);
+                    if !startup && !slot.first_in_epoch() {
                         return Ok::<(), ValidatorCacheError>(());
                     }
                     let (active, ..) = cache.get_by_slot(slot.slot.inner()).await?;
