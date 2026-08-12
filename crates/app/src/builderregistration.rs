@@ -189,8 +189,18 @@ impl BuilderRegistrationService {
         let mut overrides = Overrides::default();
         if let Some(path) = self.inner.path.as_deref() {
             // Re-read rather than inherit from `new`, so `run` owns the state
-            // it mutates and a reload failure here cannot desync the two.
-            overrides.file = load_overrides(path, self.inner.fork_version).unwrap_or_default();
+            // it mutates and a reload failure here cannot desync the two. `new`
+            // already validated the file, but it may have become unreadable in
+            // the meantime — surface that rather than silently dropping every
+            // override, as the reload arm below also does.
+            overrides.file = load_overrides(path, self.inner.fork_version).unwrap_or_else(|err| {
+                tracing::warn!(
+                    %err,
+                    path = %path.display(),
+                    "Failed to load builder registration overrides at startup",
+                );
+                Vec::new()
+            });
         }
 
         // Watch the *directory*, not the file: editors and `mv`-based atomic
