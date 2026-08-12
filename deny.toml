@@ -31,6 +31,12 @@ ignore = [
     # Same pinned `libp2p` DNS/mDNS stack as above. Cargo cannot select
     # `hickory-proto` 0.26.1 until the libp2p crates relax their 0.25.2 pins.
     { id = "RUSTSEC-2026-0119", reason = "transitive hickory-proto 0.25.2 via latest libp2p DNS/mDNS; fixed hickory exists but libp2p still pins 0.25.2" },
+    # `lru` is only reachable via `alloy-provider`, which requires `^0.16` in every
+    # published release (through 2.3.0) — so the fixed 0.18.2 is unreachable, even by
+    # bumping `alloy` to 2.x. `pop()` only skips `detach()` when the *key*'s `Drop`
+    # unwinds; alloy keys its two caches on `BlockNumber` (u64) and `B256`, neither of
+    # which implements `Drop`. Remove once alloy relaxes its `lru` 0.16 pin.
+    { id = "RUSTSEC-2026-0253", reason = "transitive lru 0.16.4 via alloy-provider, which pins ^0.16 in all releases; unreachable since alloy's cache keys (u64, B256) have no Drop impl" },
 ]
 unmaintained = "workspace"
 
