@@ -1214,16 +1214,12 @@ mod tests {
 
     #[tokio::test]
     async fn verify_keymanager_connection_fails_for_unreachable_address() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = format!("http://{}", listener.local_addr().expect("local addr"));
-        drop(listener);
-
+        // Destination port 0 is never assigned to a listener, so connecting to it
+        // fails without racing on a probed-then-released ephemeral port.
         let config = Config::builder()
             .keymanager(
                 KeymanagerConfig::builder()
-                    .address(addr)
+                    .address("http://127.0.0.1:0".to_string())
                     .auth_token("token".to_string())
                     .build(),
             )
