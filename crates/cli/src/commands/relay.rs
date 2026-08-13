@@ -37,6 +37,21 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
     type Error = CliError;
 
     fn try_into(self) -> std::result::Result<pluto_relay_server::config::Config, Self::Error> {
+        if self.p2p.tcp_addrs.is_empty() {
+            return Err(CliError::Other("p2p TCP addresses required".to_string()));
+        }
+
+        if self
+            .debug_monitoring
+            .debug_addr
+            .as_deref()
+            .is_some_and(|addr| !addr.is_empty())
+        {
+            return Err(CliError::Other(
+                "flag '--debug-address' is not yet supported by pluto relay".to_string(),
+            ));
+        }
+
         let p2p_config = {
             let relays = parse_relay_addrs(&self.p2p.relays)?;
 
@@ -175,7 +190,7 @@ pub struct RelayDebugMonitoringArgs {
         long = "debug-address",
         env = "CHARON_DEBUG_ADDRESS",
         default_value = "",
-        help = "Listening address (ip and port) for the pprof and QBFT debug API. It is not enabled by default."
+        help = "Listening address (ip and port) for the pprof and QBFT debug API. It is not enabled by default. Not yet supported by pluto relay."
     )]
     pub debug_addr: Option<String>,
 }
@@ -209,7 +224,7 @@ pub struct RelayP2PArgs {
         long = "p2p-tcp-address",
         env = "CHARON_P2P_TCP_ADDRESS",
         value_delimiter = ',',
-        help = "Comma-separated list of listening TCP addresses (ip and port) for libP2P traffic. Empty default doesn't bind to local port therefore only supports outgoing connections."
+        help = "Comma-separated list of listening TCP addresses (ip and port) for libP2P traffic. The relay requires at least one TCP address."
     )]
     pub tcp_addrs: Vec<String>,
 
@@ -367,6 +382,80 @@ mod tests {
     use std::{str::FromStr, time};
     use tokio::net;
     use tokio_util::sync::CancellationToken;
+
+    /// Args mirroring the clap defaults (notably `debug_addr: Some("")`),
+    /// plus a TCP address so the baseline conversion succeeds.
+    fn conversion_args() -> super::RelayArgs {
+        super::RelayArgs {
+            data_dir: super::RelayDataDirArgs {
+                data_dir: ".charon".into(),
+            },
+            relay: super::RelayRelayArgs {
+                http_address: "127.0.0.1:3640".into(),
+                auto_p2p_key: true,
+                p2p_relay_log_level: "info".into(),
+                max_res_per_peer: 512,
+                max_conns: 16384,
+                advertise_priv: false,
+            },
+            debug_monitoring: super::RelayDebugMonitoringArgs {
+                monitor_addr: None,
+                debug_addr: Some(String::new()),
+            },
+            p2p: super::RelayP2PArgs {
+                relays: vec![],
+                external_ip: None,
+                external_host: None,
+                tcp_addrs: vec!["127.0.0.1:3610".into()],
+                udp_addrs: vec![],
+                disable_reuseport: false,
+            },
+            log: super::RelayLogFlags {
+                format: "console".into(),
+                level: "error".into(),
+                color: super::ConsoleColor::Disable,
+                log_output_path: None,
+            },
+            loki: super::RelayLokiArgs {
+                loki_addresses: vec![],
+                loki_service: "pluto".into(),
+            },
+        }
+    }
+
+    fn try_convert(
+        args: super::RelayArgs,
+    ) -> Result<pluto_relay_server::config::Config, super::CliError> {
+        args.try_into()
+    }
+
+    #[test]
+    fn conversion_requires_tcp_addrs() {
+        assert!(try_convert(conversion_args()).is_ok());
+
+        let mut args = conversion_args();
+        args.p2p.tcp_addrs = vec![];
+        let err = try_convert(args).unwrap_err();
+        assert!(
+            matches!(&err, super::CliError::Other(msg) if msg == "p2p TCP addresses required"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn conversion_rejects_debug_address() {
+        let mut args = conversion_args();
+        args.debug_monitoring.debug_addr = Some("127.0.0.1:3620".into());
+        let err = try_convert(args).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                super::CliError::Other(msg)
+                    if msg == "flag '--debug-address' is not yet supported by pluto relay"
+            ),
+            "unexpected error: {err}"
+        );
+    }
 
     #[tokio::test]
     async fn run_bootnode() {
