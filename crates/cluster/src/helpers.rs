@@ -178,7 +178,7 @@ pub fn sign_operator(
 ) -> Result<(), crate::eip712sigs::EIP712Error> {
     let config_signature = crate::eip712sigs::sign_eip712(
         secret,
-        &crate::eip712sigs::get_operator_eip712_type(&definition.version),
+        &crate::eip712sigs::get_operator_eip712_type(&definition.version)?,
         definition,
         operator,
     )?;
