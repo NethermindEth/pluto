@@ -9,11 +9,21 @@ use futures::future::BoxFuture;
 use pluto_core::{corepb::v1::core as pbcore, types::Duty};
 use tokio_util::sync::CancellationToken;
 
+use crate::qbft;
+
 /// Consensus wrapper result.
-pub type Result<T> = std::result::Result<T, Box<dyn StdError + Send + Sync + 'static>>;
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Consensus implementation error.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// QBFT consensus failed.
+    #[error(transparent)]
+    Qbft(#[from] qbft::RunnerError),
+}
 
 /// Subscriber callback result.
-pub type SubscriberResult = Result<()>;
+pub type SubscriberResult = std::result::Result<(), Box<dyn StdError + Send + Sync + 'static>>;
 
 /// Subscriber callback for decided unsigned duty data.
 pub type Subscriber =

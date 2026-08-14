@@ -1164,10 +1164,8 @@ where
 enum DutyConsensusError {
     #[error(transparent)]
     Deadline(#[from] pluto_core::deadline::DeadlineError),
-    // Boxed rather than `qbft::RunnerError`: the wrapper erases the concrete
-    // impl's error type so a swapped-in protocol can report its own.
     #[error(transparent)]
-    Consensus(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Consensus(#[from] pluto_consensus::wrapper::Error),
 }
 
 /// Runs `run_consensus` for `duty`, bounded by the duty's deadline.
