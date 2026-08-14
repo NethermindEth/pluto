@@ -15,19 +15,16 @@ use axum::{
 use k256::SecretKey;
 use libp2p::{Multiaddr, PeerId, multiaddr};
 use pluto_eth2util::enr::{EnrEntry, Record};
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
-use vise_exporter::MetricsExporter;
+use vise_exporter::{MetricsExporter, MetricsServer};
 
 use crate::{
-    config::{Config, EXTERNAL_HOST_RESOLVE_INTERVAL},
-    error::RelayP2PError,
+    config::EXTERNAL_HOST_RESOLVE_INTERVAL,
+    error::{RelayP2PError, Result},
 };
-use pluto_p2p::{config::P2PConfig, name::peer_name};
+use pluto_p2p::{config::P2PConfig, manet::Manet, name::peer_name};
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]
@@ -38,12 +35,16 @@ pub struct AppState {
     secret_key: SecretKey,
     /// The peer ID of this node.
     peer_id: PeerId,
-    /// The libp2p-discovered listen addresses of this node.
+    /// The libp2p-discovered listen addresses of this node, private ones
+    /// included: they are withheld at read time, not at ingest.
     addrs: Arc<RwLock<Vec<Multiaddr>>>,
-    /// External multiaddrs derived from `external_ip` / `external_host` config.
-    /// Fixed at startup. Includes `/ip4/<external_ip>/...` and
-    /// `/dns/<external_host>/...` variants for both TCP and UDP/QUIC.
+    /// External multiaddrs derived from `external_ip` / `external_host` config
+    /// and the ports libp2p bound. Fixed at startup. Includes
+    /// `/ip4/<external_ip>/...` and `/dns/<external_host>/...` variants for
+    /// both TCP and UDP/QUIC.
     external_addrs: Vec<Multiaddr>,
+    /// Whether private listen addresses are withheld from what is advertised.
+    filter_private_addrs: bool,
     /// The resolved external host IP (if configured).
     external_host_ip: Arc<RwLock<Option<Ipv4Addr>>>,
 }
@@ -56,6 +57,7 @@ impl AppState {
         peer_id: PeerId,
         addrs: Arc<RwLock<Vec<Multiaddr>>>,
         external_addrs: Vec<Multiaddr>,
+        filter_private_addrs: bool,
     ) -> Self {
         Self {
             p2p_config,
@@ -63,20 +65,31 @@ impl AppState {
             peer_id,
             addrs,
             external_addrs,
+            filter_private_addrs,
             external_host_ip: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Returns the union of configured external multiaddrs and the live
-    /// libp2p listen addresses, externals first, deduped while preserving
-    /// order. Mirrors Go charon's `filterAdvertisedAddrs(externalAddrs,
-    /// internalAddrs, …)` — listeners are already filtered for private
-    /// addresses at ingest time when `filter_private_addrs` is set.
+    /// Returns the union of configured external multiaddrs and the live libp2p
+    /// listen addresses, externals first, deduped while preserving order.
+    ///
+    /// `filter_private_addrs` withholds private listen addresses (loopback,
+    /// RFC 1918) but never the external ones, which are advertised as
+    /// configured.
+    ///
+    /// Filtering happens here rather than when a listen address is ingested so
+    /// that the relay always knows every address it bound — startup waits on
+    /// that, and a node whose only addresses are private must still finish
+    /// starting.
     async fn advertised_addrs(&self) -> Vec<Multiaddr> {
         let listeners = self.addrs.read().await;
+        let listeners = listeners
+            .iter()
+            .filter(|addr| !(self.filter_private_addrs && addr.is_private()));
+
         let mut seen: HashSet<&Multiaddr> = HashSet::new();
-        let mut union: Vec<Multiaddr> = Vec::new();
-        for addr in self.external_addrs.iter().chain(listeners.iter()) {
+        let mut union: Vec<Multiaddr> = Vec::with_capacity(self.external_addrs.len());
+        for addr in self.external_addrs.iter().chain(listeners) {
             if seen.insert(addr) {
                 union.push(addr.clone());
             }
@@ -96,95 +109,88 @@ impl AppState {
     }
 }
 
-/// Starts the ENR HTTP server.
-#[instrument(skip(server_errors, config, secret_key, peer_id, addrs, external_addrs, ct))]
+/// Serves the ENR HTTP API on an already bound listener until `ct` is
+/// cancelled — a clean `Ok(())` — or the server fails.
+///
+/// The listener is bound by the caller so that a bind failure is reported
+/// before any task is spawned, and so the caller learns the address that was
+/// actually bound.
+#[instrument(skip_all)]
 pub async fn enr_server(
-    server_errors: mpsc::Sender<RelayP2PError>,
-    config: Config,
-    secret_key: SecretKey,
-    peer_id: PeerId,
-    addrs: Arc<RwLock<Vec<Multiaddr>>>,
-    external_addrs: Vec<Multiaddr>,
+    listener: TcpListener,
+    state: Arc<AppState>,
     ct: CancellationToken,
-) {
-    let Some(http_addr) = config.http_addr.clone() else {
-        warn!("HTTP address is not set, skipping ENR server");
-        return;
-    };
-
+) -> Result<()> {
     info!("Starting ENR server");
 
-    let state = AppState::new(
-        config.p2p_config.clone(),
-        secret_key,
-        peer_id,
-        addrs,
-        external_addrs,
-    );
-    let state_arc = Arc::new(state);
-
     // Start external host resolver task if configured
-    let resolver_handle = if let Some(external_host) = config.p2p_config.external_host {
-        let state_clone = state_arc.clone();
-        let ct_clone = ct.child_token();
-        Some(tokio::spawn(async move {
-            resolve_external_host_periodically(state_clone, external_host, ct_clone).await;
-        }))
-    } else {
-        None
-    };
+    let resolver_handle = state.p2p_config.external_host.clone().map(|external_host| {
+        let state = state.clone();
+        let ct = ct.child_token();
+        tokio::spawn(resolve_external_host_periodically(state, external_host, ct))
+    });
+
+    info!(
+        "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
+        peer_name = peer_name(&state.peer_id),
+        tcp_addrs = state.p2p_config.tcp_addrs.join(", "),
+        udp_addrs = state.p2p_config.udp_addrs.join(", "),
+    );
 
     let router = Router::new()
         .route("/", get(multiaddr_handler))
         .route("/enr", get(enr_handler))
-        .with_state(state_arc);
-
-    let Ok(listener) = TcpListener::bind(&http_addr).await else {
-        warn!("Failed to bind HTTP listener to {}", http_addr);
-        let _ = server_errors
-            .send(RelayP2PError::FailedToBindHttpListener(http_addr))
-            .await;
-        return;
-    };
-
-    info!(
-        "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
-        peer_name = peer_name(&peer_id),
-        tcp_addrs = config.p2p_config.tcp_addrs.join(", "),
-        udp_addrs = config.p2p_config.udp_addrs.join(", "),
-    );
+        .with_state(state);
 
     let ct_clone = ct.child_token();
-    if let Err(e) = axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             ct_clone.cancelled().await;
             info!("ENR server shutdown complete");
         })
         .await
-    {
-        warn!("HTTP server error: {}", e);
-        let _ = server_errors
-            .send(RelayP2PError::FailedToServeHTTP(e))
-            .await;
-    }
+        .map_err(RelayP2PError::FailedToServeHTTP);
 
     ct.cancel();
 
     if let Some(resolver_handle) = resolver_handle {
         let _ = resolver_handle.await;
     }
+
+    result
 }
 
-/// Starts the Prometheus monitoring server on the given address.
-#[instrument(skip(ct))]
-pub async fn monitoring_server(bind_addr: SocketAddr, ct: CancellationToken) {
-    info!("Starting monitoring server on {bind_addr}");
+/// Binds the Prometheus monitoring listener on the given address.
+///
+/// Binding is separate from serving so a bind failure fails the relay before
+/// anything is spawned, and so the caller can read back the bound address.
+#[instrument]
+pub(crate) async fn bind_monitoring_server(
+    bind_addr: SocketAddr,
+) -> Result<MetricsServer<'static>> {
+    info!("Binding monitoring server");
 
     MetricsExporter::default()
-        .with_graceful_shutdown(ct.cancelled_owned())
-        .start(bind_addr)
+        .bind(bind_addr)
         .await
-        .unwrap_or_else(|e| warn!("Monitoring server error: {e}"));
+        .map_err(|source| RelayP2PError::FailedToBindMonitoringListener {
+            addr: bind_addr,
+            source,
+        })
+}
+
+/// Serves an already bound monitoring listener.
+///
+/// Returns only on failure: the server has no shutdown signal of its own and
+/// is stopped by dropping this future, which closes its listener.
+#[instrument(skip_all, fields(addr = %server.local_addr()))]
+pub(crate) async fn serve_monitoring_server(server: MetricsServer<'static>) -> Result<()> {
+    info!("Starting monitoring server");
+
+    server
+        .start()
+        .await
+        .map_err(RelayP2PError::FailedToServeMonitoring)
 }
 
 /// Error response for HTTP handlers.
@@ -406,6 +412,16 @@ mod tests {
         external_addrs: Vec<Multiaddr>,
         listeners: Vec<Multiaddr>,
     ) -> (Arc<AppState>, PeerId) {
+        test_state_filtered(external_ip, external_host, external_addrs, listeners, false)
+    }
+
+    fn test_state_filtered(
+        external_ip: Option<&str>,
+        external_host: Option<&str>,
+        external_addrs: Vec<Multiaddr>,
+        listeners: Vec<Multiaddr>,
+        filter_private_addrs: bool,
+    ) -> (Arc<AppState>, PeerId) {
         let secret_key = SecretKey::random(&mut OsRng);
         let peer_id = Keypair::generate_secp256k1().public().to_peer_id();
         let p2p_config = P2PConfig {
@@ -419,6 +435,7 @@ mod tests {
             peer_id,
             Arc::new(RwLock::new(listeners)),
             external_addrs,
+            filter_private_addrs,
         );
         (Arc::new(state), peer_id)
     }
@@ -488,6 +505,23 @@ mod tests {
     async fn advertised_addrs_empty_when_nothing_configured() {
         let (state, _) = test_state(None, None, vec![], vec![]);
         assert!(state.advertised_addrs().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_withholds_private_listen_addrs_when_filtering() {
+        let externals = vec![ma("/ip4/1.2.3.4/tcp/3610")];
+        let listeners = vec![
+            ma("/ip4/127.0.0.1/tcp/3610"),
+            ma("/ip4/10.0.0.1/tcp/3610"),
+            ma("/ip4/8.8.8.8/tcp/3610"),
+        ];
+        let (state, _) = test_state_filtered(Some("1.2.3.4"), None, externals, listeners, true);
+
+        // Externals are never filtered; private listen addresses are.
+        assert_eq!(
+            state.advertised_addrs().await,
+            vec![ma("/ip4/1.2.3.4/tcp/3610"), ma("/ip4/8.8.8.8/tcp/3610")]
+        );
     }
 
     // ------ multiaddr_handler ------

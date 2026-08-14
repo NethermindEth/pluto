@@ -347,6 +347,18 @@ async fn serve_relay(
     info!("{LICENSE}");
     info!(config = ?config);
 
+    let key = load_or_create_key(config)?;
+
+    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
+        .await
+        .map_err(Into::into)
+}
+
+/// Loads the relay's p2p key from its data dir, generating and persisting one
+/// when it is missing and `--auto-p2pkey` is set.
+fn load_or_create_key(
+    config: &pluto_relay_server::config::Config,
+) -> Result<k256::SecretKey, CliError> {
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
         Err(pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(
@@ -370,17 +382,19 @@ async fn serve_relay(
         e => e,
     }?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
+    Ok(key)
 }
 
 #[cfg(test)]
 mod tests {
-    use backon::{BackoffBuilder, Retryable};
-    use std::{str::FromStr, time};
-    use tokio::net;
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        path::Path,
+        str::FromStr,
+        sync::LazyLock,
+        time::{Duration, Instant},
+    };
+    use tokio::{net, task::JoinHandle};
     use tokio_util::sync::CancellationToken;
 
     /// Args mirroring the clap defaults (notably `debug_addr: Some("")`),
@@ -459,201 +473,293 @@ mod tests {
 
     #[tokio::test]
     async fn run_bootnode() {
-        with_relay_server(
-            |args| {
-                args.relay.auto_p2p_key = false;
-                pluto_p2p::k1::new_saved_priv_key(&args.data_dir.data_dir).unwrap();
-            },
-            async |_| { /* Relay server starts with existing p2p key */ },
-        )
+        // Relay server starts with the existing p2p key.
+        let _relay = test_relay_server_with(|args| {
+            args.relay.auto_p2p_key = false;
+            pluto_p2p::k1::new_saved_priv_key(&args.data_dir.data_dir).unwrap();
+        })
         .await
         .unwrap();
     }
 
     #[tokio::test]
     async fn run_bootnode_auto_p2p() {
-        let first_run = with_relay_server(
-            |args| {
-                args.relay.auto_p2p_key = false;
-            },
-            async |_| { /* Relay server does not start due to missing p2p key */ },
-        )
-        .await;
+        // Relay server does not start due to the missing p2p key.
+        let missing_key = test_relay_server_with(|args| args.relay.auto_p2p_key = false).await;
         assert!(matches!(
-            first_run,
+            missing_key,
             Err(super::CliError::RelayP2PError(
                 pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
             ))
         ));
 
-        let second_run = with_relay_server(
-            |_| {},
-            async |_| { /* Relay server starts with auto-generated p2p key */ },
-        )
-        .await;
-        assert!(matches!(second_run, Ok(())));
+        // The success path — starting with an auto-generated key — is what
+        // every other test here does, since `relay_args` sets
+        // `auto_p2p_key`.
+    }
+
+    #[tokio::test]
+    async fn run_exits_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = relay_args(dir.path());
+
+        // Covers the CLI entry point that the fixture bypasses: tracing init and
+        // the Loki drain. A pre-cancelled token is deterministic because the
+        // shutdown arm of the serve loop is the `biased` first branch.
+        let ct = CancellationToken::new();
+        ct.cancel();
+
+        super::run(args.try_into().unwrap(), ct).await.unwrap();
     }
 
     #[tokio::test]
     async fn serve_addr_multiaddrs() {
-        with_relay_server(
-            |_| {},
-            async |cfg| {
-                let response = relay_server_get(cfg, "/").await.unwrap();
-                let body = response.text().await.unwrap();
-                let addresses: Vec<String> = serde_json::from_str(&body).unwrap();
+        let relay = test_relay_server().await.unwrap();
 
-                assert!(
-                    !addresses.is_empty(),
-                    "Expected at least one multiaddr in response"
-                );
+        let response = http_get(&relay.url("/")).await.unwrap();
+        let body = response.text().await.unwrap();
+        let addresses: Vec<String> = serde_json::from_str(&body).unwrap();
 
-                for addr in addresses {
-                    libp2p::Multiaddr::from_str(&addr).unwrap_or_else(|err| {
-                        panic!("Failed to parse multiaddr '{}': {}", addr, err);
-                    });
-                }
-            },
-        )
-        .await
-        .unwrap();
+        assert!(
+            !addresses.is_empty(),
+            "Expected at least one multiaddr in response"
+        );
+
+        for addr in addresses {
+            libp2p::Multiaddr::from_str(&addr).unwrap_or_else(|err| {
+                panic!("Failed to parse multiaddr '{}': {}", addr, err);
+            });
+        }
     }
 
     #[tokio::test]
     async fn serve_addr_enr() {
-        with_relay_server(
-            |_| {},
-            async |cfg| {
-                let response = relay_server_get(cfg, "/enr").await.unwrap();
-                let body = response.text().await.unwrap();
-                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+        let relay = test_relay_server().await.unwrap();
 
-                assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(127, 0, 0, 1)));
-            },
-        )
-        .await
-        .unwrap();
+        let response = http_get(&relay.url("/enr")).await.unwrap();
+        let enr = parse_enr(&response.text().await.unwrap());
+
+        assert_eq!(enr.ip(), Some(Ipv4Addr::new(127, 0, 0, 1)));
     }
 
     #[tokio::test]
     async fn serve_addr_enr_ext_ip() {
-        with_relay_server(
-            |args| args.p2p.external_ip = Some("222.222.222.222".into()),
-            async |cfg| {
-                let response = relay_server_get(cfg, "/enr").await.unwrap();
-                let body = response.text().await.unwrap();
-                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+        let relay =
+            test_relay_server_with(|args| args.p2p.external_ip = Some("222.222.222.222".into()))
+                .await
+                .unwrap();
 
-                assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(222, 222, 222, 222)));
-            },
-        )
-        .await
-        .unwrap();
+        let response = http_get(&relay.url("/enr")).await.unwrap();
+        let enr = parse_enr(&response.text().await.unwrap());
+
+        assert_eq!(enr.ip(), Some(Ipv4Addr::new(222, 222, 222, 222)));
+        // The external IP is advertised on the ports libp2p bound, not on the
+        // port 0 that was configured — which would be undialable.
+        assert_eq!(enr.tcp(), Some(relay.p2p_port(pluto_p2p::utils::tcp_port)));
+        assert_eq!(enr.udp(), Some(relay.p2p_port(pluto_p2p::utils::udp_port)));
     }
 
     #[tokio::test]
     async fn serve_addr_enr_ext_host() {
-        with_relay_server(
-            |args| args.p2p.external_host = Some("www.google.com".into()),
-            async |cfg| {
-                // Resolution happens asynchronously on a tick, so poll until the
-                // ENR reflects a non-loopback IP (mirrors the Go test using
-                // `assert.Eventually`).
-                tokio::time::timeout(time::Duration::from_secs(10), async {
-                    loop {
-                        let response = relay_server_get(cfg.clone(), "/enr").await.unwrap();
-                        let body = response.text().await.unwrap();
-                        let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
-                        let ip = enr.ip().unwrap();
-
-                        if !ip.is_loopback() {
-                            break;
-                        }
-
-                        tokio::time::sleep(time::Duration::from_millis(200)).await;
-                    }
-                })
+        let relay =
+            test_relay_server_with(|args| args.p2p.external_host = Some("www.google.com".into()))
                 .await
-                .expect("external host never resolved to non-loopback ip");
-            },
-        )
-        .await
-        .unwrap();
+                .unwrap();
+
+        // The relay is already serving, so this waits on one thing only: the
+        // hostname is resolved by a background task on a tick, and the ENR
+        // reflects it once DNS answers. A transport error or a non-2xx panics
+        // rather than being retried.
+        let deadline = Instant::now() + DNS_TIMEOUT;
+        loop {
+            let body = http_get(&relay.url("/enr"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+
+            if !parse_enr(&body).ip().unwrap().is_loopback() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "external host not resolved into the ENR {DNS_TIMEOUT:?} in; last body: {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
     async fn serve_addr_metrics() {
-        let monitoring_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-        let monitoring_url = format!("http://{monitoring_addr}/metrics");
-
-        with_relay_server(
-            move |args| {
-                args.debug_monitoring.monitor_addr = Some(monitoring_addr);
-            },
-            async move |_cfg| {
-                let response = retry_get(&monitoring_url).await.unwrap();
-                let body = response.text().await.unwrap();
-
-                assert!(body.contains("relay_p2p_connection_total"));
-                assert!(body.contains("relay_p2p_active_connections"));
-                assert!(body.contains("relay_p2p_ping_latency"));
-                assert!(body.contains("relay_p2p_network_sent_bytes"));
-                assert!(body.contains("relay_p2p_network_receive_bytes"));
-                assert!(body.ends_with("# EOF\n"));
-            },
-        )
+        // The monitoring port used to be guessed by the fixture, and losing the
+        // race for it was the most frequent pre-fix failure. It is now assigned
+        // by the kernel inside the relay's own bind and read back off it.
+        let relay = test_relay_server_with(|args| {
+            args.debug_monitoring.monitor_addr = Some(ANY_ADDR.into());
+        })
         .await
         .unwrap();
+
+        let monitoring_addr = relay.monitoring_addr.expect("monitoring was configured");
+        let response = http_get(&format!("http://{monitoring_addr}/metrics"))
+            .await
+            .unwrap();
+        let body = response.text().await.unwrap();
+
+        assert!(body.contains("relay_p2p_connection_total"));
+        assert!(body.contains("relay_p2p_active_connections"));
+        assert!(body.contains("relay_p2p_ping_latency"));
+        assert!(body.contains("relay_p2p_network_sent_bytes"));
+        assert!(body.contains("relay_p2p_network_receive_bytes"));
+        assert!(body.ends_with("# EOF\n"));
     }
 
-    /// Run a function in the context of a running relay server.
-    ///
-    /// The server can be configured before initialization through
-    /// [`super::RelayArgs`], while the test function receives a function to
-    /// make HTTP requests to the running relay server.
-    async fn with_relay_server<FArgs, FTest, Fut>(
-        config_fn: FArgs,
-        test_fn: FTest,
-    ) -> Result<(), crate::error::CliError>
-    where
-        FArgs: FnOnce(&mut super::RelayArgs),
-        FTest: FnOnce(pluto_relay_server::config::Config) -> Fut,
-        Fut: std::future::Future<Output = ()>,
-    {
+    #[tokio::test]
+    async fn taken_http_port_fails_the_relay() {
+        let (_taken, addr) = squat_tcp_addr().await;
+
+        let err = test_relay_server_with(|args| args.relay.http_address = addr)
+            .await
+            .expect_err("relay must not start while its http port is taken");
+
+        assert!(
+            matches!(
+                err,
+                super::CliError::RelayP2PError(
+                    pluto_relay_server::RelayP2PError::FailedToBindHttpListener { .. }
+                )
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn taken_monitoring_port_fails_the_relay() {
+        let (_taken, addr) = squat_tcp_addr().await;
+
+        let err = test_relay_server_with(|args| args.debug_monitoring.monitor_addr = Some(addr))
+            .await
+            .expect_err("relay must not start while its monitoring port is taken");
+
+        // A monitoring bind failure used to be only `warn!`-ed, which left the
+        // relay running with the port unserved.
+        assert!(
+            matches!(
+                err,
+                super::CliError::RelayP2PError(
+                    pluto_relay_server::RelayP2PError::FailedToBindMonitoringListener { .. }
+                )
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unusable_monitoring_addr_fails_the_relay() {
+        let err = test_relay_server_with(|args| {
+            args.debug_monitoring.monitor_addr = Some("not-an-address".into());
+        })
+        .await
+        .expect_err("an unusable monitoring address must fail the relay");
+
+        assert!(
+            matches!(
+                err,
+                super::CliError::RelayP2PError(
+                    pluto_relay_server::RelayP2PError::FailedToParseMonitoringAddr(..)
+                )
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_the_relay_releases_its_http_port() {
+        let mut relay = test_relay_server().await.unwrap();
+        let http_addr = relay.http_addr;
+
+        relay.stop().await.unwrap();
+
+        // The relay task has joined, and with it its listener must be gone.
+        net::TcpListener::bind(http_addr)
+            .await
+            .unwrap_or_else(|err| panic!("relay did not release {http_addr}: {err}"));
+    }
+
+    #[tokio::test]
+    async fn cancelling_before_startup_stops_the_relay_without_serving() {
         let dir = tempfile::tempdir().unwrap();
+        let config: pluto_relay_server::config::Config = relay_args(dir.path()).try_into().unwrap();
+        let key = super::load_or_create_key(&config).unwrap();
 
-        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
+        let ct = CancellationToken::new();
+        ct.cancel();
 
-        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
+        // An already-cancelled token must stop the relay cleanly before it
+        // binds anything, not run it until some later cancellation check.
+        let result = tokio::time::timeout(
+            SHUTDOWN_TIMEOUT,
+            pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct),
+        )
+        .await
+        .expect("relay must return promptly when cancelled at startup");
+        assert!(result.is_ok(), "expected clean shutdown, got: {result:?}");
+    }
 
-        let http_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
+    #[test]
+    fn advertise_priv_inverts_filter_private_addrs() {
+        // The flag is the inverse of the config knob it feeds, and every test
+        // above depends on the inversion holding: with private addresses
+        // filtered, the loopback listeners never reach `/enr`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = relay_args(dir.path());
 
-        let mut args = super::RelayArgs {
+        let config: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
+        assert!(!config.filter_private_addrs, "advertise_priv: true");
+
+        args.relay.advertise_priv = false;
+        let config: pluto_relay_server::config::Config = args.try_into().unwrap();
+        assert!(config.filter_private_addrs, "advertise_priv: false");
+    }
+
+    /// Budget for the relay to stop once a test is done with it.
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Budget for a DNS lookup to answer and reach the ENR. Sized for a heavily
+    /// loaded CI machine.
+    const DNS_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Per-request budget, so a server that accepts the connection but never
+    /// answers fails the test instead of hanging it until the harness gives up.
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Loopback address with an ephemeral port, used for *every* listener in
+    /// these tests.
+    ///
+    /// Port 0 lets the kernel assign the port inside the relay's own `bind` and
+    /// [`TestRelay`] reads back what was bound, so nothing here names a port
+    /// another process could take first. That is what makes the bind race these
+    /// tests used to lose unrepresentable rather than merely unlikely.
+    const ANY_ADDR: &str = "127.0.0.1:0";
+
+    /// Shared HTTP client: building one per request re-reads the system CA
+    /// store and throws away the connection pool.
+    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
+    /// Relay arguments every test starts from: all listeners on [`ANY_ADDR`],
+    /// quiet logs, no relays to dial.
+    ///
+    /// `advertise_priv` is load-bearing: without it, `filter_private_addrs`
+    /// drops the loopback listen addresses, and `/enr` answers 500 forever.
+    fn relay_args(data_dir: &Path) -> super::RelayArgs {
+        super::RelayArgs {
             data_dir: super::RelayDataDirArgs {
-                data_dir: dir.path().to_path_buf(),
+                data_dir: data_dir.to_path_buf(),
             },
             relay: super::RelayRelayArgs {
-                http_address: http_addr,
+                http_address: ANY_ADDR.into(),
                 auto_p2p_key: true,
                 p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
@@ -668,8 +774,8 @@ mod tests {
                 relays: vec![],
                 external_ip: None,
                 external_host: None,
-                tcp_addrs: vec![tcp_addr],
-                udp_addrs: vec![udp_addr],
+                tcp_addrs: vec![ANY_ADDR.into()],
+                udp_addrs: vec![ANY_ADDR.into()],
                 disable_reuseport: false,
             },
             log: super::RelayLogFlags {
@@ -682,37 +788,141 @@ mod tests {
                 loki_addresses: vec![],
                 loki_service: "".into(),
             },
-        };
-        config_fn(&mut args);
+        }
+    }
 
-        let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
+    /// A relay that serves for as long as this value is alive.
+    ///
+    /// It is already serving when a test receives it, and stops when the value
+    /// goes out of scope, so a test body is just requests and assertions.
+    #[derive(Debug)]
+    struct TestRelay {
+        /// Address the ENR/multiaddr HTTP server is bound to — the one the
+        /// kernel assigned, read back off the bound listener.
+        http_addr: SocketAddr,
+        /// Address the monitoring server is bound to, when one was configured.
+        monitoring_addr: Option<SocketAddr>,
+        /// Addresses libp2p bound, with the ports the kernel assigned.
+        p2p_addrs: Vec<libp2p::Multiaddr>,
+        /// Cancels the relay.
+        ct: CancellationToken,
+        /// Relay task, resolving with the relay's exit status.
+        handle: JoinHandle<Result<(), super::CliError>>,
+        /// Data dir, kept alive for as long as the relay is.
+        _dir: tempfile::TempDir,
+    }
+
+    /// Starts a serving relay with the default test arguments. See
+    /// [`test_relay_server_with`].
+    async fn test_relay_server() -> Result<TestRelay, super::CliError> {
+        test_relay_server_with(|_| {}).await
+    }
+
+    /// Starts a relay in a fresh data dir, letting `configure` adjust the
+    /// [`super::RelayArgs`] it is built from.
+    ///
+    /// Returns once every listener is bound *and* libp2p has reported the
+    /// addresses it got, so requests against the returned addresses are served
+    /// straight away — no readiness poll, and a failure in the test that
+    /// follows is a real failure rather than a startup race. Every startup
+    /// failure — an unloadable key, an unusable address, a port that is
+    /// genuinely taken — comes back as `Err` here rather than reaching a
+    /// test as a connection failure further down.
+    async fn test_relay_server_with(
+        configure: impl FnOnce(&mut super::RelayArgs),
+    ) -> Result<TestRelay, super::CliError> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = relay_args(dir.path());
+        configure(&mut args);
+
+        let config: pluto_relay_server::config::Config = args.try_into()?;
+        let key = super::load_or_create_key(&config)?;
+
         let ct = CancellationToken::new();
+        let bound = pluto_relay_server::p2p::bind_relay(&config, key).await?;
 
-        let relay = tokio::spawn(super::run(cfg.clone(), ct.child_token()));
+        // Read the addresses off the bound relay before serving consumes it.
+        let http_addr = bound
+            .http_addr()
+            .expect("`relay_args` configures an http address");
+        let monitoring_addr = bound.monitoring_addr();
+        let p2p_addrs = bound.p2p_addrs().await;
 
-        test_fn(cfg.clone()).await;
+        let serve_ct = ct.child_token();
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(Into::into) });
 
-        ct.cancel();
-        relay.await.unwrap()
+        Ok(TestRelay {
+            http_addr,
+            monitoring_addr,
+            p2p_addrs,
+            ct,
+            handle,
+            _dir: dir,
+        })
     }
 
-    /// Make an HTTP GET request to the relay server with retries and backoff.
-    async fn relay_server_get(
-        cfg: pluto_relay_server::config::Config,
-        path: &str,
-    ) -> Result<reqwest::Response, reqwest::Error> {
-        let http_address = cfg.http_addr.unwrap();
-        retry_get(&format!("http://{}{}", http_address, path)).await
+    impl TestRelay {
+        /// URL for `path` on the relay's HTTP server.
+        fn url(&self, path: &str) -> String {
+            format!("http://{}{path}", self.http_addr)
+        }
+
+        /// Port of the relay's libp2p listen address selected by `port_of`,
+        /// e.g. [`pluto_p2p::utils::tcp_port`].
+        fn p2p_port(&self, port_of: impl Fn(&libp2p::Multiaddr) -> Option<u16>) -> u16 {
+            self.p2p_addrs
+                .iter()
+                .find_map(port_of)
+                .expect("`relay_args` configures both transports")
+        }
+
+        /// Cancels the relay, waits for it to stop, and returns its exit
+        /// status.
+        ///
+        /// Only needed by tests that assert on what stopping released; dropping
+        /// the value is enough everywhere else.
+        async fn stop(&mut self) -> Result<(), super::CliError> {
+            self.ct.cancel();
+
+            match tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut self.handle).await {
+                Ok(Ok(exit)) => exit,
+                Ok(Err(err)) => panic!("relay task did not join: {err}"),
+                Err(_) => panic!("relay did not shut down within {SHUTDOWN_TIMEOUT:?}"),
+            }
+        }
     }
 
-    async fn retry_get(url: &str) -> Result<reqwest::Response, reqwest::Error> {
-        let request = async || reqwest::get(url).await.and_then(|r| r.error_for_status());
-        let mut backoff = backon::ExponentialBuilder::default()
-            .with_min_delay(time::Duration::from_millis(200))
-            .with_max_delay(time::Duration::from_secs(2))
-            .with_factor(1.0)
-            .with_max_times(8)
-            .build();
-        request.retry(&mut backoff).await
+    impl Drop for TestRelay {
+        /// Best-effort: a `Drop` cannot await the task, which is why
+        /// [`TestRelay::stop`] exists for tests that need it fully stopped.
+        fn drop(&mut self) {
+            self.ct.cancel();
+        }
+    }
+
+    /// Parses an ENR response body.
+    fn parse_enr(body: &str) -> pluto_eth2util::enr::Record {
+        pluto_eth2util::enr::Record::try_from(body).unwrap()
+    }
+
+    /// Single-shot GET, failing on a non-2xx status.
+    ///
+    /// Single-shot on purpose: the relay is serving before a test gets hold of
+    /// it, so a failure here is a real failure rather than a startup race.
+    async fn http_get(url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        CLIENT
+            .get(url)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .and_then(|response| response.error_for_status())
+    }
+
+    /// Binds a loopback port and holds it, so anything else binding the
+    /// returned address fails with `AddrInUse`.
+    async fn squat_tcp_addr() -> (net::TcpListener, String) {
+        let listener = net::TcpListener::bind(ANY_ADDR).await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        (listener, addr)
     }
 }
