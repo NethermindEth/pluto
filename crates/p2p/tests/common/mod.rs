@@ -17,13 +17,9 @@ use tokio::{task::JoinHandle, time::timeout};
 /// treated as hung.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Starts an in-process relay server node ([`Node::new_server`] plus
-/// [`relay::Behaviour`], the production wiring) on loopback TCP and drives it
-/// in the background.
-///
-/// Returns the relay's peer id, the concrete address it ended up listening on,
-/// and the handle of the task polling its swarm — abort the handle to stop the
-/// relay.
+/// Starts an in-process relay server on loopback TCP and drives it in the
+/// background. Returns its peer id, listen address, and swarm task handle —
+/// abort the handle to stop the relay.
 pub async fn spawn_relay_server(key: SecretKey) -> (PeerId, Multiaddr, JoinHandle<()>) {
     let peer_id = peer_id_from_key(key.public_key()).expect("relay peer id");
 
@@ -40,13 +36,10 @@ pub async fn spawn_relay_server(key: SecretKey) -> (PeerId, Multiaddr, JoinHandl
                 keypair.public().to_peer_id(),
                 relay::Config {
                     // Room for a circuit to carry a real payload; the default
-                    // (128 KiB) would cap one confusingly mid-transfer.
+                    // is 128 KiB.
                     max_circuit_bytes: 32 << 20,
-                    // Everything else stays at the rust-libp2p defaults so the
-                    // per-peer and per-IP reservation / circuit rate limiters
-                    // survive: an exhaustive struct literal drops them, which
-                    // is the bug fixed in
-                    // `pluto_relay_server::config::create_relay_config`.
+                    // Keep the defaults: an exhaustive literal drops the
+                    // per-peer and per-IP rate limiters.
                     ..relay::Config::default()
                 },
             ))
@@ -71,11 +64,10 @@ pub async fn spawn_relay_server(key: SecretKey) -> (PeerId, Multiaddr, JoinHandl
     .await
     .expect("timed out waiting for the relay listen address");
 
-    // The relay must advertise a reachable address, otherwise reservations are
-    // rejected client-side with `NoAddressesInReservation`.
+    // Without a reachable advertised address, reservations are rejected
+    // client-side with `NoAddressesInReservation`.
     node.add_external_address(addr.clone());
 
-    // Keep the relay driven so it can service reservations and circuits.
     let handle = tokio::spawn(async move {
         loop {
             node.select_next_some().await;

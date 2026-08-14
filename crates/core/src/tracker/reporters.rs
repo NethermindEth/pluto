@@ -226,7 +226,6 @@ impl MetricsParticipationReporter {
 
             let labels = (dt_str.clone(), peer.name.clone());
             TRACKER_METRICS.participation_success_total[&labels].inc_by(part as u64);
-            // Deprecated alias of the above; see `TrackerMetrics::participation_total`.
             TRACKER_METRICS.participation_total[&labels].inc_by(part as u64);
             TRACKER_METRICS.participation_expected_total[&labels].inc_by(expected_per_peer as u64);
             TRACKER_METRICS.participation_missed_total[&labels]
@@ -431,11 +430,6 @@ mod tests {
         ));
     }
 
-    /// The deprecated `participation_total` alias must be zero-initialised and
-    /// then track `participation_success_total` exactly, since Charon writes
-    /// both at the same two sites
-    /// (`charon/core/tracker/tracker.go:637-638,653-654`) and its dashboard
-    /// reads only the legacy name.
     #[test]
     fn participation_total_mirrors_participation_success_total() {
         // The metric registry is process-global, so use a peer name no other
@@ -468,9 +462,6 @@ mod tests {
         assert_eq!(success(), Some(3));
         assert_eq!(legacy(), success());
 
-        // The dashboard queries the exported name, so pin that too: `vise`
-        // appends `_total` to counter samples and the exposition format strips
-        // it again, which is what keeps the declared `..._total` name intact.
         // Registered standalone because `MetricsCollection::collect()` sees the
         // globals of this crate twice in the test binary.
         let metrics = TrackerMetrics::default();

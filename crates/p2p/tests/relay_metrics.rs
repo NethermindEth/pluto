@@ -1,16 +1,8 @@
 //! End-to-end check of relay connectivity metrics on the production path: a
 //! real [`Node`] whose [`RelayManager`] reserves a circuit on an in-process
-//! relay server over loopback TCP.
-//!
-//! The `relay::manager` unit tests drive the behaviour's `FromSwarm` handlers
-//! directly; this test exercises the whole swarm plumbing the live cluster
-//! runs, which is where both metric bugs showed up on the Charon dashboard:
-//!
-//! 1. `p2p_relay_connections` had no writer at all, so "Connected Relays"
-//!    (`sum(p2p_relay_connections) by (peer) > 0`) was blank;
-//! 2. the relay server — an ordinary transport peer, so libp2p's ping behaviour
-//!    pings it — leaked into the per-peer `p2p_ping_*` series and appeared as a
-//!    phantom cluster peer on `max(p2p_ping_success) by (peer)`.
+//! relay server over loopback TCP. The `relay::manager` unit tests drive the
+//! `FromSwarm` handlers directly; this one exercises the full swarm plumbing,
+//! where both metric bugs showed up.
 
 mod common;
 
@@ -35,9 +27,8 @@ use vise::Gauge;
 
 use common::{TEST_TIMEOUT, spawn_relay_server};
 
-/// Client behaviour mirroring the app wiring: the relay client transport plus
-/// the [`RelayManager`] that keeps the reservation alive. Ping is not listed
-/// here because it lives in the outer `PlutoBehaviour`, as it does in the app.
+/// Mirrors the app wiring: relay client transport plus the [`RelayManager`].
+/// Ping lives in the outer `PlutoBehaviour`, as it does in the app.
 #[derive(NetworkBehaviour)]
 struct ClientBehaviour {
     relay: relay::client::Behaviour,
@@ -56,8 +47,7 @@ async fn relay_reservation_sets_relay_connections_and_emits_no_ping_metrics() {
     }));
 
     // The relay is deliberately absent from the known-peer set: the app builds
-    // `P2PContext` from cluster peers only, handing relays to the conn gater
-    // and the relay manager instead (`app/src/node/behaviour.rs`).
+    // `P2PContext` from cluster peers only.
     let mut client: Node<ClientBehaviour> = Node::new(
         P2PConfig::default(),
         generate_insecure_k1_key(12),
@@ -75,11 +65,8 @@ async fn relay_reservation_sets_relay_connections_and_emits_no_ping_metrics() {
     .expect("build relay client node");
 
     // Drive the client until it holds a reservation *and* has pinged the relay.
-    // The manager dials the relay and listens on its circuit address on its
-    // own, and libp2p pings a fresh connection immediately, so both usually
-    // land in the same handful of events. Metrics are recorded in
-    // `Node::handle_event` before an event is yielded, so by the time these
-    // are observed the gauge write and the ping gate have already run.
+    // `Node::handle_event` records metrics before yielding an event, so both
+    // writes have run by the time these are observed.
     let mut reserved = false;
     let mut pinged = false;
     timeout(TEST_TIMEOUT, async {
@@ -109,8 +96,8 @@ async fn relay_reservation_sets_relay_connections_and_emits_no_ping_metrics() {
         "a held reservation must show up as p2p_relay_connections{{peer}}=1"
     );
 
-    // Read with `contains` rather than indexing so these assertions don't
-    // create the very series they are checking for.
+    // `contains` rather than indexing, so the assertions don't create the very
+    // series they check for.
     assert!(
         !P2P_METRICS.ping_success.contains(&relay_label),
         "the relay must not appear in p2p_ping_success"

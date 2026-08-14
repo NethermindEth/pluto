@@ -227,15 +227,9 @@ impl RelayManager {
         }
     }
 
-    /// Reports a relay's reservation availability on `p2p_relay_connections`.
-    ///
-    /// Charon parity: the gauge tracks whether a relay *reservation* is
-    /// currently held, not how many transport connections exist — it is set to
-    /// `0` before each reserve attempt and to `1` once the circuit is reserved
-    /// (`charon/p2p/relay.go:40-44,60-101`). A transport count would not fit
-    /// the metric anyway: it carries only a `peer` label while a relay can hold
-    /// both a tcp and a quic connection, so per-transport writes would be
-    /// last-writer-wins.
+    /// Reports whether a relay *reservation* is currently held on
+    /// `p2p_relay_connections` — not how many transport connections exist,
+    /// matching Charon's `relay.go`.
     fn report_relay_connection(relay_id: PeerId, reserved: bool) {
         P2P_METRICS.relay_connections[&peer_name(&relay_id)].set(i64::from(reserved));
     }
@@ -731,8 +725,7 @@ impl RelayManager {
                 "Relay closed but addresses no longer tracked; cannot redial"
             );
             self.connection_states.remove(&relay_id);
-            // The only path that drops a relay's state without going through
-            // `set_relay_state`, so clear the reservation gauge here.
+            // The only path that drops relay state without `set_relay_state`.
             Self::report_relay_connection(relay_id, false);
             return;
         };

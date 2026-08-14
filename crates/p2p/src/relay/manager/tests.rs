@@ -865,9 +865,8 @@ async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
 
 // ---- relay_connections metric --------------------------------------
 
-/// Current `p2p_relay_connections` value for a relay, or `None` if the relay
-/// has no series yet. Reads with `get` (not indexing) so the helper doesn't
-/// create the series it reports on.
+/// Current `p2p_relay_connections` value for a relay, or `None` if it has no
+/// series yet. Uses `get` rather than indexing so it doesn't create one.
 fn relay_connections(relay_id: PeerId) -> Option<i64> {
     P2P_METRICS
         .relay_connections
@@ -889,11 +888,10 @@ async fn relay_connections_tracks_reservation_lifecycle() {
         "no series before the relay is known"
     );
 
-    // Dialing: reported, but no reservation yet.
+    // Dialing.
     mgr.queue_relay_update(relay_peer(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]));
     assert_eq!(relay_connections(relay_id), Some(0));
 
-    // Transport connected, reservation still unconfirmed.
     mgr.on_connection_established(relay_id);
     assert_eq!(
         relay_connections(relay_id),
@@ -905,8 +903,7 @@ async fn relay_connections_tracks_reservation_lifecycle() {
     mgr.on_new_listen_addr(&circuit);
     assert_eq!(relay_connections(relay_id), Some(1));
 
-    // Reservation lost while the transport connection stays up: libp2p's relay
-    // client owns refreshes, so this happens without any ConnectionClosed.
+    // Reservation lost without a ConnectionClosed: libp2p owns refreshes.
     mgr.on_expired_listen_addr(&circuit);
     assert_eq!(
         mgr.connection_states.get(&relay_id),
@@ -915,7 +912,7 @@ async fn relay_connections_tracks_reservation_lifecycle() {
     );
     assert_eq!(relay_connections(relay_id), Some(0));
 
-    // Transport connection drops → redial campaign, still no reservation.
+    // Transport drops → redial campaign.
     mgr.on_connection_closed(relay_id);
     assert_eq!(relay_connections(relay_id), Some(0));
 
@@ -927,9 +924,8 @@ async fn relay_connections_tracks_reservation_lifecycle() {
 
 #[tokio::test]
 async fn relay_connections_cleared_when_relay_state_is_dropped() {
-    // `redial_relay` gives up (and drops the connection state) when the relay's
-    // addresses are no longer tracked — the one path that doesn't go through
-    // `set_relay_state`, so the gauge must be cleared explicitly.
+    // `redial_relay` drops the state without `set_relay_state` when the relay's
+    // addresses are no longer tracked.
     let mut mgr = manager();
     let relay_id = PeerId::random();
     mgr.set_relay_state(relay_id, RelayConnectionState::Reserved);
