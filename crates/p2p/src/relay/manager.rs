@@ -26,6 +26,8 @@ use super::{
     event::{RelayDialError, RelayDialType, RelayManagerEvent},
 };
 use crate::{
+    metrics::P2P_METRICS,
+    name::peer_name,
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
 };
@@ -195,7 +197,8 @@ impl RelayManager {
         self.set_relay_state(relay.id, RelayConnectionState::Dialing);
     }
 
-    /// Updates the connection state for a relay, logging the transition and
+    /// Updates the connection state for a relay, logging the transition,
+    /// reporting reservation availability on `p2p_relay_connections`, and
     /// maintaining the `established_at` watchdog timestamp.
     fn set_relay_state(&mut self, relay_id: PeerId, next: RelayConnectionState) {
         let prev = self.connection_states.insert(relay_id, next);
@@ -207,6 +210,7 @@ impl RelayManager {
                 "Relay connection state transition"
             );
         }
+        Self::report_relay_connection(relay_id, matches!(next, RelayConnectionState::Reserved));
         match next {
             // Entering or refreshing the no-reservation-yet state: start (or
             // restart, on demote from Reserved) the stuck-Established timer.
@@ -221,6 +225,13 @@ impl RelayManager {
                 self.established_at.remove(&relay_id);
             }
         }
+    }
+
+    /// Reports whether a relay *reservation* is currently held on
+    /// `p2p_relay_connections` — not how many transport connections exist,
+    /// matching Charon's `relay.go`.
+    fn report_relay_connection(relay_id: PeerId, reserved: bool) {
+        P2P_METRICS.relay_connections[&peer_name(&relay_id)].set(i64::from(reserved));
     }
 
     /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for
@@ -714,6 +725,8 @@ impl RelayManager {
                 "Relay closed but addresses no longer tracked; cannot redial"
             );
             self.connection_states.remove(&relay_id);
+            // The only path that drops relay state without `set_relay_state`.
+            Self::report_relay_connection(relay_id, false);
             return;
         };
         tracing::debug!(

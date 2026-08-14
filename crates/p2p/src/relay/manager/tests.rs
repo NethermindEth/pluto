@@ -863,6 +863,80 @@ async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
     );
 }
 
+// ---- relay_connections metric --------------------------------------
+
+/// Current `p2p_relay_connections` value for a relay, or `None` if it has no
+/// series yet. Uses `get` rather than indexing so it doesn't create one.
+fn relay_connections(relay_id: PeerId) -> Option<i64> {
+    P2P_METRICS
+        .relay_connections
+        .get(&peer_name(&relay_id))
+        .map(vise::Gauge::get)
+}
+
+#[tokio::test]
+async fn relay_connections_tracks_reservation_lifecycle() {
+    let mut mgr = manager();
+    let relay_id = PeerId::random();
+    let circuit = addr(&format!(
+        "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+    ));
+
+    assert_eq!(
+        relay_connections(relay_id),
+        None,
+        "no series before the relay is known"
+    );
+
+    // Dialing.
+    mgr.queue_relay_update(relay_peer(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]));
+    assert_eq!(relay_connections(relay_id), Some(0));
+
+    mgr.on_connection_established(relay_id);
+    assert_eq!(
+        relay_connections(relay_id),
+        Some(0),
+        "a transport connection alone is not a reservation"
+    );
+
+    // Reservation confirmed.
+    mgr.on_new_listen_addr(&circuit);
+    assert_eq!(relay_connections(relay_id), Some(1));
+
+    // Reservation lost without a ConnectionClosed: libp2p owns refreshes.
+    mgr.on_expired_listen_addr(&circuit);
+    assert_eq!(
+        mgr.connection_states.get(&relay_id),
+        Some(&RelayConnectionState::Established),
+        "precondition: demoted without losing the transport connection"
+    );
+    assert_eq!(relay_connections(relay_id), Some(0));
+
+    // Transport drops → redial campaign.
+    mgr.on_connection_closed(relay_id);
+    assert_eq!(relay_connections(relay_id), Some(0));
+
+    // Reconnect and re-reserve.
+    mgr.on_connection_established(relay_id);
+    mgr.on_new_listen_addr(&circuit);
+    assert_eq!(relay_connections(relay_id), Some(1));
+}
+
+#[tokio::test]
+async fn relay_connections_cleared_when_relay_state_is_dropped() {
+    // `redial_relay` drops the state without `set_relay_state` when the relay's
+    // addresses are no longer tracked.
+    let mut mgr = manager();
+    let relay_id = PeerId::random();
+    mgr.set_relay_state(relay_id, RelayConnectionState::Reserved);
+    assert_eq!(relay_connections(relay_id), Some(1));
+
+    mgr.on_connection_closed(relay_id);
+
+    assert!(!mgr.connection_states.contains_key(&relay_id));
+    assert_eq!(relay_connections(relay_id), Some(0));
+}
+
 #[tokio::test]
 async fn sweep_is_noop_without_reserved_relays() {
     let target = PeerId::random();
