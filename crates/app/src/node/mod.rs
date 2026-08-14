@@ -115,9 +115,9 @@ pub enum AppError {
     #[error("relays: {0}")]
     Relays(#[from] pluto_p2p::bootnode::BootnodeError),
 
-    /// QBFT consensus construction failed.
-    #[error("consensus: {0}")]
-    Consensus(#[from] qbft::Error),
+    /// Consensus controller construction failed.
+    #[error("consensus controller: {0}")]
+    ConsensusController(#[from] pluto_consensus::controller::Error),
 
     /// QBFT p2p adapter construction failed.
     #[error("consensus p2p: {0}")]
@@ -424,10 +424,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
-    // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
-    //
-    // TODO(#402 part B): wrap in ConsensusController for dynamic protocol
-    // switching (priority/infosync).
+    // ---- Consensus (controller-owned) ----
     //
     // Resolve the broadcaster<->behaviour construction cycle with the
     // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
@@ -453,21 +450,26 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
-    let consensus = Arc::new(qbft::Consensus::new(qbft::Config {
-        peers: qbft_peers,
-        local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
-        privkey: key.clone(),
-        deadliner: cons_deadliner,
-        expired_rx: cons_expired_rx,
-        duty_gater: Arc::clone(&duty_gater),
-        broadcaster,
-        sniffer: Arc::new(|_| {}),
-        // Charon gates duplicate-attestation comparison on the alpha
-        // `ChainSplitHalt` featureset flag (off by default).
-        compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
-        feature_set: Arc::clone(&feature_set),
-        timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
-    })?);
+    // The controller owns the default QBFT impl and the swappable wrapper the
+    // duty path runs through. QBFTv2 is the only protocol today, so no swap
+    // ever happens; the indirection is what a second protocol would hook into.
+    let consensus_controller = Arc::new(pluto_consensus::controller::ConsensusController::new(
+        pluto_consensus::controller::Config {
+            peers: qbft_peers,
+            local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
+            privkey: key.clone(),
+            deadliner: cons_deadliner,
+            expired_rx: cons_expired_rx,
+            duty_gater: Arc::clone(&duty_gater),
+            broadcaster,
+            sniffer: Arc::new(|_| {}),
+            // Charon gates duplicate-attestation comparison on the alpha
+            // `ChainSplitHalt` featureset flag (off by default).
+            compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
+            feature_set: Arc::clone(&feature_set),
+            timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
+        },
+    )?);
 
     // Full public-share map (DV root pubkey -> share index -> public share),
     // used by the parsigex verifier to check each peer's partial signature.
@@ -478,7 +480,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         key: key.clone(),
         p2p_config: config.p2p.clone(),
         peers,
-        consensus: Arc::clone(&consensus),
+        consensus: consensus_controller.default_qbft(),
         // Priority quorum = cluster signing threshold (Charon's
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
@@ -555,7 +557,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             eth2_cl,
             submission_client,
             validators,
-            consensus: Arc::clone(&consensus),
+            consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
             upstream_url,
             parsigex: parsigex_seam,
@@ -577,7 +579,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- Lifecycle: spawn long-lived tasks ----
     run_lifecycle(
         node,
-        consensus,
+        consensus_controller,
         handles,
         wired,
         priv_key_lock,
@@ -689,7 +691,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
 )]
 async fn run_lifecycle(
     node: pluto_p2p::p2p::Node<CoreBehaviour>,
-    consensus: Arc<qbft::Consensus>,
+    consensus_controller: Arc<pluto_consensus::controller::ConsensusController>,
     handles: CoreHandles,
     wired: WiredComponents,
     priv_key_lock: Option<Arc<privkeylock::Service>>,
@@ -709,8 +711,9 @@ async fn run_lifecycle(
         validator_api_router,
     } = wired;
 
-    // Self-spawning actor: consensus expired-duty pruner.
-    let _consensus_task = consensus.start(ct.clone());
+    // Self-spawning actor: consensus expired-duty pruner. Starts the default
+    // impl only; a swapped-in protocol would be started by the controller.
+    consensus_controller.start(ct.clone());
 
     // Priority state-cleanup loop; the per-epoch infosync trigger is registered
     // as a slot subscriber in `wire_core_workflow`.
