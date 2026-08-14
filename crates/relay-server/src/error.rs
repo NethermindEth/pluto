@@ -36,10 +36,11 @@ pub enum RelayP2PError {
     FailedToServeHTTP(#[source] std::io::Error),
 
     /// A libp2p listener closed before reporting the address it bound.
-    #[error("libp2p listener closed during startup: {reason}")]
+    #[error("libp2p listener closed during startup: {source}")]
     ListenerClosedDuringStartup {
         /// Why the listener closed.
-        reason: String,
+        #[source]
+        source: std::io::Error,
     },
 
     /// Failed to bind the monitoring listener.

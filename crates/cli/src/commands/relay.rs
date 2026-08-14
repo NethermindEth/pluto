@@ -350,7 +350,6 @@ async fn serve_relay(
 
     pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
         .await
-        .map(|_| ())
         .map_err(Into::into)
 }
 
@@ -614,6 +613,26 @@ mod tests {
             .unwrap_or_else(|err| panic!("relay did not release {http_addr}: {err}"));
     }
 
+    #[tokio::test]
+    async fn cancelling_before_startup_stops_the_relay_without_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: pluto_relay_server::config::Config = relay_args(dir.path()).try_into().unwrap();
+        let key = super::load_or_create_key(&config).unwrap();
+
+        let ct = CancellationToken::new();
+        ct.cancel();
+
+        // An already-cancelled token must stop the relay cleanly before it
+        // binds anything, not run it until some later cancellation check.
+        let result = tokio::time::timeout(
+            SHUTDOWN_TIMEOUT,
+            pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct),
+        )
+        .await
+        .expect("relay must return promptly when cancelled at startup");
+        assert!(result.is_ok(), "expected clean shutdown, got: {result:?}");
+    }
+
     #[test]
     fn advertise_priv_inverts_filter_private_addrs() {
         // The flag is the inverse of the config knob it feeds, and every test
@@ -745,7 +764,7 @@ mod tests {
         let key = super::load_or_create_key(&config)?;
 
         let ct = CancellationToken::new();
-        let bound = pluto_relay_server::p2p::bind_relay(&config, key, ct.child_token()).await?;
+        let bound = pluto_relay_server::p2p::bind_relay(&config, key).await?;
 
         // Read the addresses off the bound relay before serving consumes it.
         let http_addr = bound
@@ -754,8 +773,8 @@ mod tests {
         let monitoring_addr = bound.monitoring_addr();
         let p2p_addrs = bound.p2p_addrs().await;
 
-        let handle =
-            tokio::spawn(async move { bound.serve().await.map(|_| ()).map_err(Into::into) });
+        let serve_ct = ct.child_token();
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(Into::into) });
 
         Ok(TestRelay {
             http_addr,

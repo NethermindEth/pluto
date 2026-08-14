@@ -15,10 +15,7 @@ use axum::{
 use k256::SecretKey;
 use libp2p::{Multiaddr, PeerId, multiaddr};
 use pluto_eth2util::enr::{EnrEntry, Record};
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use vise_exporter::{MetricsExporter, MetricsServer};
@@ -112,18 +109,18 @@ impl AppState {
     }
 }
 
-/// Serves the ENR HTTP API on an already bound listener until shutdown.
+/// Serves the ENR HTTP API on an already bound listener until `ct` is
+/// cancelled — a clean `Ok(())` — or the server fails.
 ///
 /// The listener is bound by the caller so that a bind failure is reported
 /// before any task is spawned, and so the caller learns the address that was
 /// actually bound.
 #[instrument(skip_all)]
 pub async fn enr_server(
-    server_errors: mpsc::Sender<RelayP2PError>,
     listener: TcpListener,
     state: Arc<AppState>,
     ct: CancellationToken,
-) {
+) -> Result<()> {
     info!("Starting ENR server");
 
     // Start external host resolver task if configured
@@ -146,39 +143,34 @@ pub async fn enr_server(
         .with_state(state);
 
     let ct_clone = ct.child_token();
-    if let Err(e) = axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             ct_clone.cancelled().await;
             info!("ENR server shutdown complete");
         })
         .await
-    {
-        warn!("HTTP server error: {}", e);
-        let _ = server_errors
-            .send(RelayP2PError::FailedToServeHTTP(e))
-            .await;
-    }
+        .map_err(RelayP2PError::FailedToServeHTTP);
 
     ct.cancel();
 
     if let Some(resolver_handle) = resolver_handle {
         let _ = resolver_handle.await;
     }
+
+    result
 }
 
 /// Binds the Prometheus monitoring listener on the given address.
 ///
 /// Binding is separate from serving so a bind failure fails the relay before
 /// anything is spawned, and so the caller can read back the bound address.
-#[instrument(skip(ct))]
+#[instrument]
 pub(crate) async fn bind_monitoring_server(
     bind_addr: SocketAddr,
-    ct: CancellationToken,
 ) -> Result<MetricsServer<'static>> {
     info!("Binding monitoring server");
 
     MetricsExporter::default()
-        .with_graceful_shutdown(ct.cancelled_owned())
         .bind(bind_addr)
         .await
         .map_err(|source| RelayP2PError::FailedToBindMonitoringListener {
@@ -187,24 +179,18 @@ pub(crate) async fn bind_monitoring_server(
         })
 }
 
-/// Serves an already bound monitoring listener until shutdown.
+/// Serves an already bound monitoring listener.
 ///
-/// Serve failures are reported on `server_errors`, so a monitoring server that
-/// dies takes the relay down with it instead of going unnoticed behind a log
-/// line and leaving the port unserved.
+/// Returns only on failure: the server has no shutdown signal of its own and
+/// is stopped by dropping this future, which closes its listener.
 #[instrument(skip_all, fields(addr = %server.local_addr()))]
-pub(crate) async fn serve_monitoring_server(
-    server_errors: mpsc::Sender<RelayP2PError>,
-    server: MetricsServer<'static>,
-) {
+pub(crate) async fn serve_monitoring_server(server: MetricsServer<'static>) -> Result<()> {
     info!("Starting monitoring server");
 
-    if let Err(err) = server.start().await {
-        warn!("Monitoring server error: {err}");
-        let _ = server_errors
-            .send(RelayP2PError::FailedToServeMonitoring(err))
-            .await;
-    }
+    server
+        .start()
+        .await
+        .map_err(RelayP2PError::FailedToServeMonitoring)
 }
 
 /// Error response for HTTP handlers.

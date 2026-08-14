@@ -16,10 +16,7 @@ use libp2p::{Multiaddr, identity::Keypair};
 use pluto_eth2util::enr::Record;
 use pluto_p2p::{config::P2PConfig, utils::external_multiaddrs};
 use rand::rngs::OsRng;
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 
 /// Constructs a `P2PConfig` with sensible listen addrs so the external-addr
@@ -45,7 +42,7 @@ fn p2p_config(external_ip: Option<&str>, external_host: Option<&str>, port: u16)
 async fn spawn_server(
     p2p_config: P2PConfig,
     listeners: Vec<Multiaddr>,
-) -> (String, CancellationToken, tokio::task::JoinHandle<()>) {
+) -> (String, CancellationToken, ServerHandle) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral");
@@ -63,7 +60,6 @@ async fn spawn_server(
     let secret_key = SecretKey::random(&mut OsRng);
     let peer_id = Keypair::generate_secp256k1().public().to_peer_id();
     let ct = CancellationToken::new();
-    let (errs, _errs_rx) = mpsc::channel(4);
 
     let state = Arc::new(pluto_relay_server::AppState::new(
         p2p_config,
@@ -75,14 +71,15 @@ async fn spawn_server(
     ));
 
     let ct_inner = ct.clone();
-    let handle = tokio::spawn(pluto_relay_server::enr_server(
-        errs, listener, state, ct_inner,
-    ));
+    let handle = tokio::spawn(pluto_relay_server::enr_server(listener, state, ct_inner));
 
     (format!("http://{http_addr}"), ct, handle)
 }
 
-async fn shutdown(ct: CancellationToken, handle: tokio::task::JoinHandle<()>) {
+/// Task the `enr_server` runs on, resolving with the server's exit status.
+type ServerHandle = tokio::task::JoinHandle<Result<(), pluto_relay_server::RelayP2PError>>;
+
+async fn shutdown(ct: CancellationToken, handle: ServerHandle) {
     ct.cancel();
     // The server may take a moment to drain; bound the wait so a hung test
     // fails loudly instead of hanging CI.

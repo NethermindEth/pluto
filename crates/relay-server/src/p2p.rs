@@ -1,16 +1,12 @@
 //! Relay P2P node implementation.
 
-use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashSet, future::Future, net::SocketAddr, sync::Arc};
 
 use futures::StreamExt;
 use k256::SecretKey;
 use libp2p::{Multiaddr, PeerId, core::transport::ListenerId, relay, swarm::SwarmEvent};
 use pluto_p2p::{behaviours::pluto::PlutoBehaviourEvent, name::peer_name};
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-    task::JoinHandle,
-};
+use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use vise_exporter::MetricsServer;
@@ -31,13 +27,25 @@ use pluto_p2p::{
 
 /// Runs a relay P2P node: binds every listener, then serves until `ct` is
 /// cancelled or a server fails.
+///
+/// Cancellation is honored during startup too: it drops the bind — and with it
+/// everything the bind held — and reports a clean shutdown.
 #[instrument(skip(config, key, ct))]
 pub async fn run_relay_p2p_node(
     config: &Config,
     key: SecretKey,
     ct: CancellationToken,
 ) -> Result<()> {
-    bind_relay(config, key, ct).await?.serve().await
+    let bound = tokio::select! {
+        biased;
+        () = ct.cancelled() => {
+            info!("Relay server shutdown signal received during startup");
+            return Ok(());
+        }
+        bound = bind_relay(config, key) => bound?,
+    };
+
+    bound.serve(ct).await
 }
 
 /// A relay whose listeners are all bound, but which is not serving yet.
@@ -51,9 +59,8 @@ pub async fn run_relay_p2p_node(
 /// listeners before it creates the swarm, so no peer is ever accepted by a
 /// relay that then fails to start.
 ///
-/// Dropping a `BoundRelay` without calling [`BoundRelay::serve`] releases every
-/// listener it holds, but does not cancel the [`CancellationToken`] passed to
-/// [`bind_relay`] — that token belongs to the caller.
+/// Dropping a `BoundRelay` without calling [`BoundRelay::serve`] releases
+/// every listener it holds.
 ///
 /// Production code should use [`run_relay_p2p_node`]; the halves are only
 /// pulled apart by tests that need the ports the kernel assigned.
@@ -70,8 +77,6 @@ pub struct BoundRelay {
     enr_listener: Option<TcpListener>,
     /// Bound Prometheus monitoring server, unless monitoring is disabled.
     monitoring_server: Option<MetricsServer<'static>>,
-    /// Cancels the relay and everything it spawns.
-    ct: CancellationToken,
 }
 
 impl BoundRelay {
@@ -100,9 +105,23 @@ impl BoundRelay {
         self.listen_addrs.read().await.clone()
     }
 
-    /// Serves every bound listener until the relay is cancelled or one of its
+    /// Serves every bound listener until `ct` is cancelled or one of the
     /// servers fails.
-    pub async fn serve(self) -> Result<()> {
+    ///
+    /// The servers run as `select!` arms rather than spawned tasks, so leaving
+    /// the loop — for either reason — drops them, and with them their
+    /// listeners, before this returns: a failed relay never leaves a listener
+    /// bound behind it. `ct` is cancelled on the way out so tasks scoped to it
+    /// die with the relay.
+    pub async fn serve(self, ct: CancellationToken) -> Result<()> {
+        let (git_hash, build_time) = pluto_core::version::git_commit();
+        info!(
+            version = %*pluto_core::version::VERSION,
+            git_hash = %git_hash,
+            build_time = %build_time,
+            "Pluto relay starting"
+        );
+
         let http_addr = self.http_addr();
         let Self {
             mut node,
@@ -110,19 +129,12 @@ impl BoundRelay {
             state,
             enr_listener,
             monitoring_server,
-            ct,
         } = self;
 
-        let (server_errors, mut server_errors_receiver) = mpsc::channel(3);
-
-        let enr_server_handle = enr_listener.map(|listener| {
-            tokio::spawn(enr_server(
-                server_errors.clone(),
-                listener,
-                state,
-                ct.child_token(),
-            ))
-        });
+        let enr_server_fut = serve_if_bound(
+            enr_listener.map(|listener| enr_server(listener, state, ct.child_token())),
+        );
+        tokio::pin!(enr_server_fut);
 
         // The bound address, not the configured one: they differ whenever the
         // configured port was 0.
@@ -132,25 +144,18 @@ impl BoundRelay {
             info!("Runtime multiaddrs not available via http, since http-address flag is not set");
         }
 
-        // Serve the monitoring listener bound by `bind_relay`.
-        let monitoring_handle = monitoring_server
-            .map(|server| tokio::spawn(serve_monitoring_server(server_errors.clone(), server)));
+        let monitoring_fut = serve_if_bound(monitoring_server.map(serve_monitoring_server));
+        tokio::pin!(monitoring_fut);
 
-        // A server failure is returned only once the shutdown below has run, so
-        // a failed relay never leaves listeners bound behind it.
-        let server_error = loop {
+        let result = loop {
             tokio::select! {
                 biased;
                 _ = ct.cancelled() => {
-                    info!("Relay server shutdown signal received, shutting down gracefully");
-                    break None;
+                    info!("Relay server shutdown signal received, shutting down");
+                    break Ok(());
                 },
-                error = server_errors_receiver.recv() => {
-                    if let Some(error) = error {
-                        warn!("Server error: {}", error);
-                        break Some(error);
-                    }
-                },
+                result = &mut enr_server_fut => break result,
+                result = &mut monitoring_fut => break result,
                 event = node.select_next_some() => {
                     apply_addr_update(&listen_addrs, handle_swarm_event(&event)).await;
                 }
@@ -158,27 +163,16 @@ impl BoundRelay {
         };
 
         ct.cancel();
+        result
+    }
+}
 
-        // Concurrently: the two are unrelated, and each gets its own grace
-        // period, so joining them in sequence would double the worst-case
-        // shutdown against an orchestrator's SIGTERM budget.
-        tokio::join!(
-            async {
-                if let Some(handle) = enr_server_handle {
-                    join_or_abort("ENR server", handle).await;
-                }
-            },
-            async {
-                if let Some(handle) = monitoring_handle {
-                    join_or_abort("Monitoring server", handle).await;
-                }
-            },
-        );
-
-        match server_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+/// Runs a server future when its listener is configured, and stays pending
+/// otherwise, so the `select!` arm of an absent server never fires.
+async fn serve_if_bound(server: Option<impl Future<Output = Result<()>>>) -> Result<()> {
+    match server {
+        Some(server) => server.await,
+        None => std::future::pending().await,
     }
 }
 
@@ -195,20 +189,8 @@ impl BoundRelay {
 /// reservations — so a bind that failed after it would take down peers the
 /// relay had already accepted.
 #[doc(hidden)]
-#[instrument(skip(config, key, ct))]
-pub async fn bind_relay(
-    config: &Config,
-    key: SecretKey,
-    ct: CancellationToken,
-) -> Result<BoundRelay> {
-    let (git_hash, build_time) = pluto_core::version::git_commit();
-    info!(
-        version = %*pluto_core::version::VERSION,
-        git_hash = %git_hash,
-        build_time = %build_time,
-        "Pluto relay starting"
-    );
-
+#[instrument(skip(config, key))]
+pub async fn bind_relay(config: &Config, key: SecretKey) -> Result<BoundRelay> {
     // Bound here rather than inside each server's task, so an unusable address
     // or a lost race for a port fails the relay while nothing has been spawned.
     let monitoring_server = match config.monitoring_addr.clone() {
@@ -217,7 +199,7 @@ pub async fn bind_relay(
                 .parse::<SocketAddr>()
                 .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
 
-            Some(bind_monitoring_server(bind_addr, ct.child_token()).await?)
+            Some(bind_monitoring_server(bind_addr).await?)
         }
         None => {
             info!("Prometheus monitoring not available, since monitoring-address flag is not set");
@@ -304,7 +286,6 @@ pub async fn bind_relay(
         state,
         enr_listener,
         monitoring_server,
-        ct,
     })
 }
 
@@ -328,10 +309,11 @@ async fn wait_for_listen_addrs(
 
     while !pending.is_empty() {
         let event = node.select_next_some().await;
+        let addr_update = handle_swarm_event(&event);
 
-        match &event {
+        match event {
             SwarmEvent::NewListenAddr { listener_id, .. } => {
-                pending.remove(listener_id);
+                pending.remove(&listener_id);
             }
             // A listener that closes will never report an address. If it closed
             // because of an error the relay cannot start; a clean close just
@@ -341,18 +323,13 @@ async fn wait_for_listen_addrs(
                 reason,
                 ..
             } => {
-                pending.remove(listener_id);
-
-                if let Err(err) = reason {
-                    return Err(RelayP2PError::ListenerClosedDuringStartup {
-                        reason: err.to_string(),
-                    });
-                }
+                pending.remove(&listener_id);
+                reason.map_err(|source| RelayP2PError::ListenerClosedDuringStartup { source })?;
             }
             _ => {}
         }
 
-        apply_addr_update(listen_addrs, handle_swarm_event(&event)).await;
+        apply_addr_update(listen_addrs, addr_update).await;
     }
 
     Ok(())
@@ -373,27 +350,6 @@ async fn apply_addr_update(listen_addrs: &Arc<RwLock<Vec<Multiaddr>>>, update: A
                 .retain(|addr| !addresses.contains(addr));
         }
         AddrUpdate::None => {}
-    }
-}
-
-/// Grace period for a server task to finish shutting down before it is aborted.
-const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Waits for a server task to shut down, aborting it if it overruns
-/// [`SERVER_SHUTDOWN_TIMEOUT`].
-///
-/// The abort is awaited: dropping a `JoinHandle` only *detaches* the task,
-/// which would leave it holding its listener after the relay has reported that
-/// it stopped.
-async fn join_or_abort(name: &str, mut handle: JoinHandle<()>) {
-    match tokio::time::timeout(SERVER_SHUTDOWN_TIMEOUT, &mut handle).await {
-        Ok(Ok(())) => info!("{name} shutdown complete"),
-        Ok(Err(err)) => warn!("{name} shutdown error: {err}"),
-        Err(_) => {
-            warn!("{name} shutdown timed out, aborting");
-            handle.abort();
-            let _ = handle.await;
-        }
     }
 }
 
