@@ -2,10 +2,24 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/f665af0cdb70ed27e1bd8f9fdfecaf451260fc55";
     utils.url = "github:numtide/flake-utils";
+    # Provides rustup-style toolchain management inside Nix.
+    # `inputs.nixpkgs.follows` ensures we use the same nixpkgs everywhere
+    # and avoids downloading a second copy of nixpkgs.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { nixpkgs, utils, ... }: utils.lib.eachDefaultSystem (system:
+  outputs = { nixpkgs, utils, rust-overlay, ... }: utils.lib.eachDefaultSystem (system:
     let
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ rust-overlay.overlays.default ];
+      };
+
+      # Derive the Rust toolchain from rust-toolchain.toml so that `cargo`
+      # and `rustc` in the dev shell exactly match what CI uses (1.95.0).
+      rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
       oas3-gen = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
         pname = "oas3-gen";
@@ -26,6 +40,7 @@
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
+          rustToolchain
           bashInteractive
           cargo-deny
           cargo-llvm-cov
@@ -41,6 +56,11 @@
           chmod +x .githooks/* && git config --local core.hooksPath .githooks/
         '';
 
+        # rustfmt.toml uses nightly-only options (e.g. `imports_granularity`,
+        # `reorder_impl_items`, `edition = "2024"`) while rust-toolchain.toml
+        # pins a stable channel.  RUSTC_BOOTSTRAP=1 lets the stable rustfmt
+        # accept those options without requiring a separate nightly install.
+        # See: https://github.com/rust-lang/rustfmt/issues/4306
         RUSTC_BOOTSTRAP = "1";
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
         PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
