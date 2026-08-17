@@ -1,8 +1,8 @@
-//! # Charon Cluster
+//! # Pluto Cluster
 //!
-//! Cluster management and coordination for Charon distributed validator nodes.
+//! Cluster management and coordination for Pluto distributed validator nodes.
 //! This crate handles the formation, management, and coordination of validator
-//! clusters in the Charon network.
+//! clusters in the Pluto network.
 
 /// `Definition` type representing the intended cluster configuration
 /// (operators, validators, fork version) with EIP-712 hashing and verification.

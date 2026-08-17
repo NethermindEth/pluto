@@ -10,7 +10,9 @@ The easiest way to set up the development environment is using [Nix](https://nix
 nix develop
 ```
 
-This automatically provides all required dependencies (Rust toolchain, Protobuf, oas3-gen, cargo-deny, cargo-machete) and configures git hooks.
+This automatically provides the auxiliary dependencies (Protobuf, Go, oas3-gen, cargo-deny, cargo-machete) and configures git hooks.
+
+> **Note:** `nix develop` does **not** manage the Rust toolchain. The toolchain is pinned in `rust-toolchain.toml` and must be installed separately via [rustup](https://rustup.rs/). After installing rustup, run `rustup show` once in the repo root to install the pinned toolchain automatically. The nightly toolchain is also required for `rustfmt` — install it with `rustup toolchain install nightly`.
 
 ### Manual Setup
 
@@ -29,6 +31,8 @@ Then install the pre-push git hook:
 git config core.hooksPath .githooks
 ```
 
+The pre-push hook (`.githooks/pre-push`) runs the full quality-gate sequence in order: `cargo deny check`, `cargo machete`, `cargo +nightly fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --workspace --all-features`. All checks must pass before a push is accepted.
+
 ## Building
 To build the project with all its crates, run:
 
@@ -42,6 +46,8 @@ To run all tests - unit and integration - run:
 ```sh
 cargo test --workspace --all-features
 ```
+
+> **Note:** `--all-features` enables the `integration` feature in `crates/eth2api`, which uses [testcontainers](https://github.com/testcontainers/testcontainers-rs) and therefore requires a **running Docker daemon**. Without Docker the integration tests will fail with opaque errors. Smoke tests that invoke Go tooling (e.g. `create-cluster-compare.sh`) additionally require [Go](https://go.dev/dl/) to be installed.
 
 ## Running the Rust Documentation Locally
 To build the documentation locally:
@@ -102,9 +108,9 @@ This command will open a browser page that contains a graphic representation of 
 
 ### Dhat
 We can add Dhat as a dependency:
-```rust
+```toml
 [dependencies]
-dhat = "latest"
+dhat = "0.3"
 
 [features]
 dhat-heap = []

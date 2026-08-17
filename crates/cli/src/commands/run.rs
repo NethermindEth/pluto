@@ -117,7 +117,7 @@ pub struct RunPrivKeyArgs {
         long = "private-key-file",
         env = "CHARON_PRIVATE_KEY_FILE",
         default_value = ".charon/charon-enr-private-key",
-        help = "The path to the pluto enr private key file."
+        help = "The path to the charon-enr-private-key file (Charon-compatible filename preserved for interoperability)."
     )]
     pub private_key_file: String,
 
