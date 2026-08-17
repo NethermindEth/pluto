@@ -97,7 +97,7 @@ pub struct Config {
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
     /// Injected feature set, resolved once at construction.
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
 }
 
 /// Decoded consensus value supported by this component.
@@ -290,7 +290,7 @@ pub struct Consensus {
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,
     compare_attestations: bool,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
     subscribers: SubscriberSet,
     instances: Arc<Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>>,
 }
@@ -1395,14 +1395,14 @@ pub(crate) mod tests {
         consensus_with_feature_set(
             local_peer_idx,
             duty_allowed,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         )
     }
 
     pub(crate) fn consensus_with_feature_set(
         local_peer_idx: i64,
         duty_allowed: bool,
-        feature_set: Arc<pluto_featureset::FeatureSet>,
+        feature_set: &'static pluto_featureset::FeatureSet,
     ) -> Consensus {
         Consensus::new(Config {
             peers: peers(),
@@ -1426,7 +1426,8 @@ pub(crate) mod tests {
             DeadlinerTask::start(cancel, "qbft-test", FutureCalculator)
         };
 
-        let fs = Arc::new(pluto_featureset::FeatureSet::new());
+        let fs: &'static pluto_featureset::FeatureSet =
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
         Config {
             peers: vec![],
             local_peer_idx: 0,
@@ -1437,7 +1438,7 @@ pub(crate) mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: false,
-            timer_func: get_round_timer_func(fs.clone()),
+            timer_func: get_round_timer_func(fs),
             feature_set: fs,
         }
     }

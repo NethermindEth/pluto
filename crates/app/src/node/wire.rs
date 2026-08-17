@@ -185,19 +185,21 @@ impl DeadlineCalculator for OffsetCalculator {
 /// core panics if fed those submissions. So mask the (alpha, off-by-default)
 /// `AttestationInclusion` feature off until that path lands, keeping the
 /// analyser and the checker consistent.
-fn tracker_feature_set(feature_set: &Arc<FeatureSet>) -> Arc<FeatureSet> {
+fn tracker_feature_set(feature_set: &'static FeatureSet) -> &'static FeatureSet {
     if !feature_set.enabled(Feature::AttestationInclusion) {
-        return Arc::clone(feature_set);
+        return feature_set;
     }
 
     tracing::warn!(
         "Feature attestation_inclusion is enabled but not yet supported by the \
          inclusion checker; disabling it for duty tracking"
     );
-    let mut fs = (**feature_set).clone();
+    let mut fs = feature_set.clone();
     fs.state
         .insert(Feature::AttestationInclusion, Status::Disable);
-    Arc::new(fs)
+    // Derived set leaks its own small static, matching the process-lifetime
+    // invariant of the primary set.
+    Box::leak(Box::new(fs))
 }
 
 /// Returns the slot to start tracking from, which suppresses noisy failed
@@ -301,7 +303,7 @@ pub struct WireInputs {
     pub peers: Vec<PeerInfo>,
     /// Resolved feature set. The tracker consults it to decide which duty types
     /// have an on-chain inclusion step (`Feature::AttestationInclusion`).
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
     /// Infosync component, triggered on each epoch's last slot to run the
     /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
@@ -512,7 +514,7 @@ pub async fn wire_core_workflow(
         )),
     );
 
-    let tracker_feature_set = tracker_feature_set(&feature_set);
+    let tracker_feature_set = tracker_feature_set(feature_set);
 
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
     let tracker = TrackerService::start(
@@ -523,7 +525,7 @@ pub async fn wire_core_workflow(
         DeleterRx(tracker_deleter_rx),
         peers,
         track_from,
-        Arc::clone(&tracker_feature_set),
+        tracker_feature_set,
     );
 
     // Resolves the terminal `ChainInclusion` step; without it every duty with an
@@ -543,7 +545,7 @@ pub async fn wire_core_workflow(
                         tracker.inclusion_checked(duty, pubkey, err).await;
                     });
                 }),
-                Arc::clone(&tracker_feature_set),
+                tracker_feature_set,
             )
             .await
             .map_err(AppError::BeaconApi)?,
@@ -1553,14 +1555,14 @@ mod tests {
         assert!(active.contains_key(&1));
     }
 
-    fn feature_set(enabled: Vec<Feature>) -> Arc<FeatureSet> {
-        Arc::new(
+    fn feature_set(enabled: Vec<Feature>) -> &'static FeatureSet {
+        Box::leak(Box::new(
             FeatureSet::from_config(pluto_featureset::Config {
                 enabled,
                 ..Default::default()
             })
             .expect("valid featureset"),
-        )
+        ))
     }
 
     /// `AttestationInclusion` is masked off for the tracker so the
@@ -1571,15 +1573,15 @@ mod tests {
         let fs = feature_set(vec![Feature::AttestationInclusion]);
         assert!(fs.enabled(Feature::AttestationInclusion));
 
-        let tracker_fs = tracker_feature_set(&fs);
+        let tracker_fs = tracker_feature_set(fs);
         assert!(!tracker_fs.enabled(Feature::AttestationInclusion));
     }
 
-    /// Without the feature the set is passed through untouched (same `Arc`).
+    /// Without the feature the set is passed through untouched (same pointer).
     #[test]
     fn tracker_feature_set_is_passthrough_when_disabled() {
         let fs = feature_set(vec![]);
-        let tracker_fs = tracker_feature_set(&fs);
-        assert!(Arc::ptr_eq(&fs, &tracker_fs));
+        let tracker_fs = tracker_feature_set(fs);
+        assert!(std::ptr::eq(fs, tracker_fs));
     }
 }

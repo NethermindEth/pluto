@@ -8,19 +8,23 @@
 //!
 //! There is intentionally **no global feature state** (no `GLOBAL_STATE`).
 //! Build one [`FeatureSet`] during application wiring and **inject it as
-//! `Arc<FeatureSet>`** into every component that reads a feature (consensus,
-//! round timers, tracker, …); each reads it via [`FeatureSet::enabled`].
+//! `&'static FeatureSet`** into every component that reads a feature
+//! (consensus, round timers, tracker, …); each reads it via
+//! [`FeatureSet::enabled`].
 //!
 //! Resolve it once at startup:
 //! 1. `FeatureSet::from_config(cfg)`.
 //! 2. For gnosis/chiado, `enable_gnosis_block_hotfix_if_not_disabled(&cfg)`
-//!    (needs `&mut`) — apply this *before* wrapping in `Arc`.
-//! 3. `Arc::new(fs)`, then share read-only.
+//!    (needs `&mut`) — apply this *before* leaking.
+//! 3. `Box::leak(Box::new(fs))` once, then thread the resulting `&'static
+//!    FeatureSet` (a `Copy` pointer) read-only.
 //!
-//! Feature state is configured once at startup and never mutated afterward. The
-//! immutable `Arc<FeatureSet>` encodes that invariant at the type level: no
-//! lock on the (hot) read path, and tests construct their own set instead of
-//! mutating shared state.
+//! Feature state is configured once at startup and never mutated afterward, so
+//! it lives for the whole process lifetime. Leaking once encodes that invariant
+//! at the type level: the shared reference is `Copy` (no `Arc` clones, no deref
+//! juggling), there is no lock on the (hot) read path, and tests construct —
+//! and leak — their own set instead of mutating shared state. Any derived set
+//! (e.g. a masked variant) leaks its own small static too.
 
 use std::{collections::HashMap, fmt};
 

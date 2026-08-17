@@ -169,7 +169,7 @@ impl Component {
         versions: Vec<SemVer>,
         protocols: Vec<String>,
         proposals: Vec<ProposalType>,
-        feature_set: &FeatureSet,
+        feature_set: &'static FeatureSet,
     ) -> Self {
         let store = Arc::new(ResultStore::new(augment_protocols(
             protocols,

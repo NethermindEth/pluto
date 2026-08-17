@@ -172,7 +172,7 @@ fn build_host(
         versions,
         protocols,
         proposals,
-        &FeatureSet::new(),
+        Box::leak(Box::new(FeatureSet::new())),
     ));
 
     // Capture subscriber registered after infosync's (fan-out runs in

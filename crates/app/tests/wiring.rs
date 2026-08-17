@@ -275,7 +275,7 @@ fn wire_inputs_with(
             name: "test".to_string(),
             share_idx: 1,
         }],
-        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        feature_set: Box::leak(Box::new(pluto_featureset::FeatureSet::default())),
         infosync: None,
     }
 }
@@ -301,7 +301,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
         name: "node-0".to_string(),
         public_key: key.public_key(),
     };
-    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
+    let feature_set: &'static pluto_featureset::FeatureSet =
+        Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
     let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
@@ -313,7 +314,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
             broadcaster: Arc::new(|_ct, _msg| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: true,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),

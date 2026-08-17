@@ -342,7 +342,7 @@ pub struct TrackerService {
     failed_duty_reporter: Box<dyn DutyResultReporter>,
     participation_reporter: Box<dyn ParticipationReporter>,
     unsupported_ignorer: UnsupportedIgnorer,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
 }
 
 impl TrackerService {
@@ -365,7 +365,7 @@ impl TrackerService {
         deleter_rx: DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Arc<TrackerHandle> {
         Self::start_with_buffer_and_sinks(
             cancel,
@@ -392,7 +392,7 @@ impl TrackerService {
         buffer: usize,
         failed_duty_reporter: Box<dyn DutyResultReporter>,
         participation_reporter: Box<dyn ParticipationReporter>,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Arc<TrackerHandle> {
         let (input_tx, input_rx) = mpsc::channel(buffer);
 
@@ -420,13 +420,13 @@ impl TrackerService {
         let parsigs = extract_par_sigs(duty_events);
         report_par_sigs(duty, &parsigs);
 
-        let failed_step = duty_failed_step(duty_events, &self.feature_set);
+        let failed_step = duty_failed_step(duty_events, self.feature_set);
         let outcome = analyse_duty_failed(
             duty,
             events,
             &failed_step,
             msg_roots_consistent(&parsigs),
-            &self.feature_set,
+            self.feature_set,
         );
 
         if self.unsupported_ignorer.check(duty, outcome.as_ref()) {
@@ -644,7 +644,7 @@ mod tests {
             EVENT_BUFFER,
             failure_sink,
             participation_sink,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         );
 
         (handle, analyser_tx, deleter_tx)
@@ -725,7 +725,7 @@ mod tests {
             DeleterRx(deleter_rx),
             vec![],
             from_slot,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         )
     }
 
@@ -813,7 +813,7 @@ mod tests {
             DeleterRx(deleter_rx),
             vec![],
             0,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         );
 
         let duty = attester(1);
