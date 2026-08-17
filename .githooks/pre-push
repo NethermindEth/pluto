@@ -3,8 +3,8 @@
 set -e
 
 # Dependency audit
-if ! cargo deny check; then
-    echo "❌ Critical: Vulnerable dependencies detected (run 'cargo deny check')"
+if ! cargo deny check --hide-inclusion-graph; then
+    echo "❌ Critical: Vulnerable dependencies detected (run 'cargo deny check --hide-inclusion-graph')"
     exit 1
 fi
 

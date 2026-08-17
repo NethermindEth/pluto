@@ -34,7 +34,7 @@ jobs:
         run: cargo install cargo-machete@0.9.2 --locked
 
       - name: Run `cargo-deny` audit
-        run: cargo deny check
+        run: cargo deny check --hide-inclusion-graph
 
       - name: Run `cargo-machete`
         run: cargo machete
