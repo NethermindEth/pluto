@@ -25,7 +25,7 @@ pub const ETH1_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x01;
 pub const EIP7251_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x02;
 
 /// DOMAIN_DEPOSIT type as per ETH2 spec
-/// See: https://benjaminion.xyz/eth2-annotated-spec/phase0/beacon-chain/#domain-types
+/// See: <https://benjaminion.xyz/eth2-annotated-spec/phase0/beacon-chain/#domain-types>
 pub const DEPOSIT_DOMAIN_TYPE: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
 
 /// Withdrawal credentials length (32 bytes)

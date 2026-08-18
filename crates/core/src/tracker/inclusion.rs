@@ -1,14 +1,14 @@
 //! On-chain inclusion checking for broadcast duties.
 //!
-//! [`InclusionCore`] caches duties as they are submitted to the beacon node
+//! `InclusionCore` caches duties as they are submitted to the beacon node
 //! and, when fed observed blocks and attestations, determines whether each duty
 //! landed on-chain. For every resolved duty it invokes the tracker callback
-//! with either success or a [`InclusionError::NotIncludedOnChain`] error, and
+//! with either success or a `InclusionError::NotIncludedOnChain` error, and
 //! reports inclusion delay / missed-duty metrics.
 //!
 //! The core is deliberately free of any beacon-node I/O so it can be driven
 //! directly from tests. The networked driver that polls the beacon node and
-//! builds the [`Block`] inputs is layered on top separately.
+//! builds the `Block` inputs is layered on top separately.
 
 // TODO: The networked `InclusionChecker` that wires the default reporters and drives
 // this core is added in a follow-up; until then some core items (default
@@ -182,8 +182,8 @@ pub struct InclusionCore {
 }
 
 impl InclusionCore {
-    /// Creates a core with the production reporters ([`report_missed`] and
-    /// [`report_att_inclusion`]) and the given tracker callback.
+    /// Creates a core with the production reporters (`report_missed` and
+    /// `report_att_inclusion`) and the given tracker callback.
     pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
         Self::with_handlers(
             tracker_incl_fn,

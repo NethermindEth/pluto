@@ -25,7 +25,7 @@
 //! Both match go-eth2-client's transport and what a real Electra+ beacon node
 //! accepts, and are exercised against Pluto's own validator-API router; the
 //! goldens capture the exact bytes. All other beacon-node interactions use the
-//! generated client. On non-success responses [`submit_json`] surfaces the HTTP
+//! generated client. On non-success responses `submit_json` surfaces the HTTP
 //! status and response body, so a shape mismatch shows up directly in the error
 //! message rather than as a silent reqwest failure.
 

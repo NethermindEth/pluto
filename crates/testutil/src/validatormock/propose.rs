@@ -1,11 +1,11 @@
 //! Block proposal + builder registration drivers.
 //!
 //! Rust port of `charon/testutil/validatormock/propose.go`. Mirrors the Go
-//! [`ProposeBlock`] flow: fetch active validators, locate the slot proposer
+//! `ProposeBlock` flow: fetch active validators, locate the slot proposer
 //! via the proposer-duties endpoint, build a randao reveal, fetch the block
 //! from `produce_block_v3`, sign its tree-hash root with
 //! `DomainBeaconProposer`, and POST the signed block (or signed blinded block)
-//! back. Also ports [`Register`] for builder validator registrations using
+//! back. Also ports `Register` for builder validator registrations using
 //! `DomainApplicationBuilder` over epoch 0.
 //!
 //! The Go code carries Phase0/Altair branches that the Pluto Rust client

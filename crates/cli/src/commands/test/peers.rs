@@ -98,6 +98,9 @@ pub struct TestPeersArgs {
     pub test_config: TestConfigArgs,
 
     /// [REQUIRED] Comma-separated list of each peer ENR address.
+    // Doc comment doubles as clap help text, so the brackets must stay
+    // literal rather than becoming a rustdoc link.
+    #[allow(rustdoc::broken_intra_doc_links)]
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
 

@@ -3,27 +3,27 @@
 //! This module bridges the domain-specific consensus protobuf messages with
 //! the generic [`pluto_core::qbft`] state machine.
 //!
-//! [`QbftMsg`](pbconsensus::QbftMsg) carries only consensus metadata and value
+//! `QbftMsg` carries only consensus metadata and value
 //! hashes. The concrete proposal values are transported beside it in
-//! [`QbftConsensusMsg`](pbconsensus::QbftConsensusMsg) as protobuf `Any`
-//! payloads. [`Msg`] ties those two pieces back together by:
+//! `QbftConsensusMsg` as protobuf `Any`
+//! payloads. `Msg` ties those two pieces back together by:
 //!
 //! - converting `value_hash` and `prepared_value_hash` into fixed `[u8; 32]`
 //!   values for the generic QBFT core;
 //! - checking that every non-zero hash referenced by the message exists in the
-//!   supplied [`ValueMap`];
+//!   supplied `ValueMap`;
 //! - recursively wrapping raw justification messages so the core can validate
 //!   PRE-PREPARE and ROUND-CHANGE justifications;
 //! - preserving the raw protobufs so the transport layer can rebuild the
-//!   original consensus message with [`Msg::to_consensus_msg`].
+//!   original consensus message with `Msg::to_consensus_msg`.
 //!
 //! Do not hash `Any` directly. The consensus hash is over the deterministic
 //! protobuf bytes of the inner message.
 //!
 //! Inbound callers validate message type, duty type, peer membership, rounds,
-//! and signatures before constructing [`Msg`]. This adapter preserves raw
+//! and signatures before constructing `Msg`. This adapter preserves raw
 //! message types, while invalid duty wire values project to
-//! [`DutyType::Unknown`].
+//! `DutyType::Unknown`.
 
 use std::{any, collections::HashMap, fmt, sync};
 
