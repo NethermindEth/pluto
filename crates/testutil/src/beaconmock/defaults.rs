@@ -759,7 +759,11 @@ pub(crate) fn default_spec() -> Value {
         ("DOMAIN_SYNC_COMMITTEE", "0x07000000"),
         ("DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF", "0x08000000"),
         ("DOMAIN_CONTRIBUTION_AND_PROOF", "0x09000000"),
-        ("DOMAIN_APPLICATION_BUILDER", "0x00000001"),
+        // `DOMAIN_APPLICATION_BUILDER` is deliberately absent: real beacon
+        // nodes do not serve it (the Holesky snapshot backing this fixture
+        // does not either), and the client injects it via
+        // `SPEC_DOMAIN_FALLBACKS`. Adding it here would mask a regression in
+        // that fallback.
         ("EPOCHS_PER_SYNC_COMMITTEE_PERIOD", "256"),
     ];
     for (key, value) in overrides {

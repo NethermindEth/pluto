@@ -42,7 +42,7 @@ use behaviour::{CoreBehaviour, CoreHandles};
 use pluto_core::types::PubKey;
 use wire::{ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, WiredComponents};
 
-use crate::{health, monitoringapi, privkeylock};
+use crate::{builderregistration::BuilderRegistrationService, health, monitoringapi, privkeylock};
 
 /// Buffer for the validator-API-call channel feeding the readiness checker.
 /// Sends are non-blocking (dropped when full): the checker only needs to
@@ -82,6 +82,18 @@ pub enum AppError {
     /// A distributed validator's public key was not 48 bytes.
     #[error("distributed validator pubkey is not 48 bytes")]
     InvalidValidatorPubKey,
+
+    /// The cluster lock's fork version was not 4 bytes.
+    #[error("cluster lock fork version is not 4 bytes")]
+    InvalidForkVersion,
+
+    /// Obol API client construction failed.
+    #[error("obol api client: {0}")]
+    ObolApi(#[source] crate::obolapi::ObolApiError),
+
+    /// Builder-registration service construction failed.
+    #[error("builder registrations: {0}")]
+    BuilderRegistration(#[from] crate::builderregistration::BuilderRegistrationError),
 
     /// A distributed validator's fee-recipient address was missing or not a
     /// valid 20-byte execution address.
@@ -549,6 +561,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         None
     };
 
+    // Builder registrations: the lock's group-signed registrations are the
+    // baseline, optionally overridden by an operator file and the Obol API.
+    let builder_registrations = build_registration_service(&config, &lock, &validators)?;
+
     let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
@@ -571,6 +587,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             peers: tracker_peers,
             feature_set: Arc::clone(&feature_set),
             infosync: Some(Arc::clone(&handles.infosync)),
+            builder_registrations: Some(builder_registrations.clone()),
         },
         ct.clone(),
     )
@@ -585,6 +602,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         priv_key_lock,
         vmock,
         config.validator_api_addr,
+        builder_registrations,
         MonitoringInputs {
             addr: config.monitoring_addr,
             beacon_node: monitoring_beacon,
@@ -697,6 +715,7 @@ async fn run_lifecycle(
     priv_key_lock: Option<Arc<privkeylock::Service>>,
     vmock: Option<Arc<ValidatorMock>>,
     validator_api_addr: std::net::SocketAddr,
+    builder_registrations: BuilderRegistrationService,
     monitoring: MonitoringInputs,
     ct: CancellationToken,
 ) -> Result<(), AppError> {
@@ -734,6 +753,17 @@ async fn run_lifecycle(
         let _ = scheduler_task.await;
         Ok::<(), AppError>(())
     }]);
+
+    // Builder-registration overrides watcher + Obol API poller. Returns
+    // immediately when neither source is configured (the default), so this
+    // costs one no-op task.
+    {
+        let ct = ct.clone();
+        tasks.spawn(async move {
+            builder_registrations.run(ct).await;
+            Ok(())
+        });
+    }
 
     // Swarm drive loop (push-based routing inside behaviours).
     {
@@ -959,6 +989,64 @@ fn build_qbft_peers(peers: &[Peer]) -> Result<Vec<qbft::Peer>, AppError> {
             })
         })
         .collect()
+}
+
+/// Builds the builder-registration service from the cluster lock.
+///
+/// The lock's per-validator registration is already group-signed, so it is the
+/// baseline every node submits. A validator whose lock entry carries no
+/// registration (older lock versions leave it zeroed) is simply omitted rather
+/// than failing startup — such a cluster just gets no builder registrations,
+/// which is how it behaved before this existed.
+fn build_registration_service(
+    config: &AppConfig,
+    lock: &pluto_cluster::lock::Lock,
+    validators: &[ValidatorInfo],
+) -> Result<BuilderRegistrationService, AppError> {
+    let base_registrations = lock
+        .distributed_validators
+        .iter()
+        .filter_map(|dv| dv.eth2_registration().ok())
+        .collect();
+
+    let base_fee_recipients = validators
+        .iter()
+        .map(|validator| (validator.pubkey, validator.fee_recipient))
+        .collect();
+
+    // Only construct the Obol client when fetching is explicitly enabled, so
+    // the default configuration makes no outbound calls.
+    let obol_client = match (
+        config.fetch_feerecipient_updates,
+        config.publish_address.as_deref(),
+    ) {
+        (true, Some(address)) => Some(
+            crate::obolapi::Client::new(
+                address,
+                crate::obolapi::ClientOptions::builder()
+                    .timeout(config.publish_timeout)
+                    .build(),
+            )
+            .map_err(AppError::ObolApi)?,
+        ),
+        _ => None,
+    };
+
+    let fork_version: pluto_eth2api::spec::phase0::Version =
+        lock.fork_version
+            .clone()
+            .try_into()
+            .map_err(|_| AppError::InvalidForkVersion)?;
+
+    BuilderRegistrationService::new(
+        config.builder_reg_overrides_file.clone(),
+        fork_version,
+        base_registrations,
+        base_fee_recipients,
+        obol_client,
+        lock.lock_hash.clone(),
+    )
+    .map_err(AppError::BuilderRegistration)
 }
 
 /// Extracts this node's per-validator data from the cluster lock.

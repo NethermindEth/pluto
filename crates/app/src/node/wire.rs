@@ -49,7 +49,12 @@ use pluto_eth2api::{
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
 
-use crate::node::AppError;
+use crate::{
+    builderregistration::{
+        BuilderRegistrationService, RegistrationSubmitter, submit_proposal_preparations,
+    },
+    node::AppError,
+};
 
 /// A `Send + Sync` boxed future. The parsigdb subscriber seams require their
 /// futures to be `Sync` (see `internal_subscriber`/`threshold_subscriber`), so
@@ -305,6 +310,12 @@ pub struct WireInputs {
     /// Infosync component, triggered on each epoch's last slot to run the
     /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
+    /// Builder-registration source. Drives the per-epoch registration
+    /// submission and the `prepare_beacon_proposer` push, and supplies the
+    /// effective fee recipient (which an overrides file or the Obol API can
+    /// change at runtime). `None` in tests, which fall back to the static
+    /// lock-derived fee recipients.
+    pub builder_registrations: Option<BuilderRegistrationService>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -439,6 +450,7 @@ pub async fn wire_core_workflow(
         peers,
         feature_set,
         infosync,
+        builder_registrations,
     } = inputs;
 
     // ---- Derived validator maps ----
@@ -465,9 +477,18 @@ pub async fn wire_core_workflow(
         submission_client.set_validator_cache(validator_cache.clone()),
     );
 
-    let fee_recipient_fn: FeeRecipientFunc = {
-        let map = fee_recipient_by_pubkey.clone();
-        Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
+    // The builder-registration service is the authority on fee recipients when
+    // present: an overrides file or the Obol API can change them at runtime,
+    // and the fetcher's proposal check must compare against the value actually
+    // in force. Without it, fall back to the static lock-derived map.
+    let fee_recipient_fn: FeeRecipientFunc = match builder_registrations.clone() {
+        Some(service) => {
+            Arc::new(move |pubkey: &PubKey| service.fee_recipient(pubkey).unwrap_or_default())
+        }
+        None => {
+            let map = fee_recipient_by_pubkey.clone();
+            Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
+        }
     };
 
     // ---- Deadliners (one per component) ----
@@ -751,6 +772,9 @@ pub async fn wire_core_workflow(
         }));
     }
     // ---- (11) Broadcaster ----
+    // Cloned before the move: the builder-registration submitter below needs
+    // the same submission client (see its use for the rationale).
+    let submission_api = submission_client.api().clone();
     let broadcaster = Arc::new(
         Broadcaster::new(submission_client)
             .await
@@ -985,11 +1009,115 @@ pub async fn wire_core_workflow(
             "validator_cache",
         );
     }
+    // Slot subscribers: builder registrations and their fee recipients, both
+    // submitted straight to the beacon node once per epoch (Charon's
+    // `submitValidatorRegistrationsDelayed` and `setFeeRecipient`).
+    //
+    // Registrations do NOT go through the duty workflow: the lock already
+    // carries a group-signed registration per validator, so there is nothing
+    // to reach consensus on. Routing them through it would also deadlock a
+    // mixed cluster, where Charon peers never contribute a partial signature.
+    // Submitted once at startup (below, after the scheduler has waited for
+    // chain start and beacon-node sync) so a restart does not go a full epoch
+    // unregistered.
+    let mut startup_submitter = None;
+    if let Some(service) = builder_registrations.clone() {
+        if builder_enabled {
+            // Use the *submission* client, not the scheduling one. Beacon
+            // nodes proxy `register_validator` to the builder relay and
+            // routinely take seconds to answer, so it belongs under
+            // `--beacon-node-submit-timeout` like every other submission;
+            // the shorter general timeout would abort before the beacon node
+            // replies and hide the real error.
+            let submitter = RegistrationSubmitter::new(service.clone(), submission_api.clone());
+            startup_submitter = Some(submitter.clone());
+            sched_builder.subscribe_slot(
+                move |slot: &Slot| {
+                    let submitter = submitter.clone();
+                    let slot = slot.clone();
+                    async move {
+                        if !slot.first_in_epoch() {
+                            return Ok::<(), AppError>(());
+                        }
+                        // Charon delays to 75% into the slot so the burst does
+                        // not collide with the epoch boundary's duty fetches.
+                        let delay = slot.slot_duration.num_milliseconds().saturating_mul(3) / 4;
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            u64::try_from(delay).unwrap_or(0),
+                        ))
+                        .await;
+                        let _ = submitter.submit(slot.epoch()).await;
+                        Ok(())
+                    }
+                },
+                "builder_registration",
+            );
+        }
+
+        let indices_cache = validator_cache.clone();
+        let eth2_cl_preps = submission_api.clone();
+        // Mirror Charon's `setFeeRecipient` onStartup flag (app/app.go): the
+        // first tick submits proposal preparations regardless of epoch
+        // position, then only on epoch boundaries. Preparations expire after
+        // three epochs and are seeded nowhere else, so a node that starts
+        // mid-epoch would otherwise leave the beacon node with no fee-recipient
+        // preparation until the next boundary — up to a full epoch during which
+        // a locally-produced block pays the beacon node's default address.
+        let preps_on_startup = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        sched_builder.subscribe_slot(
+            move |slot: &Slot| {
+                let service = service.clone();
+                let cache = indices_cache.clone();
+                let eth2_cl = eth2_cl_preps.clone();
+                let slot = slot.clone();
+                let on_startup = preps_on_startup.clone();
+                async move {
+                    // Either the first slot in the epoch or the first tick
+                    // after startup; the startup flag is consumed even when the
+                    // submission below fails, matching Charon (the next epoch
+                    // boundary retries).
+                    let startup = on_startup.swap(false, std::sync::atomic::Ordering::Relaxed);
+                    if !startup && !slot.first_in_epoch() {
+                        return Ok::<(), ValidatorCacheError>(());
+                    }
+                    let (active, ..) = cache.get_by_slot(slot.slot.inner()).await?;
+                    let indices: HashMap<PubKey, u64> = active
+                        .iter()
+                        .map(|(index, pubkey)| (PubKey::new(*pubkey), *index))
+                        .collect();
+
+                    if let Err(err) =
+                        submit_proposal_preparations(&service, &eth2_cl, &indices).await
+                    {
+                        // Preparations expire after three epochs, so a single
+                        // failed push is recoverable at the next boundary.
+                        tracing::warn!(%err, "Failed to submit proposal preparations");
+                    }
+                    Ok(())
+                }
+            },
+            "proposal_preparations",
+        );
+    }
 
     let (scheduler, scheduler_task) = sched_builder
         .build(beacon_client, ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
+
+    // `build` has waited for chain start and beacon-node sync, so the beacon
+    // node is reachable — Charon submits its startup registrations at the same
+    // point. Epoch 0 is the sentinel Charon uses: the next `first_in_epoch`
+    // tick submits again for the real epoch.
+    if let Some(submitter) = startup_submitter {
+        tokio::spawn(async move {
+            if let Err(err) = submitter.submit(0).await {
+                // Not fatal: the next epoch boundary retries, because the
+                // epoch is only recorded on success.
+                tracing::warn!(%err, "Initial validator registration submission failed");
+            }
+        });
+    }
 
     // ---- (13) ValidatorAPI ----
     //
@@ -1003,7 +1131,6 @@ pub async fn wire_core_workflow(
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
-        builder_enabled,
         Arc::new(validator_cache),
     );
     // Back-edge: vapi.register_await_agg_sig_db(aggsigdb.wait_for).

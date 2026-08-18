@@ -13,7 +13,7 @@ use pluto_eth2api::{
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
     GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
-    spec::phase0::{AttestationData, BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
+    spec::phase0::{AttestationData, BLSPubKey, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
 };
@@ -47,7 +47,6 @@ use crate::{
         SignedVoluntaryExit as SignedVoluntaryExitWrapper, SyncContribution,
         SyncContributionAndProof, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
-        VersionedSignedValidatorRegistration as VersionedSignedValidatorRegistrationWrapper,
     },
     types::{
         Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey,
@@ -177,9 +176,6 @@ pub struct Component {
     /// validator-client-facing endpoints (proposer/attester duties, etc.) so
     /// the VC sees the share it is configured to sign with.
     pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
-    /// Whether builder mode is enabled. Read by `propose_block_v3` and the
-    /// validator-registration submitter.
-    builder_enabled: bool,
     /// Skip signature verification on partial-signed submissions. Test-only.
     insecure_test: bool,
     /// Subscribers invoked by submit endpoints once a partial-signed-data set
@@ -213,7 +209,6 @@ impl Component {
         dutydb: Arc<MemDB>,
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
-        builder_enabled: bool,
         validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> Self {
         Self {
@@ -221,7 +216,6 @@ impl Component {
             dutydb,
             share_idx,
             pub_share_by_pubkey,
-            builder_enabled,
             validator_cache,
             insecure_test: false,
             subs: Vec::new(),
@@ -251,7 +245,6 @@ impl Component {
             dutydb,
             share_idx,
             pub_share_by_pubkey: HashMap::new(),
-            builder_enabled: false,
             validator_cache,
             insecure_test: true,
             subs: Vec::new(),
@@ -750,120 +743,6 @@ impl Component {
                     format!("{endpoint}: invalid partial signature"),
                 ),
             })
-    }
-
-    /// Verifies and fans out a single builder-registration. Factored out so
-    /// [`Self::submit_validator_registrations`] can iterate over its input.
-    /// The `slot_duration`, `genesis_time`, and `builder_domain` arguments are
-    /// hoisted out of the loop so a batched request issues at most one
-    /// `fetch_slots_config`, one `fetch_genesis_time`, and one builder-domain
-    /// resolution upstream call, regardless of input size.
-    async fn submit_one_registration(
-        &self,
-        registration: SignedValidatorRegistration,
-        slot_duration: Duration,
-        genesis_time: chrono::DateTime<chrono::Utc>,
-        builder_domain: Domain,
-    ) -> Result<(), ApiError> {
-        // Pull the group pubkey out of the wrapped registration and gate on it
-        // being a DV pubkey on this node. Non-DV pubkeys are silently swallowed
-        // so a vouch-style VC that also registers its proposer key does not get
-        // a non-200 from us.
-        let v1 = registration.0.v1.as_ref().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "missing V1 validator registration payload",
-            )
-        })?;
-        let root_pubkey = v1.message.pubkey;
-
-        if !self.pub_share_by_pubkey.contains_key(&root_pubkey) {
-            tracing::debug!(
-                pubkey = ?format_bls_pubkey(&root_pubkey),
-                "swallowing non-DV registration",
-            );
-            return Ok(());
-        }
-
-        let timestamp = v1.message.timestamp;
-
-        // Derive the slot the registration belongs to.
-        let registration_slot =
-            pluto_eth2util::helpers::slot_from_timestamp(genesis_time, slot_duration, timestamp)
-                .map_err(|err| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "register_validator: slot computation failed",
-                    )
-                    .with_source(err)
-                })?;
-        let duty = Duty::new_builder_registration_duty(SlotNumber::new(registration_slot));
-
-        // Wrap as ParSignedData via the canonical partial-sig constructor.
-        let par_signed = VersionedSignedValidatorRegistrationWrapper::new_partial(
-            registration.0.clone(),
-            self.share_idx,
-        )
-        .map_err(|err| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid validator registration payload",
-            )
-            .with_source(err)
-        })?;
-
-        // Partial-signature verification. The application-builder domain
-        // ignores the epoch (the epoch is always 0). Uses the hoisted
-        // `builder_domain` so a batched submission resolves the signing
-        // domain once instead of N times.
-        let message_root = v1.message.message_root();
-        self.verify_partial_sig_with_domain(
-            &root_pubkey,
-            builder_domain,
-            message_root,
-            &v1.signature,
-        )
-        .map_err(verify_partial_sig_error)?;
-
-        // The `subscribe` wrapper clones the set internally per subscriber, so
-        // the fanout just passes a reference.
-        let core_pubkey = PubKey::new(root_pubkey);
-        let mut set = ParSignedDataSet::new();
-        set.insert(core_pubkey, par_signed);
-
-        for sub in &self.subs {
-            sub(&duty, &set)
-                .await
-                .map_err(subscriber_error_to_api_error)?;
-        }
-
-        Ok(())
-    }
-
-    /// Variant of [`Self::verify_partial_sig`] that takes a pre-resolved
-    /// [`phase0::Domain`]. Lets batched submit paths (e.g. validator
-    /// registrations) resolve the signing domain once and skip the two
-    /// upstream domain-lookup calls that [`Self::verify_partial_sig`] would
-    /// otherwise issue for every entry.
-    pub fn verify_partial_sig_with_domain(
-        &self,
-        root_pubkey: &BLSPubKey,
-        domain: Domain,
-        message_root: Root,
-        signature: &Signature,
-    ) -> Result<(), VerifyPartialSigError> {
-        if self.insecure_test {
-            return Ok(());
-        }
-
-        let pubshare = self
-            .pub_share_by_pubkey
-            .get(root_pubkey)
-            .ok_or(VerifyPartialSigError::UnknownPubKey)?;
-
-        signing::verify_with_domain(domain, message_root, signature, pubshare)?;
-
-        Ok(())
     }
 }
 
@@ -1694,59 +1573,29 @@ impl Handler for Component {
         })
     }
 
-    /// Fan-out is per-entry and **not transactional**: registrations are
-    /// processed sequentially and the loop returns on the first error.
-    /// Earlier entries that already fanned out remain published downstream
-    /// when a later entry fails.
+    /// Accepts and discards the validator client's builder registrations.
+    ///
+    /// Pluto submits registrations to the beacon node itself, once per epoch,
+    /// from the registrations carried in the cluster lock (see
+    /// `pluto_app::builderregistration`). Those are already group-signed, so
+    /// there is nothing to reach threshold consensus on, and routing the VC's
+    /// partial signatures through the duty workflow would stall permanently in
+    /// a mixed Charon/Pluto cluster, where Charon peers contribute none.
+    ///
+    /// Returning `200` rather than an error is deliberate: every VC registers
+    /// on a timer and would otherwise retry forever.
     #[instrument(skip_all)]
     async fn submit_validator_registrations(
         &self,
         registrations: Vec<SignedValidatorRegistration>,
     ) -> Result<(), ApiError> {
-        // Empty input is a no-op.
-        if registrations.is_empty() {
-            return Ok(());
-        }
-
-        // Builder-mode gate. When builder mode is disabled the registrations
-        // are accepted (no client-visible error) but never fanned out. Logged
-        // at `debug!` because VCs like Vouch send registrations every slot, so
-        // a higher level would be noisy in non-builder configs.
-        if !self.builder_enabled {
-            tracing::debug!(
-                count = registrations.len(),
-                "swallowing validator registrations: builder mode disabled",
-            );
-            return Ok(());
-        }
-
-        // Hoisted out of the per-registration loop so a batched submission
-        // issues at most one upstream call per kind. All entries share the
-        // same `DomainName::ApplicationBuilder` signing domain at epoch 0,
-        // so we resolve it once here too rather than letting
-        // `verify_partial_sig` fan out 2N domain-lookup calls.
-        let (slot_duration, _) =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
-                .await
-                .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err.into()))?;
-        let genesis_time =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
-                .await
-                .map_err(|_| upstream_timeout("genesis time"))?
-                .map_err(|err| upstream_call_failed("genesis time", err.into()))?;
-        let builder_domain = tokio::time::timeout(
-            UPSTREAM_REQUEST_TIMEOUT,
-            signing::get_domain(&self.eth2_cl, DomainName::ApplicationBuilder, 0),
-        )
-        .await
-        .map_err(|_| upstream_timeout("application builder domain"))?
-        .map_err(|err| upstream_call_failed("application builder domain", err.into()))?;
-
-        for registration in registrations {
-            self.submit_one_registration(registration, slot_duration, genesis_time, builder_domain)
-                .await?;
-        }
+        // `debug!` because VCs re-register every slot; anything higher would
+        // dominate the log.
+        tracing::debug!(
+            count = registrations.len(),
+            "Ignoring validator registrations submitted by the validator client; \
+             Pluto submits them directly to the beacon node",
+        );
 
         Ok(())
     }
@@ -3265,7 +3114,7 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
+        Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::empty())
     }
 
     /// `Subscribe` invokes every registered subscriber, each receiving its
@@ -3461,8 +3310,10 @@ mod tests {
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_BEACON_ATTESTER": "0x01000000",
             "DOMAIN_RANDAO": "0x02000000",
+            // No `DOMAIN_APPLICATION_BUILDER`: real beacon nodes omit it and
+            // the client injects it, so exercising the fallback here is the
+            // realistic case.
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "DOMAIN_SYNC_COMMITTEE": "0x07000000",
             "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
             "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
@@ -3504,7 +3355,7 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
+        let component = Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::empty());
         (component, mock)
     }
 
@@ -3628,7 +3479,6 @@ mod tests {
             dutydb,
             1,
             HashMap::from([(dv_root, pubshare)]),
-            false,
             TestValidatorCache::empty(),
         );
 
@@ -3837,7 +3687,6 @@ mod tests {
             dutydb,
             1,
             map,
-            false,
             TestValidatorCache::arc(active_validators),
         );
         (component, mock)
@@ -4315,7 +4164,6 @@ mod tests {
     /// resolve. Useful for exercising the submit handlers without the BLS
     /// verification step.
     async fn make_submit_component_insecure(
-        builder_enabled: bool,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
         validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> (Component, BeaconMock) {
@@ -4329,14 +4177,8 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let mut component = Component::new(
-            eth2_cl,
-            dutydb,
-            1,
-            pub_share_by_pubkey,
-            builder_enabled,
-            validator_cache,
-        );
+        let mut component =
+            Component::new(eth2_cl, dutydb, 1, pub_share_by_pubkey, validator_cache);
         component.insecure_test = true;
         (component, mock)
     }
@@ -4424,7 +4266,7 @@ mod tests {
         let active = HashMap::from([(VAL_IDX, dv_root)]);
 
         let (mut component, _mock) =
-            make_submit_component_insecure(false, map, TestValidatorCache::arc(active)).await;
+            make_submit_component_insecure(map, TestValidatorCache::arc(active)).await;
 
         let captured = install_capture(&mut component);
 
@@ -4450,8 +4292,7 @@ mod tests {
     #[tokio::test]
     async fn submit_voluntary_exit_rejects_unknown_validator() {
         let (component, _mock) =
-            make_submit_component_insecure(false, HashMap::new(), TestValidatorCache::empty())
-                .await;
+            make_submit_component_insecure(HashMap::new(), TestValidatorCache::empty()).await;
 
         let exit = make_signed_exit(0, 9, [0u8; 96]);
         let err = component.submit_voluntary_exit(exit).await.unwrap_err();
@@ -4485,14 +4326,7 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(
-            eth2_cl,
-            dutydb,
-            1,
-            map,
-            false,
-            TestValidatorCache::arc(active),
-        );
+        let component = Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::arc(active));
 
         let exit = make_signed_exit(EPOCH, VAL_IDX, [0x42; 96]);
         let err = component.submit_voluntary_exit(exit).await.unwrap_err();
@@ -4508,7 +4342,7 @@ mod tests {
         let map = HashMap::from([(dv_root, share)]);
 
         let (mut component, _mock) =
-            make_submit_component_insecure(false, map, TestValidatorCache::empty()).await;
+            make_submit_component_insecure(map, TestValidatorCache::empty()).await;
         let captured = install_capture(&mut component);
 
         let reg = make_signed_registration(dv_root, 1_000_000, [0x00; 96]);
@@ -4528,7 +4362,7 @@ mod tests {
     #[tokio::test]
     async fn submit_validator_registrations_no_op_on_empty_input() {
         let (mut component, _mock) =
-            make_submit_component_insecure(true, HashMap::new(), TestValidatorCache::empty()).await;
+            make_submit_component_insecure(HashMap::new(), TestValidatorCache::empty()).await;
         let captured = install_capture(&mut component);
 
         component
@@ -4539,92 +4373,39 @@ mod tests {
         assert!(captured.lock().unwrap().is_empty());
     }
 
-    /// `submit_validator_registrations` silently skips entries whose pubkey
-    /// is not a DV root key on this node.
+    /// Registrations are accepted and dropped, whatever they contain: Pluto
+    /// submits the lock's group-signed registrations to the beacon node
+    /// itself, so nothing is fanned out into the duty workflow.
+    ///
+    /// Returning `200` matters — every VC re-registers on a timer, and a
+    /// non-2xx makes it retry every slot forever.
     #[tokio::test]
-    async fn submit_validator_registrations_swallows_non_dv_pubkey() {
-        let dv_root = dv_pubkey(0x55);
-        let share = dv_pubkey(0x66);
-        let map = HashMap::from([(dv_root, share)]);
-
-        let (mut component, _mock) =
-            make_submit_component_insecure(true, map, TestValidatorCache::empty()).await;
-        let captured = install_capture(&mut component);
-
-        // Registration for a pubkey not registered on this node.
-        let reg = make_signed_registration(dv_pubkey(0xFF), 1_000_000, [0x00; 96]);
-        component
-            .submit_validator_registrations(vec![reg])
-            .await
-            .unwrap();
-
-        assert!(
-            captured.lock().unwrap().is_empty(),
-            "non-DV registration is swallowed without fanout"
-        );
-    }
-
-    /// `submit_validator_registrations` happy path: a DV registration is
-    /// verified (skipped in insecure-test mode) and fanned out to every
-    /// subscriber with a `BuilderRegistration` duty.
-    #[tokio::test]
-    async fn submit_validator_registrations_happy_path_fanouts() {
+    async fn submit_validator_registrations_are_accepted_and_not_fanned_out() {
         let dv_root = dv_pubkey(0x77);
         let share = dv_pubkey(0x88);
         let map = HashMap::from([(dv_root, share)]);
 
         let (mut component, _mock) =
-            make_submit_component_insecure(true, map, TestValidatorCache::empty()).await;
+            make_submit_component_insecure(map, TestValidatorCache::empty()).await;
         let captured = install_capture(&mut component);
 
-        // timestamp = genesis + 24s => slot = 2 (with 12s slot duration).
-        let reg = make_signed_registration(dv_root, 24, [0x00; 96]);
-        component
-            .submit_validator_registrations(vec![reg])
-            .await
-            .unwrap();
+        // A well-formed DV registration, a registration for a pubkey this node
+        // does not hold, and one with a garbage signature: all are accepted.
+        for reg in [
+            make_signed_registration(dv_root, 24, [0x00; 96]),
+            make_signed_registration(dv_pubkey(0xFF), 1_000_000, [0x00; 96]),
+            make_signed_registration(dv_root, 24, [0x42; 96]),
+        ] {
+            component
+                .submit_validator_registrations(vec![reg])
+                .await
+                .expect("registrations are always accepted");
+        }
 
-        let fanouts = captured.lock().unwrap();
-        assert_eq!(fanouts.len(), 1);
-        let (duty, set) = &fanouts[0];
-        assert_eq!(duty.duty_type, DutyType::BuilderRegistration);
-        assert_eq!(duty.slot.inner(), 2);
-
-        assert_eq!(set.inner().len(), 1);
-        let par = set.inner().get(&core_pubkey_from(dv_root)).unwrap();
-        assert_eq!(par.share_idx, 1);
-    }
-
-    /// `submit_validator_registrations` rejects an entry whose BLS signature
-    /// does not verify against the registered public share. Uses a real
-    /// upstream + real BLS to drive the verification path.
-    #[tokio::test]
-    async fn submit_validator_registrations_rejects_bad_signature() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
-        let dv_root = dv_pubkey(0xA5);
-        let map = HashMap::from([(dv_root, pubshare)]);
-
-        let mock = submit_mock().await;
-        let cancel = CancellationToken::new();
-        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
-            cancel.clone(),
-            "validatorapi-submit-reg-bad-sig",
-            FarFutureCalculator,
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "registrations must not enter the duty workflow",
         );
-        let (_evict_tx, evict_rx) = mpsc::channel(1);
-        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, true, TestValidatorCache::empty());
-
-        let reg = make_signed_registration(dv_root, 24, [0x42; 96]);
-        let err = component
-            .submit_validator_registrations(vec![reg])
-            .await
-            .unwrap_err();
-        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
     }
 
     /// Build a core [`PubKey`] from a 48-byte BLS pubkey (`BLSPubKey`).
@@ -5007,7 +4788,6 @@ mod tests {
             dutydb,
             1,
             HashMap::new(),
-            false,
             TestValidatorCache::arc(active),
         );
 
@@ -5056,14 +4836,8 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
-        let mut component = Component::new(
-            eth2_cl,
-            dutydb,
-            1,
-            map,
-            false,
-            TestValidatorCache::arc(active),
-        );
+        let mut component =
+            Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::arc(active));
         let captured: Arc<tokio::sync::Mutex<u32>> = Arc::new(tokio::sync::Mutex::new(0));
         {
             let captured = Arc::clone(&captured);
@@ -5113,7 +4887,7 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
+        let component = Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::empty());
 
         let message_root: Root = [0xCD; 32];
         let signing_root = pluto_eth2util::signing::get_data_root(
@@ -5170,7 +4944,6 @@ mod tests {
             dutydb,
             1,
             HashMap::new(),
-            false,
             TestValidatorCache::arc(active),
         );
 
@@ -5272,14 +5045,8 @@ mod tests {
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let active: HashMap<ValidatorIndex, BLSPubKey> =
             HashMap::from([(aggregator_index, root_pubkey)]);
-        let mut component = Component::new(
-            eth2_cl,
-            dutydb,
-            1,
-            map,
-            false,
-            TestValidatorCache::arc(active),
-        );
+        let mut component =
+            Component::new(eth2_cl, dutydb, 1, map, TestValidatorCache::arc(active));
         let captured: Arc<tokio::sync::Mutex<u32>> = Arc::new(tokio::sync::Mutex::new(0));
         {
             let captured = Arc::clone(&captured);
@@ -5622,8 +5389,6 @@ mod tests {
     #[tokio::test]
     async fn proposal_returns_blinded_proposal_in_builder_mode() {
         let (mut component, _mock) = make_proposal_component().await;
-        // Flip the gate so the field is exercised in builder-mode tests.
-        component.builder_enabled = true;
 
         let core_pk = core_pubkey(0x7B);
         let (unsigned_blinded, _signed) = matched_bellatrix_blinded_proposals(64, 9);
@@ -6034,7 +5799,6 @@ mod tests {
             Arc::clone(&dutydb),
             1,
             HashMap::new(),
-            false,
             TestValidatorCache::empty(),
         );
 
@@ -6218,7 +5982,6 @@ mod tests {
             dutydb,
             1,
             pub_share_by_pubkey,
-            false,
             TestValidatorCache::empty(),
         )
     }
@@ -6678,7 +6441,6 @@ mod tests {
             dutydb,
             share_idx: 1,
             pub_share_by_pubkey: HashMap::new(),
-            builder_enabled: false,
             validator_cache: TestValidatorCache::arc(cache),
             insecure_test: true,
             subs: Vec::new(),

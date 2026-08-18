@@ -28,6 +28,12 @@ pub struct SchedulerMetrics {
 
     /// Total number of times slots were skipped.
     pub skipped_slots_total: Counter,
+
+    /// Total number of builder-registration submissions to the beacon node.
+    pub submit_registration_total: Counter,
+
+    /// Total number of failed builder-registration submissions.
+    pub submit_registration_errors_total: Counter,
 }
 
 /// Global metrics for the core scheduler.

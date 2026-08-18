@@ -639,8 +639,10 @@ mod tests {
             "DOMAIN_AGGREGATE_AND_PROOF": "0x06000000",
             "DOMAIN_SYNC_COMMITTEE": "0x07000000",
             "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
+            // No `DOMAIN_APPLICATION_BUILDER`: real beacon nodes omit it and
+            // the client injects it, so exercising the fallback here is the
+            // realistic case.
             "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "EPOCHS_PER_SYNC_COMMITTEE_PERIOD": "256",
         })
     }

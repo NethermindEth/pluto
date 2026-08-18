@@ -161,6 +161,39 @@ impl Client {
         Ok(())
     }
 
+    /// Makes an HTTP POST request and returns the response body.
+    ///
+    /// Unlike [`Self::http_post`], which discards the body, this is for
+    /// endpoints that answer with data. `max_body` bounds the response so a
+    /// hostile or misconfigured endpoint cannot exhaust memory.
+    pub(crate) async fn http_post_json(
+        &self,
+        url: Url,
+        body: Vec<u8>,
+        max_body: usize,
+    ) -> Result<Vec<u8>> {
+        let response = self
+            .http_client()
+            .post(url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = read_error_body(response, OBOLAPI_MAX_ERROR_BODY).await;
+
+            return Err(Error::HttpError {
+                method: Method::POST,
+                status,
+                body: body_text,
+            });
+        }
+
+        read_body_capped(response, max_body).await
+    }
+
     /// Makes an HTTP GET request.
     pub(crate) async fn http_get(
         &self,

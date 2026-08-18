@@ -16,6 +16,11 @@ pub mod retry;
 /// Obol API client for interacting with the Obol network API.
 pub mod obolapi;
 
+/// Builder (validator) registration management: serves the cluster lock's
+/// registrations, optionally overridden by an operator-managed file and the
+/// Obol API, for direct per-epoch submission to the beacon node.
+pub mod builderregistration;
+
 /// Monitoring API endpoints for process liveness and readiness.
 pub mod monitoringapi;
 

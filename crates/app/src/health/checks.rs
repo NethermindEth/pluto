@@ -122,7 +122,7 @@ fn proposal_failures(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
 
 fn high_registration_failures_rate(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
     let value = q.query(
-        "core_bcast_recast_errors_total",
+        "core_scheduler_submit_registration_errors_total",
         sum_labels(Vec::new()),
         increase,
     )?;
@@ -738,7 +738,7 @@ mod tests {
     fn high_registration_failures_rate_check() {
         let m = Metadata::default();
         let name = "high_registration_failures_rate";
-        let metric = "core_bcast_recast_errors_total";
+        let metric = "core_scheduler_submit_registration_errors_total";
 
         let pregen = gen_labels(&["source", "pregen"]);
         let downstream = gen_labels(&["source", "downstream"]);

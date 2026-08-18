@@ -372,6 +372,41 @@ pub fn purge_chain_config_cache(base_url: &Url) {
         .remove(base_url);
 }
 
+/// Domain types that are not served by every beacon node, with the value to
+/// fall back to when `/eth/v1/config/spec` omits them.
+///
+/// `DOMAIN_APPLICATION_BUILDER` is not officially part of the consensus spec
+/// (it comes from the builder spec), and `DOMAIN_APPLICATION_MASK` /
+/// `DOMAIN_BLS_TO_EXECUTION_CHANGE` are not universally exposed either — e.g.
+/// Lighthouse serves neither `DOMAIN_APPLICATION_BUILDER` nor
+/// `DOMAIN_BLS_TO_EXECUTION_CHANGE`. Without a fallback every builder
+/// registration fails with [`EthBeaconNodeApiClientError::DomainTypeNotFound`].
+///
+/// Charon gets this for free because go-eth2-client injects the same three
+/// values (`http/spec.go`), so this keeps Pluto's domain resolution at parity.
+const SPEC_DOMAIN_FALLBACKS: [(&str, &str); 3] = [
+    ("DOMAIN_APPLICATION_MASK", "0x00000001"),
+    ("DOMAIN_BLS_TO_EXECUTION_CHANGE", "0x0a000000"),
+    ("DOMAIN_APPLICATION_BUILDER", "0x00000001"),
+];
+
+/// Inserts each [`SPEC_DOMAIN_FALLBACKS`] entry the beacon node did not serve.
+///
+/// Keys the node *does* serve always win. A non-object body is left untouched
+/// rather than rejected, so a malformed spec still surfaces as the parse error
+/// its actual consumer produces.
+fn apply_spec_domain_fallbacks(spec: &mut serde_json::Value) {
+    let Some(object) = spec.as_object_mut() else {
+        return;
+    };
+
+    for (key, value) in SPEC_DOMAIN_FALLBACKS {
+        object
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::String(value.to_owned()));
+    }
+}
+
 impl EthBeaconNodeApiClient {
     async fn fetch_spec_data(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
         let cache = config_cache_for(&self.base_url);
@@ -379,7 +414,11 @@ impl EthBeaconNodeApiClient {
             .spec
             .get_or_try_init(|| async {
                 match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
-                    GetSpecResponse::Ok(spec) => Ok(Arc::new(spec.data)),
+                    GetSpecResponse::Ok(spec) => {
+                        let mut data = spec.data;
+                        apply_spec_domain_fallbacks(&mut data);
+                        Ok(Arc::new(data))
+                    }
                     _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                 }
             })
@@ -868,11 +907,96 @@ mod tests {
         purge_chain_config_cache(&client.base_url);
     }
 
+    /// Real beacon nodes (e.g. Lighthouse) do not serve
+    /// `DOMAIN_APPLICATION_BUILDER` — it is not part of the consensus spec.
+    /// Without the fallback every builder registration fails with
+    /// `DomainTypeNotFound` and the VC retries forever.
+    #[tokio::test]
+    async fn absent_domain_types_fall_back_to_spec_defaults() {
+        let server = MockServer::start().await;
+        // A spec shaped like a real node's: no builder/mask/BLS-change keys.
+        let spec = json!({ "data": {
+            "DOMAIN_BEACON_PROPOSER": "0x00000000",
+            "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
+        }});
+        Mock::given(method("GET"))
+            .and(path(SPEC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(spec))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server);
+
+        assert_eq!(
+            client
+                .fetch_domain_type("DOMAIN_APPLICATION_BUILDER")
+                .await
+                .unwrap(),
+            [0x00, 0x00, 0x00, 0x01],
+        );
+        assert_eq!(
+            client
+                .fetch_domain_type("DOMAIN_APPLICATION_MASK")
+                .await
+                .unwrap(),
+            [0x00, 0x00, 0x00, 0x01],
+        );
+        assert_eq!(
+            client
+                .fetch_domain_type("DOMAIN_BLS_TO_EXECUTION_CHANGE")
+                .await
+                .unwrap(),
+            [0x0a, 0x00, 0x00, 0x00],
+        );
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// A node that *does* serve one of the fallback keys wins over the default.
+    #[tokio::test]
+    async fn served_domain_types_are_not_overwritten_by_fallbacks() {
+        let server = MockServer::start().await;
+        let spec = json!({ "data": {
+            "DOMAIN_BEACON_PROPOSER": "0x00000000",
+            "DOMAIN_BLS_TO_EXECUTION_CHANGE": "0x0b0c0d0e",
+        }});
+        Mock::given(method("GET"))
+            .and(path(SPEC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(spec))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server);
+
+        assert_eq!(
+            client
+                .fetch_domain_type("DOMAIN_BLS_TO_EXECUTION_CHANGE")
+                .await
+                .unwrap(),
+            [0x0b, 0x0c, 0x0d, 0x0e],
+        );
+        // A key that is genuinely absent still errors rather than defaulting.
+        assert!(matches!(
+            client.fetch_domain_type("DOMAIN_RANDAO").await,
+            Err(EthBeaconNodeApiClientError::DomainTypeNotFound(key)) if key == "DOMAIN_RANDAO",
+        ));
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// A non-object spec body is passed through untouched rather than panicking
+    /// or being rewritten into an object.
+    #[test]
+    fn spec_domain_fallbacks_ignore_non_object_bodies() {
+        let mut spec = json!("not-an-object");
+        apply_spec_domain_fallbacks(&mut spec);
+        assert_eq!(spec, json!("not-an-object"));
+    }
+
     fn spec_fixture() -> serde_json::Value {
         json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "ALTAIR_FORK_VERSION": "0x01020304",
             "ALTAIR_FORK_EPOCH": "10",
             "BELLATRIX_FORK_VERSION": "0x02030405",

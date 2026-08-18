@@ -42,6 +42,7 @@ k256.workspace = true
 serde_with.workspace = true
 bon.workspace = true
 flate2.workspace = true
+notify.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 pluto-cluster.workspace = true
