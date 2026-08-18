@@ -13,9 +13,11 @@ on:
       - ".github/workflows/docs.yml"
   pull_request: # Build-only on PRs to catch rustdoc breakage
     paths:
-      - "crates/**"
-      - "Cargo.toml"
+      - "**/*.rs"
+      - "**/Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
       - ".github/workflows/docs.yml"
 
 permissions:
