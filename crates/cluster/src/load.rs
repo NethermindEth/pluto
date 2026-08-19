@@ -1,10 +1,6 @@
 //! Loading and verification of a cluster [`Lock`] from disk.
 //!
-//! Mirrors Charon's `cluster.LoadClusterLock` (`cluster/load.go`), which
-//! replaced the manifest-DAG loading path when the cluster manifest was
-//! removed (Charon #4130). Charon v1.7.1 obtained the cluster by materialising
-//! a manifest DAG; this function reads and verifies the cluster lock file
-//! directly.
+//! Mirrors Charon's `cluster.LoadClusterLock` (`cluster/load.go`).
 
 use std::path::Path;
 
