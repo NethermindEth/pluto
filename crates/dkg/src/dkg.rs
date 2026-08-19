@@ -1214,8 +1214,6 @@ mod tests {
 
     #[tokio::test]
     async fn verify_keymanager_connection_fails_for_unreachable_address() {
-        // Destination port 0 is never assigned to a listener, so connecting to it
-        // fails without racing on a probed-then-released ephemeral port.
         let config = Config::builder()
             .keymanager(
                 KeymanagerConfig::builder()
