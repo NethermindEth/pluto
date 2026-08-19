@@ -4,10 +4,10 @@
 //! `chain_reorg`, `block` and `block_gossip` events to export timing metrics
 //! and notify subscribers of chain reorgs.
 //!
-//! The listener follows the actor model: a [`SseListenerBuilder`] wires up
-//! subscriptions, [`SseListenerBuilder::build`] spawns a background actor (and
-//! a reconnecting stream "pump") that live until a [`CancellationToken`] fires,
-//! and the returned [`SseListenerHandle`] allows interacting with the running
+//! The listener follows the actor model: a `SseListenerBuilder` wires up
+//! subscriptions, `SseListenerBuilder::build` spawns a background actor (and
+//! a reconnecting stream "pump") that live until a `CancellationToken` fires,
+//! and the returned `SseListenerHandle` allows interacting with the running
 //! actor.
 
 use std::time::Duration;

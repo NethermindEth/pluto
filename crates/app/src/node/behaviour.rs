@@ -11,9 +11,9 @@
 //!
 //! Routing is push-based inside the individual behaviours (the QBFT p2p
 //! [`Handler`](pluto_consensus::qbft::p2p) holds an `Arc<Consensus>` and calls
-//! `consensus.handle()`; parsigex's [`Handle::subscribe`] dispatches inbound
+//! `consensus.handle()`; parsigex's `Handle::subscribe` dispatches inbound
 //! partial signatures), so the swarm drive loop body can be empty for
-//! correctness — see [`crate::node::drive_network`].
+//! correctness — see `crate::node::drive_network`.
 
 use std::{collections::HashMap, sync::Arc};
 

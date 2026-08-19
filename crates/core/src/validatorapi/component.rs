@@ -660,7 +660,7 @@ impl Component {
     /// derives the triple from the concrete signed-data wrapper it is
     /// processing, then invokes this helper.
     ///
-    /// Skipped entirely when [`Self::insecure_test`] is set.
+    /// Skipped entirely when `Self::insecure_test` is set.
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
@@ -841,7 +841,7 @@ impl Component {
     }
 
     /// Variant of [`Self::verify_partial_sig`] that takes a pre-resolved
-    /// [`phase0::Domain`]. Lets batched submit paths (e.g. validator
+    /// `phase0::Domain`. Lets batched submit paths (e.g. validator
     /// registrations) resolve the signing domain once and skip the two
     /// upstream domain-lookup calls that [`Self::verify_partial_sig`] would
     /// otherwise issue for every entry.

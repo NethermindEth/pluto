@@ -51,7 +51,7 @@ struct ScheduleTuple {
     start_time: SystemTime,
 }
 
-/// Validator-mock scheduler. Built by [`Component::new`]; drops cleanly when
+/// Validator-mock scheduler. Built by `Component::new`; drops cleanly when
 /// [`Component::shutdown`] is called or the value is dropped.
 pub struct Component {
     inner: Arc<Inner>,

@@ -5,14 +5,14 @@
 //!
 //! The work is split into a load phase and a wire phase:
 //!
-//! * [`run`] loads the cluster lock, P2P key, and beacon clients, constructs
-//!   the consensus component + P2P behaviours, then calls
-//!   [`wire::wire_core_workflow`].
-//! * [`wire::wire_core_workflow`] takes already-resolved inputs and produces
-//!   the wired component graph (so it is unit-testable against a `BeaconMock`).
+//! * `run` loads the cluster lock, P2P key, and beacon clients, constructs the
+//!   consensus component + P2P behaviours, then calls
+//!   `wire::wire_core_workflow`.
+//! * `wire::wire_core_workflow` takes already-resolved inputs and produces the
+//!   wired component graph (so it is unit-testable against a `BeaconMock`).
 //!
-//! Lifecycle is idiomatic tokio: long-lived tasks live in a [`JoinSet`], driven
-//! until the [`CancellationToken`] fires or the first task fails, after which
+//! Lifecycle is idiomatic tokio: long-lived tasks live in a `JoinSet`, driven
+//! until the `CancellationToken` fires or the first task fails, after which
 //! an explicit ordered shutdown runs.
 
 pub mod behaviour;

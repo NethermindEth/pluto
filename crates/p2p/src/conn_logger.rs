@@ -26,7 +26,7 @@ pub(crate) struct ConnKey {
 /// Tracks and logs libp2p connection events. This is implemented as a
 /// `NetworkBehaviour` to receive connection lifecycle events from the swarm.
 ///
-/// Uses [`GlobalContext`] to determine whether a peer is a known cluster peer
+/// Uses `GlobalContext` to determine whether a peer is a known cluster peer
 /// (tracked with peer metrics) or an external peer like a relay (tracked with
 /// relay metrics).
 #[derive(Debug)]

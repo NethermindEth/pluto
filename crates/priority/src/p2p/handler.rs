@@ -56,7 +56,7 @@ pub enum FromBehaviour {
 /// per-request oneshot instead.
 #[derive(Debug)]
 pub enum InboundFailure {
-    /// No request arrived within [`protocol::RECEIVE_TIMEOUT`].
+    /// No request arrived within `protocol::RECEIVE_TIMEOUT`.
     Timeout,
     /// Reading or decoding the request frame failed.
     Read(std::io::Error),
