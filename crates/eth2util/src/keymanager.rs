@@ -1,5 +1,5 @@
 //! Package keymanager provides ETH2 keymanager API
-//! (https://ethereum.github.io/keymanager-APIs/) functionalities.
+//! (<https://ethereum.github.io/keymanager-APIs/>) functionalities.
 
 use crate::keystore::Keystore;
 use secrecy::{ExposeSecret, SecretString};

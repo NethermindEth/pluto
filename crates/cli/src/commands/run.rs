@@ -647,12 +647,12 @@ pub struct RunConfig {
     pub beacon_node_timeout: StdDuration,
     /// Beacon node submission request timeout.
     pub beacon_node_submit_timeout: StdDuration,
-    /// [DISABLED] Jaeger tracing address.
+    /// \[DISABLED\] Jaeger tracing address.
     // Accepted for Charon flag parity; `RunConfig::try_from` already warns
     // when set, and the field is never read again.
     #[allow(dead_code)]
     pub jaeger_addr: String,
-    /// [DISABLED] Jaeger tracing service name.
+    /// \[DISABLED\] Jaeger tracing service name.
     // Accepted for Charon flag parity; `RunConfig::try_from` already warns
     // when set, and the field is never read again.
     #[allow(dead_code)]

@@ -1,4 +1,4 @@
-//! Loading and verification of a cluster [`Lock`] from disk.
+//! Loading and verification of a cluster `Lock` from disk.
 //!
 //! Mirrors Charon's `cluster.LoadClusterLock` (`cluster/load.go`).
 

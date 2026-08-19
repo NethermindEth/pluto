@@ -1,8 +1,8 @@
 //! Eth2 signed-data verification.
 //!
-//! Extends [`SignedData`] types that carry beacon-chain signatures with the
-//! metadata needed to verify them: the signing [`DomainName`] and the signing
-//! [`Epoch`]. [`verify_eth2_signed_data`] ties the two together with the
+//! Extends `SignedData` types that carry beacon-chain signatures with the
+//! metadata needed to verify them: the signing `DomainName` and the signing
+//! `Epoch`. `verify_eth2_signed_data` ties the two together with the
 //! upstream beacon-node domain lookup and BLS verification.
 
 use std::any::Any;

@@ -26,7 +26,7 @@ pub trait AggSigDB {
     /// and public key.
     ///
     /// To avoid blocking indefinitely, consider using a timeout,
-    /// [`CancellationToken`] or racing using `tokio::select!` against other
+    /// `CancellationToken` or racing using `tokio::select!` against other
     /// events.
     async fn wait_for(
         &self,

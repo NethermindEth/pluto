@@ -1,15 +1,15 @@
 //! Core tracking module for duty lifecycle monitoring.
 //!
-//! [`TrackerService::start`] spawns a background loop that accumulates
-//! per-duty [`Event`]s submitted by core workflow components via the
-//! [`Tracker`] trait. When the analyser deadline fires the accumulated events
-//! are passed through [`analysis::analyse_duty_failed`] and
-//! [`analysis::analyse_participation`], and the results are dispatched to the
-//! reporters in [`reporters`] for metrics and structured logging. When the
+//! `TrackerService::start` spawns a background loop that accumulates
+//! per-duty `Event`s submitted by core workflow components via the
+//! `Tracker` trait. When the analyser deadline fires the accumulated events
+//! are passed through `analysis::analyse_duty_failed` and
+//! `analysis::analyse_participation`, and the results are dispatched to the
+//! reporters in `reporters` for metrics and structured logging. When the
 //! deleter deadline fires the events for that duty are discarded to bound
 //! memory usage.
 //!
-//! Both deadliners must share the same [`CancellationToken`] as the tracker so
+//! Both deadliners must share the same `CancellationToken` as the tracker so
 //! that the whole system shuts down together.
 
 /// Failure reason definitions for duty analysis.

@@ -1,16 +1,16 @@
 //! Priority protocol engine: per-duty exchange and consensus orchestration.
 //!
 //! [`Prioritiser`] resolves cluster-wide priorities for a duty in two steps:
-//! first it exchanges its own signed [`PriorityMsg`] with all peers and
+//! first it exchanges its own signed `PriorityMsg` with all peers and
 //! collects their responses (until all received or the exchange timeout
-//! elapses), then it deterministically computes a [`PriorityResult`] and
+//! elapses), then it deterministically computes a `PriorityResult` and
 //! proposes it through cluster [`Consensus`].
 //!
 //! The engine is built on tokio primitives: a per-duty request buffer
-//! ([`mpsc`]) feeds the [`run_instance`] select loop,
+//! (`mpsc`) feeds the `run_instance` select loop,
 //! peer exchanges run as spawned tasks writing into a shared responses channel,
-//! request responses travel over [`oneshot`] channels, and shutdown is
-//! signalled by a [`CancellationToken`].
+//! request responses travel over `oneshot` channels, and shutdown is
+//! signalled by a `CancellationToken`.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -233,7 +233,7 @@ impl Prioritiser {
     ///
     /// Returns the [`Prioritiser`] plus the [`Behaviour`] the caller must
     /// register with the swarm. The behaviour's inbound handler dispatches into
-    /// [`Shared::handle_request`].
+    /// `Shared::handle_request`.
     ///
     /// `p2p_context`'s known-peer set must cover every entry in `peers`
     /// (enforced by [`new_component`](crate::new_component)). Exchanges target

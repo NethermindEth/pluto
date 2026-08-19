@@ -26,6 +26,10 @@ pub enum EIP712Error {
     /// Failed to sign EIP-712.
     #[error("Failed to sign EIP-712: {0}")]
     FailedToSign(pluto_k1util::K1UtilError),
+
+    /// Definition version does not support EIP-712 signatures.
+    #[error("Version does not support EIP-712 signatures: {0}")]
+    UnsupportedVersion(String),
 }
 
 struct EIP712TypeField {
@@ -116,16 +120,16 @@ fn eip712_terms_and_conditions() -> EIP712Type {
 }
 
 /// Returns the latest or legacy operator eip712 type.
-pub(crate) fn get_operator_eip712_type(version: &str) -> EIP712Type {
+pub(crate) fn get_operator_eip712_type(version: &str) -> Result<EIP712Type> {
     if !Definition::support_eip712_sigs(version) {
-        unreachable!("invalid eip712 signature version"); // This should never happen
+        return Err(EIP712Error::UnsupportedVersion(version.to_string()));
     }
 
     if version == V1_3 {
-        return eip712_v1x3_config_hash();
+        return Ok(eip712_v1x3_config_hash());
     }
 
-    eip712_operator_config_hash()
+    Ok(eip712_operator_config_hash())
 }
 
 /// Returns the digest for the EIP712 structured type for the provided
@@ -238,6 +242,14 @@ mod tests {
         let signature = sign_cluster_definition_hash(&secret_key, &definition).unwrap();
         let expected_signature = hex::decode("4d06378b88544748d27e656871fefdb258329ecbbecf2316cb03b3da1d499a2137fc8f1caddcaf47a8fd17a22d8f68c9333b21a031fd281c1e6e99623c1bd7f301").unwrap();
         assert_eq!(signature, expected_signature);
+    }
+
+    #[test]
+    fn get_operator_eip712_type_rejects_unsupported_version() {
+        assert!(matches!(
+            get_operator_eip712_type(crate::version::V1_2),
+            Err(EIP712Error::UnsupportedVersion(_))
+        ));
     }
 
     #[test]
