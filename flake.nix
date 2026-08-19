@@ -21,6 +21,20 @@
       # and `rustc` in the dev shell exactly match what CI uses (1.95.0).
       rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
+      # `cargo +nightly fmt` is the project-wide formatting command. The
+      # `+nightly` toolchain override is provided via `cargo-+nightly`, so this
+      # shell only allows nightly formatting and rejects other nightly commands.
+      nightlyRustfmt = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.rustfmt);
+      cargoNightly = pkgs.writeShellScriptBin "cargo-+nightly" ''
+        shift
+        if [ "''${1:-}" != "fmt" ]; then
+          echo "cargo: this dev shell provides nightly rustfmt only; '+nightly ''${1:-}' is unsupported" >&2
+          exit 1
+        fi
+        export RUSTFMT=${nightlyRustfmt}/bin/rustfmt
+        exec ${rustToolchain}/bin/cargo "$@"
+      '';
+
       oas3-gen = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
         pname = "oas3-gen";
         version = "0.24.0";
@@ -40,6 +54,7 @@
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
+          cargoNightly
           rustToolchain
           bashInteractive
           cargo-deny
@@ -56,11 +71,6 @@
           chmod +x .githooks/* && git config --local core.hooksPath .githooks/
         '';
 
-        # rustfmt.toml uses nightly-only options (e.g. `imports_granularity`,
-        # `reorder_impl_items`, `edition = "2024"`) while rust-toolchain.toml
-        # pins a stable channel.  RUSTC_BOOTSTRAP=1 lets the stable rustfmt
-        # accept those options without requiring a separate nightly install.
-        # See: https://github.com/rust-lang/rustfmt/issues/4306
         RUSTC_BOOTSTRAP = "1";
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
         PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
