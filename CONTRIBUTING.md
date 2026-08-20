@@ -10,9 +10,7 @@ The easiest way to set up the development environment is using [Nix](https://nix
 nix develop
 ```
 
-This automatically provides the auxiliary dependencies (Protobuf, Go, oas3-gen, cargo-deny, cargo-machete) and configures git hooks.
-
-> **Note:** `nix develop` does **not** manage the Rust toolchain. The toolchain is pinned in `rust-toolchain.toml` and must be installed separately via [rustup](https://rustup.rs/). After installing rustup, run `rustup show` once in the repo root to install the pinned toolchain automatically. The nightly toolchain is also required for `rustfmt` — install it with `rustup toolchain install nightly`.
+This provides everything needed to build and check the project — the pinned Rust toolchain (from `rust-toolchain.toml`) and nightly `rustfmt`, plus the auxiliary dependencies (Protobuf, Go, oas3-gen, cargo-deny, cargo-machete, cargo-llvm-cov) — and configures git hooks.
 
 ### Manual Setup
 

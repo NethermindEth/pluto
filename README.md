@@ -36,8 +36,8 @@ The `pluto dkg` subcommand is **more restrictive**: all peers must run matching 
 
 **Docker (pre-built image):**
 ```sh
-docker pull ghcr.io/nethermindeth/pluto:latest
-docker run --rm ghcr.io/nethermindeth/pluto:latest pluto --help
+docker pull nethermindeth/pluto:latest
+docker run --rm nethermindeth/pluto:latest --help
 ```
 
 **Build from source:**
