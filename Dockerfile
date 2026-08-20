@@ -5,8 +5,6 @@ FROM rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00d
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
     protobuf-compiler=3.21.12* \
     libprotobuf-dev=3.21.12* && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
