@@ -1036,7 +1036,7 @@ mod tests {
             ])
             .await
             .expect("open stream");
-        futures::pin_mut!(stream);
+        let mut stream = std::pin::pin!(stream);
 
         let first = stream.next().await.expect("first event").expect("ok event");
         assert_eq!(first.topic, "head");

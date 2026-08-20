@@ -525,9 +525,8 @@ fn is_relay_io_error(error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::task::{Context, Poll};
+    use std::task::{Context, Poll, Waker};
 
-    use futures::task::noop_waker_ref;
     use libp2p::swarm::{ConnectionHandler, ConnectionHandlerEvent};
     use pluto_core::version::SemVer;
     use tokio::{sync::mpsc, time::Duration};
@@ -571,8 +570,7 @@ mod tests {
         handler.schedule_retry();
 
         tokio::time::sleep(Duration::from_millis(2)).await;
-        let waker = noop_waker_ref();
-        let mut cx = Context::from_waker(waker);
+        let mut cx = Context::from_waker(Waker::noop());
 
         let poll = ConnectionHandler::poll(&mut handler, &mut cx);
         assert!(matches!(poll, Poll::Pending));
