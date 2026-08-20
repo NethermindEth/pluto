@@ -22,10 +22,6 @@ pub mod load;
 /// `Lock` type representing the finalized cluster configuration, including
 /// distributed validators and node signatures.
 pub mod lock;
-/// Cluster manifest types, loading, mutation, and materialization.
-pub mod manifest;
-/// Generated protobuf types for the cluster manifest (v1).
-pub mod manifestpb;
 /// `Operator` type representing a charon node operator with Ethereum address,
 /// ENR, and config/ENR signatures.
 pub mod operator;

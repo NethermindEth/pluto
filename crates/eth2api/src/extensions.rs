@@ -605,7 +605,7 @@ impl EthBeaconNodeApiClient {
     /// Fetches the resolved beacon domain for the provided domain type and
     /// epoch. Non-exit domains resolve the fork version from the
     /// fork-schedule endpoint (go-eth2-client parity, see
-    /// [`fork_version_from_schedule`]); voluntary exits stay pinned to the
+    /// `fork_version_from_schedule`); voluntary exits stay pinned to the
     /// Capella fork per EIP-7044.
     pub async fn fetch_domain(
         &self,

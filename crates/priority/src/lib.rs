@@ -2,7 +2,7 @@
 //!
 //! Coordinates a cluster-wide priority result per duty by exchanging signed
 //! priority messages between peers and computing a deterministic
-//! [`calculate::calculate_result`].
+//! `calculate::calculate_result`.
 
 /// Deterministic priority result calculation and message validation.
 pub mod calculate;

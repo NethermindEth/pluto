@@ -211,7 +211,7 @@ impl PeerStore {
 
     /// Sets the known addresses for a peer (from identify protocol).
     ///
-    /// The address list is truncated to [`MAX_PEER_ADDRESSES`] before storing,
+    /// The address list is truncated to `MAX_PEER_ADDRESSES` before storing,
     /// because `addrs` is attacker-controlled and otherwise unbounded.
     pub fn set_peer_addresses(&mut self, peer_id: PeerId, mut addrs: Vec<Multiaddr>) {
         if addrs.len() > MAX_PEER_ADDRESSES {

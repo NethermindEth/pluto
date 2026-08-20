@@ -116,7 +116,7 @@ mod predefined {
         capella_hard_fork: "0x90000072",
     };
 
-    /// Holesky network. Metadata taken from https://github.com/eth-clients/holesky#metadata.
+    /// Holesky network. Metadata taken from <https://github.com/eth-clients/holesky#metadata>.
     pub const HOLESKY: Network = Network {
         chain_id: 17000,
         name: "holesky",
@@ -125,7 +125,7 @@ mod predefined {
         capella_hard_fork: "0x04017000",
     };
 
-    /// Hoodi network. Metadata taken from https://github.com/eth-clients/hoodi/#metadata.
+    /// Hoodi network. Metadata taken from <https://github.com/eth-clients/hoodi/#metadata>.
     pub const HOODI: Network = Network {
         chain_id: 560048,
         name: "hoodi",

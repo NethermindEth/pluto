@@ -21,7 +21,7 @@ use libp2p::{
 };
 use vise::Counter;
 
-/// Per-peer bandwidth counters injected into [`PeerBandwidthTransport`].
+/// Per-peer bandwidth counters injected into `PeerBandwidthTransport`.
 pub struct PeerConnectionMetrics {
     /// Bytes sent to the peer.
     pub sent: Counter,

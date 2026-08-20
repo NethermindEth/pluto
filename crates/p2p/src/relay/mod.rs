@@ -1,6 +1,6 @@
 //! Relay reservation and cluster-peer routing.
 //!
-//! [`RelayManager`] is a libp2p [`NetworkBehaviour`] with three
+//! `RelayManager` is a libp2p [`NetworkBehaviour`] with three
 //! responsibilities:
 //!
 //! 1. Subscribe to [`MutablePeer`] watch channels to receive relay address
@@ -13,11 +13,11 @@
 //!
 //! The implementation is split into focused submodules:
 //!
-//! - [`event`] — public event/error types ([`RelayManagerEvent`],
-//!   [`RelayDialError`], [`RelayDialType`]).
-//! - [`dial`] — dial-campaign machinery: exponential backoff and the per-target
+//! - `event` — public event/error types (`RelayManagerEvent`, `RelayDialError`,
+//!   `RelayDialType`).
+//! - `dial` — dial-campaign machinery: exponential backoff and the per-target
 //!   dial state stream.
-//! - [`manager`] — the [`RelayManager`] behaviour, its [`RelayConnectionState`]
+//! - `manager` — the `RelayManager` behaviour, its `RelayConnectionState`
 //!   lifecycle, and the [`NetworkBehaviour`] implementation.
 //!
 //! [`NetworkBehaviour`]: libp2p::swarm::NetworkBehaviour
