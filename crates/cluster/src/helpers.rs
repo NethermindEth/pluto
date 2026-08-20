@@ -84,7 +84,7 @@ async fn read_body_capped(
     response: reqwest::Response,
     max: usize,
 ) -> std::result::Result<Vec<u8>, FetchError> {
-    use futures::StreamExt;
+    use tokio_stream::StreamExt;
 
     // Reject early if the server advertised an oversized body.
     if let Some(len) = response.content_length()

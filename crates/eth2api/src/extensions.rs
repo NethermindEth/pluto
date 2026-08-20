@@ -8,7 +8,6 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
-use futures::{Stream, StreamExt};
 use reqwest::Url;
 use std::{
     collections::{HashMap, HashSet},
@@ -16,6 +15,7 @@ use std::{
     time,
 };
 use tokio::sync::OnceCell;
+use tokio_stream::{Stream, StreamExt};
 use tree_hash::TreeHash;
 
 /// Error that can occur when using the
@@ -1011,7 +1011,7 @@ mod tests {
     #[tokio::test]
     async fn event_stream_preserves_topic_and_raw_data() {
         use crate::EventstreamRequestQueryTopic;
-        use futures::StreamExt;
+        use tokio_stream::StreamExt;
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{method, path},
