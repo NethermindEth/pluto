@@ -16,7 +16,7 @@ use std::path::Path;
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use uuid::Builder;
 
 use super::{
     error::{KeystoreError, Result},
@@ -133,12 +133,21 @@ pub fn encrypt(
 
     let crypto = keystorev4::encrypt(secret, password.as_ref(), pbkdf2_c, rng)?;
 
+    // Draw from the caller's `rng`, not the thread-local one, so a seeded rng
+    // reproduces the whole keystore. `from_random_bytes` stamps the v4 version
+    // and variant bits over the raw bytes.
+    let mut id_bytes = [0u8; 16];
+    rng.fill_bytes(&mut id_bytes);
+
     Ok(Keystore {
         crypto,
         description: String::new(),
         pubkey: hex::encode(pub_key),
         path: EIP2334_PATH.to_string(),
-        id: Uuid::new_v4().to_string().to_uppercase(),
+        id: Builder::from_random_bytes(id_bytes)
+            .into_uuid()
+            .to_string()
+            .to_uppercase(),
         version: EIP2335_KEYSTORE_VERSION,
     })
 }
@@ -240,6 +249,7 @@ mod tests {
     use std::path::PathBuf;
 
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use rand::SeedableRng;
     use tempfile::TempDir;
 
     use super::*;
@@ -269,6 +279,26 @@ mod tests {
         let actual = key_files.sequenced_keys().unwrap();
 
         assert_eq!(secrets, actual);
+    }
+
+    #[test]
+    fn seeded_rng_gives_a_reproducible_keystore() {
+        let secret = generate_secret_key();
+
+        let encrypt_with_seed = |seed| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            encrypt(&secret, "password", Some(INSECURE_PBKDF2_C), &mut rng).unwrap()
+        };
+
+        let first = encrypt_with_seed(42);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&encrypt_with_seed(42)).unwrap(),
+        );
+
+        // A hard-coded id would satisfy the equality above too, so pin that it
+        // still comes from the stream.
+        assert_ne!(first.id, encrypt_with_seed(43).id);
     }
 
     #[tokio::test]

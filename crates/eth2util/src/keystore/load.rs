@@ -281,6 +281,9 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
 
 /// Regex for matching keystore filenames like `keystore-0.json` or
 /// `keystore-insecure-42.json`.
+///
+/// The `.` is escaped deliberately: unescaped it is a wildcard, and
+/// `keystore-0Xjson` would count as a keystore.
 static KEYSTORE_FILE_INDEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"keystore-(?:insecure-)?([0-9]+)\.json").expect("invalid regex")
 });

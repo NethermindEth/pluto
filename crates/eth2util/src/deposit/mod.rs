@@ -236,7 +236,8 @@ pub fn get_deposit_file_path(data_dir: impl AsRef<Path>, amount: Gwei) -> PathBu
     data_dir.as_ref().join(filename)
 }
 
-/// Reads all deposit data files from a cluster directory.
+/// Reads all deposit data files from a cluster directory, one entry per file,
+/// ordered by filename.
 pub async fn read_deposit_data_files(
     cluster_dir: impl AsRef<Path>,
 ) -> Result<Vec<Vec<DepositData>>> {
@@ -250,6 +251,10 @@ pub async fn read_deposit_data_files(
             files.push(entry.path());
         }
     }
+
+    // `read_dir` order is filesystem-dependent, so sort by filename: a given
+    // index then refers to the same file on every platform and every run.
+    files.sort();
 
     if files.is_empty() {
         return Err(DepositError::NoFilesFound(
@@ -276,6 +281,9 @@ pub async fn read_deposit_data_files(
                 }
             })?;
 
+            // Check the length here: left to SSZ, a wrong one surfaces much
+            // later as a field-size error that no longer names the file it
+            // came from.
             let wc_bytes = hex::decode(&d.withdrawal_credentials)?;
             let withdrawal_credentials: WithdrawalCredentials = wc_bytes
                 .as_slice()
@@ -760,6 +768,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_deposit_data_files_invalid_withdrawal_creds_length() {
+        let dir = tempdir().unwrap();
+        let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
+        let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
+        let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+        tokio::fs::write(&file, &bytes).await.unwrap();
+
+        let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        v[0]["withdrawal_credentials"] = serde_json::Value::String("abcd".to_string()); // too short
+        tokio::fs::write(&file, serde_json::to_vec(&v).unwrap())
+            .await
+            .unwrap();
+
+        let err = read_deposit_data_files(dir.path()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            DepositError::InvalidDataLength { ref field, expected, actual }
+                if field == "withdrawal_credentials"
+                    && expected == WITHDRAWAL_CREDENTIALS_LENGTH
+                    && actual == 2
+        ));
+    }
+
+    #[tokio::test]
     async fn read_deposit_data_files_invalid_signature_hex() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
@@ -793,6 +825,39 @@ mod tests {
 
         let err = read_deposit_data_files(dir.path()).await.unwrap_err();
         assert!(matches!(err, DepositError::InvalidDataLength { .. }));
+    }
+
+    #[tokio::test]
+    async fn read_deposit_data_files_orders_by_filename() {
+        let dir = tempdir().unwrap();
+
+        // Neither sorted order nor its reverse, so creation order cannot pass
+        // by accident.
+        for amount in [
+            DEFAULT_DEPOSIT_AMOUNT,
+            ONE_ETH_IN_GWEI * 2,
+            ONE_ETH_IN_GWEI * 256,
+            ONE_ETH_IN_GWEI,
+        ] {
+            write_deposit_data_file(&generate_deposit_datas(amount), "goerli", dir.path())
+                .await
+                .unwrap();
+        }
+
+        let sets = read_deposit_data_files(dir.path()).await.unwrap();
+        let amounts: Vec<Gwei> = sets.iter().map(|set| set[0].amount).collect();
+
+        // Filename order: `5` < `e` puts 256eth before 2eth, `-` < `.` puts
+        // the 32 ETH file last. Not numeric amount order.
+        assert_eq!(
+            amounts,
+            vec![
+                ONE_ETH_IN_GWEI,
+                ONE_ETH_IN_GWEI * 256,
+                ONE_ETH_IN_GWEI * 2,
+                DEFAULT_DEPOSIT_AMOUNT,
+            ]
+        );
     }
 
     #[tokio::test]

@@ -139,6 +139,9 @@ pub async fn verify(
     signature: &Signature,
     pubkey: &PublicKey,
 ) -> Result<()> {
+    // Screen the signature before resolving the domain: that round trip cannot
+    // rescue an all-zero signature, and with the node down this reports the
+    // zero sig rather than a transport error no retry can fix.
     if *signature == [0; 96] {
         return Err(SigningError::ZeroSignature);
     }
