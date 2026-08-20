@@ -243,7 +243,7 @@ async fn calculate_tracker_delay(
 
 /// Already-resolved inputs to [`wire_core_workflow`].
 ///
-/// These are derived from the cluster manifest + config, but passed in so that
+/// These are derived from the cluster lock + config, but passed in so that
 /// file-loading and P2P setup (in `run`) stay separate from
 /// construction-and-wiring (here) — enabling the Tier 1 test to inject a
 /// `BeaconMock` and in-memory parsigex.

@@ -137,7 +137,7 @@ pub struct RunGeneralArgs {
         long = "lock-file",
         env = "CHARON_LOCK_FILE",
         default_value = ".charon/cluster-lock.json",
-        help = "The path to the cluster lock file defining the distributed validator cluster. If both cluster manifest and cluster lock files are provided, the cluster manifest file takes precedence."
+        help = "The path to the cluster lock file defining the distributed validator cluster. The lock file is authoritative; the cluster manifest file is ignored (Charon #4130)."
     )]
     pub lock_file: String,
 
@@ -145,7 +145,7 @@ pub struct RunGeneralArgs {
         long = "manifest-file",
         env = "CHARON_MANIFEST_FILE",
         default_value = ".charon/cluster-manifest.pb",
-        help = "The path to the cluster manifest file. If both cluster manifest and cluster lock files are provided, the cluster manifest file takes precedence."
+        help = "The path to the cluster manifest file. This flag is retained for compatibility but is ignored: cluster manifest support was removed (Charon #4130) and the cluster lock file is authoritative."
     )]
     pub manifest_file: String,
 
