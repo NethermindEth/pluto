@@ -761,10 +761,10 @@ mod tests {
         collections::{BTreeMap, HashSet},
         error::Error as StdError,
         sync::OnceLock,
-        task::{Context, Poll},
+        task::{Context, Poll, Waker},
     };
 
-    use futures::{StreamExt as _, io::Cursor, task::noop_waker};
+    use futures::{StreamExt as _, io::Cursor};
     use k256::SecretKey;
     use libp2p::{
         Multiaddr, PeerId,
@@ -1506,8 +1506,7 @@ mod tests {
     fn drain_behaviour_events(
         behaviour: &mut Behaviour,
     ) -> Vec<ToSwarm<Event, THandlerInEvent<Behaviour>>> {
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let mut events = Vec::new();
 
         while let Poll::Ready(event) = NetworkBehaviour::poll(behaviour, &mut cx) {

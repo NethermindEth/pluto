@@ -1,4 +1,4 @@
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, str::FromStr, task::Waker};
 
 use super::*;
 use crate::relay::dial::RelayDialState;
@@ -843,8 +843,7 @@ async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
     // waits a full extra watchdog tick.
     let target = PeerId::random();
     let mut mgr = manager_with_reserved_relay(vec![target]);
-    let waker = futures::task::noop_waker();
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(Waker::noop());
 
     // Drain until Pending: initialises the watchdog.
     while mgr.poll(&mut cx).is_ready() {}

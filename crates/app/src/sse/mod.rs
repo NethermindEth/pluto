@@ -472,7 +472,7 @@ async fn stream_once(
             return StreamOutcome::Error { productive: false };
         }
     };
-    futures::pin_mut!(stream);
+    let mut stream = std::pin::pin!(stream);
 
     let mut productive = false;
     loop {

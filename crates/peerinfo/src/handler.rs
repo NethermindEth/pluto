@@ -294,8 +294,7 @@ async fn send_peer_info(
     request: PeerInfo,
     timeout: Duration,
 ) -> Result<(Stream, PeerInfo), Failure> {
-    let send = protocol.send_peer_info(stream, &request);
-    futures::pin_mut!(send);
+    let send = std::pin::pin!(protocol.send_peer_info(stream, &request));
 
     match future::select(send, Delay::new(timeout)).await {
         future::Either::Left((Ok((stream, response)), _)) => Ok((stream, response)),

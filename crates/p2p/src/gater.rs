@@ -214,6 +214,8 @@ impl std::error::Error for PeerNotAllowed {}
 
 #[cfg(test)]
 mod tests {
+    use std::task::Waker;
+
     use libp2p::core::{Endpoint, transport::PortUse};
 
     use super::*;
@@ -258,8 +260,7 @@ mod tests {
     /// Drains a single event from `poll`, mirroring how the swarm would
     /// consume generated events.
     fn poll_event(gater: &mut ConnGater) -> Option<Event> {
-        let waker = futures::task::noop_waker_ref();
-        let mut cx = Context::from_waker(waker);
+        let mut cx = Context::from_waker(Waker::noop());
         match gater.poll(&mut cx) {
             Poll::Ready(ToSwarm::GenerateEvent(event)) => Some(event),
             _ => None,
