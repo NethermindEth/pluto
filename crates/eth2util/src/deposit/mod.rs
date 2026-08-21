@@ -14,8 +14,7 @@ pub use types::*;
 use errors::Result;
 
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PUBLIC_KEY_LENGTH, PublicKey, SIGNATURE_LENGTH, Signature},
 };
 use tree_hash::TreeHash;
@@ -52,8 +51,7 @@ pub fn marshal_deposit_data(
         // Verify signature
         let sig_data = get_message_signing_root(&msg, network)?;
 
-        BlstImpl
-            .verify(&deposit_data.pubkey, &sig_data, &deposit_data.signature)
+        tbls::verify(&deposit_data.pubkey, &sig_data, &deposit_data.signature)
             .map_err(|e| DepositError::InvalidSignature(e.to_string()))?;
 
         // Compute deposit data root
@@ -362,8 +360,7 @@ mod tests {
         let priv_key: pluto_crypto::types::PrivateKey =
             priv_key_bytes.as_slice().try_into().unwrap();
 
-        let tbls = BlstImpl;
-        let pub_key = tbls.secret_to_public_key(&priv_key).unwrap();
+        let pub_key = tbls::secret_to_public_key(&priv_key).unwrap();
 
         (priv_key, pub_key)
     }
@@ -384,7 +381,6 @@ mod tests {
             "0x67f5df029ae8d3f941abef0bec6462a6b4e4b522",
         ];
 
-        let tbls = BlstImpl;
         let mut datas = Vec::new();
 
         for i in 0..priv_keys.len() {
@@ -394,7 +390,7 @@ mod tests {
 
             let sig_root = super::get_message_signing_root(&msg, NETWORK).unwrap();
 
-            let signature = tbls.sign(&priv_key, &sig_root).unwrap();
+            let signature = tbls::sign(&priv_key, &sig_root).unwrap();
 
             datas.push(DepositData {
                 pubkey: msg.pubkey,

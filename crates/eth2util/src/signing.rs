@@ -1,6 +1,5 @@
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PublicKey, Signature},
 };
 use pluto_eth2api::{
@@ -148,7 +147,7 @@ pub async fn verify(
 
     let signing_root = get_data_root(client, domain_name, epoch, message_root).await?;
 
-    BlstImpl.verify(pubkey, &signing_root, signature)?;
+    tbls::verify(pubkey, &signing_root, signature)?;
 
     Ok(())
 }
@@ -169,7 +168,7 @@ pub fn verify_with_domain(
 
     let signing_root = compute_signing_root(message_root, domain);
 
-    BlstImpl.verify(pubkey, &signing_root, signature)?;
+    tbls::verify(pubkey, &signing_root, signature)?;
 
     Ok(())
 }
@@ -204,7 +203,6 @@ pub async fn verify_aggregate_and_proof_selection(
 mod tests {
     use super::*;
     use chrono::DateTime;
-    use pluto_crypto::tbls::Tbls;
     use pluto_eth2api::{
         compute_builder_domain, compute_domain,
         spec::{bellatrix::ExecutionAddress, phase0::Version},
@@ -358,7 +356,7 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let fee_recipient: ExecutionAddress =
             hex::decode("000000000000000000000000000000000000dead")
                 .unwrap()
@@ -375,7 +373,7 @@ mod tests {
         let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         verify(
             client,
@@ -414,13 +412,13 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let message_root = [0x55; 32];
         let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
             .await
             .unwrap();
         let signing_root = compute_signing_root(message_root, domain);
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         verify_with_domain(domain, message_root, &signature, &pubkey).unwrap();
     }
@@ -447,12 +445,12 @@ mod tests {
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let wrong_secret =
             secret_key("01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d");
-        let pubkey = BlstImpl.secret_to_public_key(&wrong_secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&wrong_secret).unwrap();
         let message_root = [0x55; 32];
         let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let err = verify(
             client,
@@ -474,7 +472,7 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let signed_message_root = [0x55; 32];
         let verified_message_root = [0x66; 32];
         let signing_root = get_data_root(
@@ -485,7 +483,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let err = verify(
             client,

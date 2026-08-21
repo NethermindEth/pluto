@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv};
+use pluto_crypto::{tbls, tblsconv};
 use pluto_eth1wrap::EthClient;
 use pluto_eth2api::spec::phase0::{VERSION_LEN, Version};
 use pluto_eth2util::registration;
@@ -309,7 +309,7 @@ impl Lock {
 
         let hash = hash_lock(self)?;
 
-        BlstImpl.verify_aggregate(&pubkeys, signature, &hash)?;
+        tbls::verify_aggregate(&pubkeys, signature, &hash)?;
 
         self.verify_builder_registrations()?;
         self.verify_node_signatures()
@@ -424,7 +424,7 @@ impl Lock {
             let signing_root =
                 registration::get_message_signing_root(&registration_message, fork_version);
 
-            BlstImpl.verify(
+            tbls::verify(
                 &pubkey,
                 signing_root.as_ref(),
                 &validator.builder_registration.signature,

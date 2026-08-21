@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use pluto_crypto::tbls::Tbls;
+use pluto_crypto::tbls;
 use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
 use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serializer};
@@ -217,15 +217,13 @@ pub fn agg_sign(
     secrets: &[Vec<pluto_crypto::types::PrivateKey>],
     message: &[u8],
 ) -> Result<pluto_crypto::types::Signature, pluto_crypto::types::Error> {
-    let blst = pluto_crypto::blst_impl::BlstImpl;
-
     let sigs = secrets
         .iter()
         .flat_map(|shares| shares.iter())
-        .map(|share| blst.sign(share, message))
+        .map(|share| tbls::sign(share, message))
         .collect::<Result<Vec<_>, _>>()?;
 
-    blst.aggregate(&sigs)
+    tbls::aggregate(&sigs)
 }
 
 #[cfg(test)]

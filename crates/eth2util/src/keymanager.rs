@@ -191,7 +191,7 @@ impl KeymanagerReq {
 
 #[cfg(test)]
 mod tests {
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
     use test_case::test_case;
 
     use super::{Client, KeymanagerError};
@@ -215,7 +215,7 @@ mod tests {
         let mut secret_hexes = Vec::with_capacity(num_secrets);
 
         for _ in 0..num_secrets {
-            let secret = BlstImpl.generate_secret_key(rand::thread_rng()).unwrap();
+            let secret = tbls::generate_secret_key(rand::thread_rng()).unwrap();
             let password = random_password();
             let mut rng = rand::thread_rng();
             let store = keystore::encrypt(&secret, &password, Some(16), &mut rng).unwrap();

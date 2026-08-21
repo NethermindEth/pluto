@@ -484,7 +484,7 @@ fn dkg_context_byte(dkg_ctx: &str) -> u8 {
 mod tests {
     use std::sync::Arc;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Index};
+    use pluto_crypto::{tbls, types::Index};
     use tokio::sync::{Mutex, Notify};
 
     use super::*;
@@ -945,18 +945,14 @@ mod tests {
                         .expect("node index should not overflow"),
                 )
                 .expect("node index should fit in Index");
-                let sig = BlstImpl
-                    .sign(&shares[val_idx].secret_share, msg)
+                let sig = tbls::sign(&shares[val_idx].secret_share, msg)
                     .expect("partial signature should succeed");
                 partials.insert(share_id, sig);
             }
 
-            let sig = BlstImpl
-                .threshold_aggregate(&partials)
-                .expect("threshold aggregation should succeed");
-            BlstImpl
-                .verify(&pub_key, msg, &sig)
-                .expect("aggregated signature should verify");
+            let sig =
+                tbls::threshold_aggregate(&partials).expect("threshold aggregation should succeed");
+            tbls::verify(&pub_key, msg, &sig).expect("aggregated signature should verify");
         }
     }
 }

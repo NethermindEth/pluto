@@ -2,7 +2,7 @@
 
 use crate::{definition, distvalidator, helpers, lock, operator, registration, version};
 use chrono::{TimeZone, Utc};
-use pluto_crypto::tbls::Tbls;
+use pluto_crypto::tbls;
 use rand::{RngCore, SeedableRng};
 
 /// Returns a new cluster lock with `dv` number of distributed validators, `k`
@@ -37,12 +37,9 @@ pub fn new_for_test(
     let mut withdrawal_addresses = Vec::with_capacity(dv);
 
     for _ in 0..dv {
-        let blst = pluto_crypto::blst_impl::BlstImpl;
-        let root_secret = blst.generate_insecure_secret(&mut rng).unwrap();
-        let root_public = blst.secret_to_public_key(&root_secret).unwrap();
-        let shares = blst
-            .threshold_split_insecure(&root_secret, n, k, &mut rng)
-            .unwrap();
+        let root_secret = tbls::generate_insecure_secret(&mut rng).unwrap();
+        let root_public = tbls::secret_to_public_key(&root_secret).unwrap();
+        let shares = tbls::threshold_split_insecure(&root_secret, n, k, &mut rng).unwrap();
 
         let mut pub_shares: Vec<pluto_crypto::types::PublicKey> =
             Vec::with_capacity(usize::try_from(n).expect("n fits in usize"));
@@ -51,7 +48,7 @@ pub fn new_for_test(
 
         for i in 0..n {
             let share_priv_key = *shares.get(&i.checked_add(1).unwrap()).unwrap();
-            let share_pub = blst.secret_to_public_key(&share_priv_key).unwrap();
+            let share_pub = tbls::secret_to_public_key(&share_priv_key).unwrap();
 
             pub_shares.push(share_pub);
             priv_shares.push(share_priv_key);
@@ -172,11 +169,9 @@ fn get_signed_registration(
     fee_recipient: [u8; 20],
     network_name: impl AsRef<str>,
 ) -> registration::BuilderRegistration {
-    let blst = pluto_crypto::blst_impl::BlstImpl;
-
     let timestamp =
         pluto_eth2util::network::network_to_genesis_time(network_name.as_ref()).unwrap();
-    let pubkey = blst.secret_to_public_key(secret).unwrap();
+    let pubkey = tbls::secret_to_public_key(secret).unwrap();
     let eth2pubkey = pluto_crypto::tblsconv::pubkey_to_eth2(pubkey);
 
     let msg = pluto_eth2api::v1::ValidatorRegistration {
@@ -192,7 +187,7 @@ fn get_signed_registration(
         .unwrap();
 
     let sig_root = pluto_eth2util::registration::get_message_signing_root(&msg, fork_version);
-    let signature = blst.sign(secret, &sig_root).unwrap();
+    let signature = tbls::sign(secret, &sig_root).unwrap();
 
     registration::BuilderRegistration {
         message: registration::Registration {

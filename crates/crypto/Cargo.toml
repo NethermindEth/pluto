@@ -16,8 +16,9 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [lints.rust]
-# Allow unsafe code for blst C bindings (overrides workspace forbid)
-unsafe_code = "allow"
+# `deny` rather than the workspace `forbid` so `tbls::math` — the sole module
+# wrapping the blst C bindings — can opt back in with `#![allow(unsafe_code)]`.
+unsafe_code = "deny"
 missing_docs = "deny"
 
 [lints.clippy]

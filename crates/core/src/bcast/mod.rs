@@ -6,7 +6,7 @@ mod recast;
 use std::{any::Any, error::Error as StdError};
 
 use chrono::{DateTime, Duration, Utc};
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::tbls;
 use pluto_eth2api::{
     AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
     GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
@@ -706,7 +706,7 @@ fn attestation_matches_duty(
     .0;
     let signature = payload.signature();
 
-    match BlstImpl.verify(&attester_duty.pubkey, &signing_root, &signature) {
+    match tbls::verify(&attester_duty.pubkey, &signing_root, &signature) {
         Ok(()) => Ok(true),
         Err(pluto_crypto::types::Error::VerificationFailed(_)) => Ok(false),
         Err(source) => Err(Error::Crypto {
@@ -799,7 +799,6 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
     use pluto_eth2api::{
         GetStateValidatorsResponseResponse, ValidatorResponseValidator,
         spec::{bellatrix, electra, phase0},
@@ -1016,7 +1015,7 @@ mod tests {
         }
         .tree_hash_root()
         .0;
-        let signature = BlstImpl.sign(secret, &signing_root).expect("sign");
+        let signature = tbls::sign(secret, &signing_root).expect("sign");
 
         versioned::VersionedAttestation {
             version: versioned::DataVersion::Electra,
@@ -1218,10 +1217,8 @@ mod tests {
 
     #[tokio::test]
     async fn broadcast_attester_backfills_electra_validator_index() {
-        let secret = BlstImpl
-            .generate_insecure_secret(StdRng::seed_from_u64(42))
-            .expect("secret");
-        let public_key = BlstImpl.secret_to_public_key(&secret).expect("pubkey");
+        let secret = tbls::generate_insecure_secret(StdRng::seed_from_u64(42)).expect("secret");
+        let public_key = tbls::secret_to_public_key(&secret).expect("pubkey");
         let beacon = BeaconMock::builder()
             .spec(deterministic_electra_spec())
             .endpoint_overrides(vec![(

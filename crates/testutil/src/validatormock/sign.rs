@@ -8,8 +8,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     tblsconv::{pubkey_to_eth2, sig_to_eth2},
     types::PrivateKey,
 };
@@ -31,8 +30,8 @@ pub trait Sign: Send + Sync + std::fmt::Debug + 'static {
 /// component that needs to sign.
 pub type SignFunc = Arc<dyn Sign>;
 
-/// Concrete BLS signer backed by [`BlstImpl`]. Registers a set of secrets by
-/// their derived eth2 public key.
+/// Concrete BLS signer backed by [`pluto_crypto::tbls`]. Registers a set of
+/// secrets by their derived eth2 public key.
 #[derive(Debug, Clone)]
 pub struct Signer {
     secrets: HashMap<BLSPubKey, PrivateKey>,
@@ -40,12 +39,12 @@ pub struct Signer {
 
 impl Signer {
     /// Builds a [`Signer`] from `secrets`, deriving each public key with
-    /// [`BlstImpl`]. Fails fast if any secret is rejected by the BLS backend.
+    /// [`tbls::secret_to_public_key`]. Fails fast if any secret is rejected by
+    /// the BLS backend.
     pub fn new(secrets: &[PrivateKey]) -> Result<Self, SignError> {
-        let tbls = BlstImpl;
         let mut map = HashMap::with_capacity(secrets.len());
         for secret in secrets {
-            let pk = tbls.secret_to_public_key(secret)?;
+            let pk = tbls::secret_to_public_key(secret)?;
             map.insert(pubkey_to_eth2(pk), *secret);
         }
         Ok(Self { secrets: map })
@@ -60,7 +59,7 @@ impl Signer {
 impl Sign for Signer {
     fn sign(&self, pubkey: &BLSPubKey, data: &[u8]) -> Result<BLSSignature, SignError> {
         let secret = self.secrets.get(pubkey).ok_or(SignError::UnknownPubkey)?;
-        let sig = BlstImpl.sign(secret, data)?;
+        let sig = tbls::sign(secret, data)?;
         Ok(sig_to_eth2(sig))
     }
 }
@@ -74,17 +73,13 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[0] = seed;
         let rng = StdRng::from_seed(bytes);
-        BlstImpl.generate_insecure_secret(rng).expect("generate")
+        tbls::generate_insecure_secret(rng).expect("generate")
     }
 
     #[test]
     fn round_trip_known_pubkey() {
         let secret = deterministic_secret(1);
-        let pubkey = pubkey_to_eth2(
-            BlstImpl
-                .secret_to_public_key(&secret)
-                .expect("derive pubkey"),
-        );
+        let pubkey = pubkey_to_eth2(tbls::secret_to_public_key(&secret).expect("derive pubkey"));
 
         let signer = Signer::new(&[secret]).expect("build signer");
         let sig = signer.sign(&pubkey, b"msg").expect("sign");

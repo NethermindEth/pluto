@@ -15,7 +15,7 @@ use pluto_core::{
     signeddata::VersionedSignedValidatorRegistration,
     types::{ParSignedData, ParSignedDataSet, PubKey},
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv::pubkey_to_eth2};
+use pluto_crypto::{tbls, tblsconv::pubkey_to_eth2};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 use pluto_eth2util::{deposit, network, registration};
 use tracing::{info, warn};
@@ -112,7 +112,7 @@ pub fn sign_lock_hash(share_idx: u64, shares: &[Share], hash: &[u8]) -> Result<P
 
     for share in shares {
         let pub_key = share_pubkey(share, "signing lock hash")?;
-        let sig = BlstImpl.sign(&share.secret_share, hash)?;
+        let sig = tbls::sign(&share.secret_share, hash)?;
 
         set.insert(pub_key, ParSignedData::new(sig, share_idx));
     }
@@ -144,7 +144,7 @@ pub fn sign_deposit_msgs(
 
         let msg = deposit::new_message(eth2_pubkey, &withdrawal_address, amount, compounding)?;
         let sig_root = deposit::get_message_signing_root(&msg, network_name)?;
-        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+        let sig = tbls::sign(&share.secret_share, &sig_root)?;
 
         set.insert(pub_key, ParSignedData::new(sig, share_idx));
         msgs.insert(pub_key, msg);
@@ -187,7 +187,7 @@ pub fn sign_validator_registrations(
             u64::try_from(timestamp.timestamp())?,
         )?;
         let sig_root = registration::get_message_signing_root(&reg_msg, fork_version_arr);
-        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+        let sig = tbls::sign(&share.secret_share, &sig_root)?;
 
         let signed_reg = VersionedSignedValidatorRegistration::new(
             versioned::VersionedSignedValidatorRegistration {
@@ -364,7 +364,7 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
 
     let (agg_sig, all_pubshares) = agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
 
-    BlstImpl.verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
+    tbls::verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
     lock.signature_aggregate = agg_sig.to_vec();
 
     Ok(lock)
@@ -389,19 +389,16 @@ mod tests {
         let mut res = Vec::with_capacity(num_validators);
 
         for seed in 0..num_validators {
-            let secret = BlstImpl
-                .generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(
-                    u64::try_from(seed)
-                        .expect("seed should fit")
-                        .checked_add(1)
-                        .expect("seed increment should not overflow"),
-                ))
-                .expect("secret generation should succeed");
-            let pub_key = BlstImpl
-                .secret_to_public_key(&secret)
-                .expect("public key derivation should succeed");
-            let shares = BlstImpl
-                .threshold_split(&secret, total, threshold)
+            let secret = tbls::generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(
+                u64::try_from(seed)
+                    .expect("seed should fit")
+                    .checked_add(1)
+                    .expect("seed increment should not overflow"),
+            ))
+            .expect("secret generation should succeed");
+            let pub_key =
+                tbls::secret_to_public_key(&secret).expect("public key derivation should succeed");
+            let shares = tbls::threshold_split(&secret, total, threshold)
                 .expect("threshold split should succeed");
 
             res.push(Share {
@@ -414,8 +411,7 @@ mod tests {
                     .map(|(idx, secret_share)| {
                         (
                             idx,
-                            BlstImpl
-                                .secret_to_public_key(&secret_share)
+                            tbls::secret_to_public_key(&secret_share)
                                 .expect("public share derivation should succeed"),
                         )
                     })
@@ -481,8 +477,7 @@ mod tests {
                 .signed_data
                 .signature()
                 .expect("signature should exist");
-            BlstImpl
-                .verify(&share.public_shares[&2], &hash, &sig)
+            tbls::verify(&share.public_shares[&2], &hash, &sig)
                 .expect("partial signature should verify against share public key");
         }
     }
