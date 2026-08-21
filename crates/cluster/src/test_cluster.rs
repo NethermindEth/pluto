@@ -172,7 +172,7 @@ fn get_signed_registration(
     let timestamp =
         pluto_eth2util::network::network_to_genesis_time(network_name.as_ref()).unwrap();
     let pubkey = tbls::secret_to_public_key(secret).unwrap();
-    let eth2pubkey = pluto_crypto::tblsconv::pubkey_to_eth2(pubkey);
+    let eth2pubkey = pluto_crypto::types::pubkey_to_eth2(pubkey);
 
     let msg = pluto_eth2api::v1::ValidatorRegistration {
         fee_recipient,

@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use pluto_crypto::{tbls, tblsconv};
+use pluto_crypto::{tbls, types};
 use pluto_eth1wrap::EthClient;
 use pluto_eth2api::spec::phase0::{VERSION_LEN, Version};
 use pluto_eth2util::registration;
@@ -70,7 +70,7 @@ pub enum LockError {
 
     /// Failed to convert BLS bytes
     #[error("Failed to convert BLS bytes: {0}")]
-    FailedToConvertBLSBytes(#[from] pluto_crypto::tblsconv::ConvError),
+    FailedToConvertBLSBytes(#[from] pluto_crypto::types::ConvError),
 
     /// Failed to verify BLS signature
     #[error("Failed to verify BLS signature: {0}")]
@@ -298,13 +298,13 @@ impl Lock {
             return Err(LockError::EmptyLockAggregateSignature);
         }
 
-        let signature = tblsconv::signature_from_bytes(&self.signature_aggregate)?;
+        let signature = types::signature_from_bytes(&self.signature_aggregate)?;
 
         let pubkeys = self
             .distributed_validators
             .iter()
             .flat_map(|v| v.pub_shares.iter())
-            .map(|share| tblsconv::pubkey_from_bytes(share))
+            .map(|share| types::pubkey_from_bytes(share))
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let hash = hash_lock(self)?;
@@ -412,7 +412,7 @@ impl Lock {
                         timestamp: validator.builder_registration.message.timestamp.timestamp(),
                     })?;
 
-            let pubkey = tblsconv::pubkey_from_bytes(&validator.pub_key)?;
+            let pubkey = types::pubkey_from_bytes(&validator.pub_key)?;
 
             let registration_message = registration::new_message(
                 pubkey,

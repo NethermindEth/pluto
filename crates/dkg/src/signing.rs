@@ -15,7 +15,7 @@ use pluto_core::{
     signeddata::VersionedSignedValidatorRegistration,
     types::{ParSignedData, ParSignedDataSet, PubKey},
 };
-use pluto_crypto::{tbls, tblsconv::pubkey_to_eth2};
+use pluto_crypto::{tbls, types::pubkey_to_eth2};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 use pluto_eth2util::{deposit, network, registration};
 use tracing::{info, warn};

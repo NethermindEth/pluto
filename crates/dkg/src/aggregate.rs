@@ -6,8 +6,7 @@ use pluto_core::{
 };
 use pluto_crypto::{
     tbls,
-    tblsconv::signature_from_bytes,
-    types::{PublicKey, Signature},
+    types::{PublicKey, Signature, signature_from_bytes},
 };
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util::{deposit, registration};
@@ -22,7 +21,7 @@ pub type Result<T> = std::result::Result<T, AggregateError>;
 pub enum AggregateError {
     /// Failed to convert raw bytes into a threshold signature.
     #[error(transparent)]
-    SignatureBytes(#[from] pluto_crypto::tblsconv::ConvError),
+    SignatureBytes(#[from] pluto_crypto::types::ConvError),
 
     /// Failed to verify or aggregate threshold signatures.
     #[error(transparent)]
@@ -306,7 +305,7 @@ mod tests {
     use super::*;
 
     use pluto_core::signeddata::VersionedSignedValidatorRegistration as CoreRegistration;
-    use pluto_crypto::tblsconv::pubkey_to_eth2;
+    use pluto_crypto::types::pubkey_to_eth2;
     use pluto_eth2api::{
         v1,
         versioned::{BuilderVersion, VersionedSignedValidatorRegistration},

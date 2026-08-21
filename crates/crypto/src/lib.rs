@@ -11,8 +11,5 @@
 /// Threshold BLS signatures (Herumi-compatible)
 pub mod tbls;
 
-/// Conversions between crypto (tbls) and eth2 BLS types.
-pub mod tblsconv;
-
-/// Error types and constants
+/// Key and signature types, their conversions, error types and constants
 pub mod types;

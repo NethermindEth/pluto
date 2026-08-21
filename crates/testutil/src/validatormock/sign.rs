@@ -9,8 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use pluto_crypto::{
     tbls,
-    tblsconv::{pubkey_to_eth2, sig_to_eth2},
-    types::PrivateKey,
+    types::{PrivateKey, pubkey_to_eth2, sig_to_eth2},
 };
 use pluto_eth2api::spec::phase0::{BLSPubKey, BLSSignature};
 
