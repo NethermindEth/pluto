@@ -84,11 +84,7 @@ pub enum Error {
     /// This error occurs when the provided bytes don't represent a valid
     /// BLS secret key (e.g., out of valid scalar field range).
     #[error("Failed to deserialize secret key: {0}")]
-    InvalidSecretKey(#[from] BlsError),
-
-    /// BLST error.
-    #[error("BLST error: {0}")]
-    BlsError(BlsError),
+    InvalidSecretKey(BlsError),
 
     /// Failed to deserialize a public key from bytes.
     #[error("Failed to deserialize public key: {0}")]
@@ -260,12 +256,6 @@ impl From<BLST_ERROR> for BlsError {
             BLST_ERROR::BLST_BAD_SCALAR => Self::InvalidScalar,
             _ => Self::Unknown,
         }
-    }
-}
-
-impl From<BLST_ERROR> for Error {
-    fn from(err: BLST_ERROR) -> Self {
-        Error::BlsError(BlsError::from(err))
     }
 }
 
