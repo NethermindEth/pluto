@@ -49,19 +49,16 @@ pub(super) fn evaluate_polynomial(
     // Start with the constant term
     let mut result = poly[0].clone();
 
-    // Compute powers of x and accumulate
-    let mut x_power = scalar_from_u64(x);
+    // Horner-free evaluation: `x_power` holds x^i entering iteration i.
+    let x_scalar = scalar_from_u64(x);
+    let mut x_power = x_scalar.clone();
 
     for coeff in poly.iter().skip(1) {
         // result += coeff * x_power
         let term = scalar_mult_secret(coeff, &x_power)?;
         result = scalar_add_secret(&result, &term)?;
 
-        // x_power *= x for next iteration
-        if poly.len() > 2 {
-            let x_scalar = scalar_from_u64(x);
-            x_power = scalar_mult_scalars(&x_power, &x_scalar)?;
-        }
+        x_power = scalar_mult_scalars(&x_power, &x_scalar)?;
     }
 
     Ok(result)
