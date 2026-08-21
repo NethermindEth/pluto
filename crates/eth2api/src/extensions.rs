@@ -303,6 +303,10 @@ fn fork_version_from_schedule(
 /// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
 /// the Capella fork (spec-derived), falling back to the genesis fork version
 /// when the spec has no Capella entry.
+///
+/// Reading the version from the beacon node's own spec keeps devnets and other
+/// custom networks working. The genesis fallback is defensive: a spec without
+/// a Capella version already fails while the schedule is built.
 fn voluntary_exit_fork_version(
     spec_data: &serde_json::Value,
     genesis_fork_version: phase0::Version,

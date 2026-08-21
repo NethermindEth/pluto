@@ -373,8 +373,9 @@ impl SseListenerActor {
         event_ts: DateTime<Utc>,
         delay_ok: impl Fn(chrono::Duration) -> bool,
     ) -> (chrono::Duration, bool) {
-        // Slot times are small in practice (slot duration is a few whole
-        // seconds), so saturate on the unreachable overflow.
+        // Slot times are small in practice, so saturate on the unreachable
+        // overflow: a clamped slot start falls back to the event timestamp and
+        // the delay reads zero.
         let slot = i64::try_from(slot).unwrap_or(i64::MAX);
         let ms_per_slot = i64::try_from(self.slot_duration.as_millis()).unwrap_or(i64::MAX);
         let offset = chrono::Duration::milliseconds(slot.saturating_mul(ms_per_slot));
