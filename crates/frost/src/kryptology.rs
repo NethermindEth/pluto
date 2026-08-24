@@ -359,7 +359,7 @@ pub fn round1<R: RngCore + CryptoRng>(
             continue;
         }
         let j_id = Identifier::from_u32(j)?;
-        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
+        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id)?.to_scalar();
         shares.insert(
             j,
             ShamirShare {
@@ -431,7 +431,7 @@ pub fn round2(
 
     let own_identifier = Identifier::from_u32(secret.id)?;
     let mut own_share_scalar =
-        SigningShare::from_coefficients(&secret.coefficients, own_identifier).to_scalar();
+        SigningShare::from_coefficients(&secret.coefficients, own_identifier)?.to_scalar();
 
     let mut peer_commitments: BTreeMap<Identifier, VerifiableSecretSharingCommitment> =
         BTreeMap::new();

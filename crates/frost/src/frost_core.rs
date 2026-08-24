@@ -34,6 +34,9 @@ pub enum FrostCoreError {
     /// The commitment has no coefficients.
     #[error("incorrect commitment")]
     IncorrectCommitment,
+    /// The polynomial has no coefficients.
+    #[error("empty polynomial")]
+    EmptyPolynomial,
 }
 
 /// A participant identifier wrapping a non-zero scalar.
@@ -162,8 +165,13 @@ impl SigningShare {
     }
 
     /// Evaluate the polynomial defined by `coefficients` at `peer`.
-    pub fn from_coefficients(coefficients: &[Scalar], peer: Identifier) -> Self {
-        Self::new(evaluate_polynomial(peer, coefficients))
+    ///
+    /// Returns [`FrostCoreError::EmptyPolynomial`] if `coefficients` is empty.
+    pub fn from_coefficients(
+        coefficients: &[Scalar],
+        peer: Identifier,
+    ) -> Result<Self, FrostCoreError> {
+        Ok(Self::new(evaluate_polynomial(peer, coefficients)?))
     }
 }
 
@@ -412,7 +420,13 @@ impl PublicKeyPackage {
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595>
 #[allow(clippy::arithmetic_side_effects)]
-fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scalar {
+fn evaluate_polynomial(
+    identifier: Identifier,
+    coefficients: &[Scalar],
+) -> Result<Scalar, FrostCoreError> {
+    let a0 = *coefficients
+        .first()
+        .ok_or(FrostCoreError::EmptyPolynomial)?;
     let mut value = Scalar::ZERO;
     let x = identifier.to_scalar();
 
@@ -420,11 +434,7 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
         value = value + *coeff;
         value = value * x;
     }
-    value = value
-        + *coefficients
-            .first()
-            .expect("coefficients must have at least one element");
-    value
+    Ok(value + a0)
 }
 
 /// Evaluate the VSS verification equation at `identifier`.
@@ -585,6 +595,15 @@ mod tests {
         assert!(matches!(
             PublicKeyPackage::from_dkg_commitments(&empty_commitments),
             Err(FrostCoreError::IncorrectNumberOfCommitments)
+        ));
+    }
+
+    #[test]
+    fn from_coefficients_rejects_empty_polynomial() {
+        let peer = Identifier::from_u32(1).expect("identifier");
+        assert!(matches!(
+            SigningShare::from_coefficients(&[], peer),
+            Err(FrostCoreError::EmptyPolynomial)
         ));
     }
 }
