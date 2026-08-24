@@ -241,6 +241,182 @@ mod tests {
         addrs.iter().map(ToString::to_string).collect()
     }
 
+    const RELAY_ID: &str = "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT";
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    fn relayed(transport: &str) -> Multiaddr {
+        addr(&format!("{transport}/p2p/{RELAY_ID}/p2p-circuit"))
+    }
+
+    fn conn(remote_addr: Multiaddr) -> crate::p2p_context::Peer {
+        crate::p2p_context::Peer {
+            id: libp2p::PeerId::random(),
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(1),
+            remote_addr,
+        }
+    }
+
+    #[test]
+    fn is_relay_addr_needs_a_circuit_component() {
+        assert!(is_relay_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+        assert!(is_relay_addr(&relayed("/ip4/1.2.3.4/udp/3610/quic-v1")));
+
+        // A plain address to the relay itself is not a relayed address.
+        assert!(!is_relay_addr(&addr(&format!(
+            "/ip4/1.2.3.4/tcp/3610/p2p/{RELAY_ID}"
+        ))));
+        assert!(!is_relay_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+
+        assert!(is_direct_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        assert!(!is_direct_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+    }
+
+    #[test]
+    fn is_quic_addr_accepts_both_quic_versions() {
+        assert!(is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")));
+        assert!(is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610/quic")));
+        // Relaying is the separate axis: relayed QUIC is still QUIC.
+        assert!(is_quic_addr(&relayed("/ip4/1.2.3.4/udp/3610/quic-v1")));
+
+        assert!(!is_quic_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        // UDP alone is not QUIC.
+        assert!(!is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610")));
+    }
+
+    #[test]
+    fn is_tcp_addr_needs_a_tcp_component() {
+        assert!(is_tcp_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        assert!(is_tcp_addr(&addr("/dns/relay.example.com/tcp/3610")));
+        assert!(is_tcp_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+
+        assert!(!is_tcp_addr(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")));
+        assert!(!is_tcp_addr(&addr("/ip4/1.2.3.4")));
+    }
+
+    #[test]
+    fn addr_type_and_protocol_classify_the_two_axes() {
+        assert_eq!(
+            addr_type(&addr("/ip4/1.2.3.4/tcp/3610")),
+            ConnectionType::Direct
+        );
+        assert_eq!(
+            addr_type(&relayed("/ip4/1.2.3.4/tcp/3610")),
+            ConnectionType::Relay
+        );
+
+        assert_eq!(
+            addr_protocol(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")),
+            Protocol::Quic
+        );
+        assert_eq!(addr_protocol(&addr("/ip4/1.2.3.4/tcp/3610")), Protocol::Tcp);
+        assert_eq!(addr_protocol(&addr("/ip4/1.2.3.4")), Protocol::Unknown);
+    }
+
+    #[test]
+    fn filter_direct_quic_addrs_keeps_only_unrelayed_quic() {
+        let quic = addr("/ip4/1.2.3.4/udp/3610/quic-v1");
+        let candidates = vec![
+            quic.clone(),
+            addr("/ip4/1.2.3.4/tcp/3610"),
+            relayed("/ip4/1.2.3.4/udp/3610/quic-v1"),
+            relayed("/ip4/1.2.3.4/tcp/3610"),
+        ];
+
+        assert_eq!(filter_direct_quic_addrs(candidates.into_iter()), vec![quic]);
+        assert!(filter_direct_quic_addrs(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn quic_is_enabled_only_while_listening_on_quic() {
+        let tcp = addr("/ip4/1.2.3.4/tcp/3610");
+        let quic = addr("/ip4/1.2.3.4/udp/3610/quic-v1");
+
+        assert!(is_quic_enabled([&tcp, &quic].into_iter()));
+        assert!(!is_quic_enabled([&tcp].into_iter()));
+        assert!(!is_quic_enabled(std::iter::empty()));
+    }
+
+    #[test]
+    fn direct_conn_checks_ignore_relayed_connections() {
+        let quic = conn(addr("/ip4/1.2.3.4/udp/3610/quic-v1"));
+        let tcp = conn(addr("/ip4/1.2.3.4/tcp/3610"));
+        let relayed_quic = conn(relayed("/ip4/1.2.3.4/udp/3610/quic-v1"));
+        let relayed_tcp = conn(relayed("/ip4/1.2.3.4/tcp/3610"));
+
+        assert!(has_direct_quic_conn(&[&quic]));
+        assert!(!has_direct_quic_conn(&[&tcp, &relayed_quic]));
+        assert!(!has_direct_quic_conn(&[]));
+
+        assert!(has_direct_tcp_conn(&[&tcp]));
+        assert!(!has_direct_tcp_conn(&[&quic, &relayed_tcp]));
+        assert!(!has_direct_tcp_conn(&[]));
+    }
+
+    /// Charon's `TestFilterAdvertisedAddrs` table (`p2p/p2p_internal_test.go`).
+    ///
+    /// DEVIATION: charon preserves source order and deduplicates globally
+    /// across both groups. This implementation sorts each group and
+    /// deduplicates only within it, so the two duplicate cases advertise an
+    /// address twice and in a different order. `want` is what this
+    /// implementation returns today; the inline `charon:` notes record what
+    /// upstream returns for the cases that differ.
+    #[test]
+    fn advertised_addresses_match_the_charon_table() {
+        const PRIV1: &str = "/ip4/192.168.1.1/tcp/80";
+        const PRIV2: &str = "/ip4/127.0.0.1/udp/123";
+        const PUB1: &str = "/ip4/1.1.1.1/tcp/80";
+
+        let cases = [
+            ("empty", vec![], vec![], false, vec![]),
+            (
+                "drop one private",
+                vec![],
+                vec![PUB1, PRIV1],
+                true,
+                vec![PUB1],
+            ),
+            (
+                "keep one private",
+                vec![],
+                vec![PUB1, PRIV1],
+                false,
+                vec![PUB1, PRIV1],
+            ),
+            (
+                // charon: [PRIV1, PUB1]. An external address is never dropped
+                // for being private, but here it also survives deduplication.
+                "duplicate public",
+                vec![PRIV1, PUB1],
+                vec![PUB1, PRIV1],
+                true,
+                vec![PUB1, PRIV1, PUB1],
+            ),
+            (
+                // charon: [PRIV2, PRIV1]
+                "duplicate private",
+                vec![PRIV2, PRIV1],
+                vec![PRIV1, PRIV2],
+                false,
+                vec![PRIV2, PRIV1, PRIV2, PRIV1],
+            ),
+            ("drop all private", vec![], vec![PRIV1, PRIV2], true, vec![]),
+        ];
+
+        for (name, external, internal, exclude_private, want) in cases {
+            let got = filter_advertised_addresses(
+                ExternalAddresses(external.iter().map(|a| addr(a)).collect()),
+                InternalAddresses(internal.iter().map(|a| addr(a)).collect()),
+                exclude_private,
+            )
+            .unwrap();
+
+            assert_eq!(as_strings(&got), want, "case {name:?}");
+        }
+    }
+
     #[test]
     fn external_multiaddrs_keep_the_bound_ports() {
         let cfg = config(Some("1.2.3.4"), Some("relay.example.com"));
