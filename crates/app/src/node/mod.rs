@@ -378,10 +378,22 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
     }
 
-    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
+    // One pubkey-scoped validator cache shared by the scheduler's beacon
+    // client, the submission client, and the validator API, so every consumer
+    // resolves the same cluster validator set. `ValidatorCache` is `Arc`-backed,
+    // so the clones seeded into each client (and the one wired into the
+    // per-epoch refresh subscriber in `wire_core_workflow`) share state, letting
+    // a single refresh update every consumer at once.
+    let eth2_pubkeys: Vec<_> = validators.iter().map(|v| v.eth2_pubkey).collect();
+    let validator_cache =
+        pluto_eth2api::valcache::ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+
+    let beacon_client =
+        pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
-    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
+    let submission_client =
+        pluto_eth2api::BeaconNodeClient::new(submission_api, validator_cache.clone());
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -556,6 +568,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             beacon_client,
             eth2_cl,
             submission_client,
+            validator_cache,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,

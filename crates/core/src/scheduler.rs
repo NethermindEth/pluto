@@ -458,8 +458,8 @@ impl SchedulerActor {
         // During this time the Scheduler actor is blocked.
         // This is the same behavior as in Charon, but it might not be desirable.
 
-        let valcache = self.client.validator_cache().await;
-        let vals = resolve_active_validators(slot.epoch(), &valcache).await?;
+        let valcache = self.client.validator_cache();
+        let vals = resolve_active_validators(slot.epoch(), valcache).await?;
 
         SCHEDULER_METRICS.validators_active.set(vals.len() as u64);
 
@@ -1149,11 +1149,21 @@ mod tests {
             .await;
     }
 
+    /// Builds a [`BeaconNodeClient`] over the mock with an empty-pubkey
+    /// validator cache. The mock returns its mounted validator datums
+    /// regardless of the request's `ids` filter, so an empty pubkey set is
+    /// sufficient for the scheduler tests.
+    fn test_beacon_client(mock: &BeaconMock) -> BeaconNodeClient {
+        let api = mock.client().clone();
+        let cache = valcache::ValidatorCache::new(api.clone(), Vec::new());
+        BeaconNodeClient::new(api, cache)
+    }
+
     /// Builds an initial [`SchedulerActor`] wired to the mock's client. No
     /// epoch resolved yet.
     fn test_actor(mock: &BeaconMock) -> SchedulerActor {
         SchedulerActor {
-            client: pluto_eth2api::BeaconNodeClient::new(mock.client().clone()),
+            client: test_beacon_client(mock),
             slots_per_epoch: 1,
             slot_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
             duty_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
@@ -1221,7 +1231,7 @@ mod tests {
         let slot_sub = slot_broadcast.subscribe();
         let duty_sub = duty_broadcast.subscribe();
 
-        let client = pluto_eth2api::BeaconNodeClient::new(mock.client().clone());
+        let client = test_beacon_client(mock);
         // Cache slots_per_epoch from the mock's spec, mirroring `build`, so
         // `get_duty_definition`'s epoch math matches the slots the test drives.
         let (_slot_duration, slots_per_epoch) = client
@@ -1263,7 +1273,7 @@ mod tests {
         let err = fetch_attester_duties(
             &test_past_slot(0, 1),
             validator_set_a_mismatched(),
-            &BeaconNodeClient::new(mock.client().clone()),
+            &test_beacon_client(&mock),
         )
         .await
         .expect_err("mismatched pubkey should be rejected");
@@ -1276,7 +1286,7 @@ mod tests {
         let err = fetch_proposer_duties(
             &test_past_slot(0, 1),
             validator_set_a_mismatched(),
-            &BeaconNodeClient::new(mock.client().clone()),
+            &test_beacon_client(&mock),
         )
         .await
         .expect_err("mismatched pubkey should be rejected");
@@ -1289,7 +1299,7 @@ mod tests {
         let err = fetch_sync_committee_duties(
             &test_past_slot(0, 1),
             validator_set_a_mismatched(),
-            &BeaconNodeClient::new(mock.client().clone()),
+            &test_beacon_client(&mock),
         )
         .await
         .expect_err("mismatched pubkey should be rejected");
