@@ -315,7 +315,7 @@ pub fn extract_file_index(filename: impl AsRef<str>) -> Result<Option<usize>> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use pluto_crypto::{tbls, types::PrivateKey};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -324,8 +324,7 @@ mod tests {
 
     /// Generates a random BLS secret key for testing.
     fn generate_secret_key() -> PrivateKey {
-        let tbls = BlstImpl;
-        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+        tbls::generate_secret_key(rand::thread_rng()).unwrap()
     }
 
     /// Helper: generates a new key, stores it insecurely, then renames the

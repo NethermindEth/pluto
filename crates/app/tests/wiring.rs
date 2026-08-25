@@ -44,7 +44,7 @@ use pluto_core::{
         ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::tbls;
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum,
@@ -176,7 +176,7 @@ async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
 /// signed message is arbitrary — only the distinct share index and identical
 /// unsigned payload (so ParSigDB groups the partials) matter.
 fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> ParSignedData {
-    let sig = BlstImpl.sign(share, &[42u8; 32]).expect("sign share");
+    let sig = tbls::sign(share, &[42u8; 32]).expect("sign share");
     let attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {
@@ -446,10 +446,9 @@ async fn wiring_connects_sign_path() {
     // Build two real BLS partial signatures (threshold 2 of 2) over the same
     // attestation so SigAgg's `threshold_aggregate` succeeds and the broadcaster
     // submits.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let mut share_iter = shares.into_iter();
@@ -564,16 +563,15 @@ async fn wiring_connects_sign_path_proposer() {
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // Each partial signs an arbitrary message with its own share (permissive
     // verifier), swapping only the block signature onto an identical unsigned
     // block so ParSigDB's threshold-matching groups them.
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         pluto_core::signeddata::VersionedSignedProposal::new_partial(
             phase0_proposal(sig),
             share_idx,
@@ -638,10 +636,9 @@ async fn wiring_connects_sign_path_sync_contribution() {
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // Identical unsigned contribution across shares; each partial swaps only the
     // top-level signature (`set_signature`), preserving the payload so ParSigDB
@@ -661,7 +658,7 @@ async fn wiring_connects_sign_path_sync_contribution() {
         signature: [0; 96],
     };
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let contribution = altair::SignedContributionAndProof {
             signature: sig,
             ..base_contribution.clone()
@@ -720,12 +717,11 @@ async fn wiring_rejects_bad_partial_signature() {
 
     // Real BLS group key: the verifier parses this pubkey and verifies the
     // reconstructed group signature against the beacon attester signing domain.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let group_pubkey_bytes = tbls.secret_to_public_key(&secret).expect("group pubkey");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let group_pubkey_bytes = tbls::secret_to_public_key(&secret).expect("group pubkey");
     let pubkey = PubKey::new(group_pubkey_bytes);
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
     // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
@@ -769,7 +765,7 @@ async fn wiring_rejects_bad_partial_signature() {
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let attestation = phase0::Attestation {
             signature: sig,
             ..base_attestation.clone()
@@ -996,12 +992,9 @@ async fn multinode_parsig_exchange_reaches_submission() {
     }
 
     // One real threshold-BLS keyset: N shares, any THRESHOLD reconstruct.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls
-        .threshold_split(&secret, N as u64, THRESHOLD)
-        .expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, N as u64, THRESHOLD).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     // Each node stores its own partial internally; the router fans it out to

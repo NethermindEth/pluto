@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use pluto_crypto::{tbls, types::PrivateKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Builder;
@@ -120,9 +120,7 @@ pub fn encrypt(
     pbkdf2_c: Option<u32>,
     rng: &mut impl rand::RngCore,
 ) -> Result<Keystore> {
-    let tbls = BlstImpl;
-    let pub_key = tbls
-        .secret_to_public_key(secret)
+    let pub_key = tbls::secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
     let crypto = keystorev4::encrypt(secret, password.as_ref(), pbkdf2_c, rng)?;
@@ -242,7 +240,6 @@ async fn write_file(path: impl AsRef<Path>, data: &[u8], mode: u32) -> Result<()
 mod tests {
     use std::path::PathBuf;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
     use rand::SeedableRng;
     use tempfile::TempDir;
 
@@ -251,8 +248,7 @@ mod tests {
 
     /// Generates a random BLS secret key for testing.
     fn generate_secret_key() -> PrivateKey {
-        let tbls = BlstImpl;
-        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+        tbls::generate_secret_key(rand::thread_rng()).unwrap()
     }
 
     #[tokio::test]

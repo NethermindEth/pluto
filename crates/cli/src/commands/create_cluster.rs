@@ -25,8 +25,7 @@ use pluto_cluster::{
 };
 use pluto_consensus::protocols;
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PrivateKey, PublicKey},
 };
 use pluto_eth1wrap as eth1wrap;
@@ -674,7 +673,6 @@ fn create_validator_registrations(
         .try_into()
         .map_err(|_| CreateClusterError::InvalidForkVersionLength)?;
 
-    let tbls = BlstImpl;
     let mut registrations = Vec::with_capacity(secrets.len());
 
     for (secret, fee_address) in secrets.iter().zip(fee_recipient_addresses.iter()) {
@@ -684,7 +682,7 @@ fn create_validator_registrations(
             eth2util::network::fork_version_to_genesis_time(&fork_version)?
         };
 
-        let pk = tbls.secret_to_public_key(secret)?;
+        let pk = tbls::secret_to_public_key(secret)?;
 
         let unsigned_reg = eth2util_registration::new_message(
             pk,
@@ -695,7 +693,7 @@ fn create_validator_registrations(
 
         let sig_root = eth2util_registration::get_message_signing_root(&unsigned_reg, fork_version);
 
-        let sig = tbls.sign(secret, &sig_root)?;
+        let sig = tbls::sign(secret, &sig_root)?;
 
         registrations.push(BuilderRegistration {
             message: Registration {
@@ -855,16 +853,15 @@ fn sign_deposit_datas(
     if deposit_amounts.is_empty() {
         return Err(CreateClusterError::EmptyDepositAmounts);
     }
-    let tbls = BlstImpl;
     let mut dd = Vec::new();
     for &deposit_amount in deposit_amounts {
         let mut datas = Vec::new();
         for (secret, withdrawal_addr) in secrets.iter().zip(withdrawal_addresses.iter()) {
             let withdrawal_addr = eth2util::helpers::checksum_address(withdrawal_addr)?;
-            let pk = tbls.secret_to_public_key(secret)?;
+            let pk = tbls::secret_to_public_key(secret)?;
             let msg = deposit::new_message(pk, &withdrawal_addr, deposit_amount, compounding)?;
             let sig_root = deposit::get_message_signing_root(&msg, network)?;
-            let sig = tbls.sign(secret, &sig_root)?;
+            let sig = tbls::sign(secret, &sig_root)?;
             datas.push(DepositData {
                 pub_key: msg.pubkey,
                 withdrawal_credentials: msg.withdrawal_credentials,
@@ -878,11 +875,10 @@ fn sign_deposit_datas(
 }
 
 fn generate_keys(num_validators: u64) -> Result<Vec<PrivateKey>> {
-    let tbls = BlstImpl;
     let mut secrets = Vec::new();
 
     for _ in 0..num_validators {
-        let secret = tbls.generate_secret_key(OsRng)?;
+        let secret = tbls::generate_secret_key(OsRng)?;
         secrets.push(secret);
     }
 
@@ -993,12 +989,11 @@ fn get_tss_shares(
     threshold: u64,
     num_nodes: u64,
 ) -> Result<(Vec<PublicKey>, Vec<Vec<PrivateKey>>)> {
-    let tbls = BlstImpl;
     let mut dvs = Vec::new();
     let mut splits = Vec::new();
 
     for secret in secrets {
-        let shares = tbls.threshold_split(secret, num_nodes, threshold)?;
+        let shares = tbls::threshold_split(secret, num_nodes, threshold)?;
 
         // Preserve order when transforming from map of private shares to array of
         // private keys
@@ -1008,7 +1003,7 @@ fn get_tss_shares(
 
         splits.push(secret_set);
 
-        let pubkey = tbls.secret_to_public_key(secret)?;
+        let pubkey = tbls::secret_to_public_key(secret)?;
         dvs.push(pubkey);
     }
 
@@ -1275,7 +1270,6 @@ fn get_validators(
     }
 
     let mut vals = Vec::with_capacity(dv_pubkeys.len());
-    let tbls = BlstImpl;
 
     for (idx, dv_pubkey) in dv_pubkeys.iter().enumerate() {
         let pub_shares: Vec<Vec<u8>> = dv_priv_shares
@@ -1283,7 +1277,7 @@ fn get_validators(
             .map(|shares| {
                 shares
                     .iter()
-                    .map(|share| tbls.secret_to_public_key(share))
+                    .map(tbls::secret_to_public_key)
                     .collect::<std::result::Result<Vec<_>, _>>()
             })
             .transpose()?
@@ -1320,12 +1314,11 @@ fn get_validators(
 fn agg_sign(secrets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
     use pluto_crypto::types::Signature;
 
-    let tbls = BlstImpl;
     let mut sigs: Vec<Signature> = Vec::new();
 
     for shares in secrets {
         for share in shares {
-            let sig = tbls.sign(share, message)?;
+            let sig = tbls::sign(share, message)?;
             sigs.push(sig);
         }
     }
@@ -1334,7 +1327,7 @@ fn agg_sign(secrets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
         return Ok(Vec::new());
     }
 
-    let agg = tbls.aggregate(&sigs)?;
+    let agg = tbls::aggregate(&sigs)?;
     Ok(agg.to_vec())
 }
 
@@ -1447,7 +1440,6 @@ mod tests {
         lock::Lock,
         version::versions::*,
     };
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls as _};
     use pluto_eth1wrap::EthClient;
     use pluto_eth2util::{
         deposit,
@@ -1785,10 +1777,9 @@ mod tests {
         match prep {
             PrepKind::None => {}
             PrepKind::SplitKeys { num_keys } => {
-                let tbls = BlstImpl;
                 let mut keys = Vec::new();
                 for _ in 0..num_keys {
-                    keys.push(tbls.generate_secret_key(rand::thread_rng()).unwrap());
+                    keys.push(tbls::generate_secret_key(rand::thread_rng()).unwrap());
                 }
                 keystore::store_keys_insecure(
                     &keys,
@@ -2094,10 +2085,9 @@ mod tests {
         let split_keys_temp = TempDir::new().unwrap();
 
         // Generate and store split keys insecurely.
-        let tbls_impl = BlstImpl;
         let mut keys = Vec::new();
         for _ in 0..num_split_keys {
-            keys.push(tbls_impl.generate_secret_key(rand::thread_rng()).unwrap());
+            keys.push(tbls::generate_secret_key(rand::thread_rng()).unwrap());
         }
         keystore::store_keys_insecure(&keys, split_keys_temp.path(), &CONFIRM_INSECURE_KEYS)
             .await
@@ -2492,9 +2482,7 @@ mod tests {
 
         const TEST_AUTH_TOKEN: &str = "api-token-test";
 
-        let tbls_impl = BlstImpl;
-
-        let original_secret = tbls_impl.generate_secret_key(rand::thread_rng()).unwrap();
+        let original_secret = tbls::generate_secret_key(rand::thread_rng()).unwrap();
         let key_dir = TempDir::new().unwrap();
         keystore::store_keys_insecure(
             std::slice::from_ref(&original_secret),
@@ -2575,7 +2563,7 @@ mod tests {
                 shares.insert(u64::try_from(i + 1).unwrap(), secret);
             }
 
-            let recovered = tbls_impl.recover_secret(&shares).unwrap();
+            let recovered = tbls::recover_secret(&shares).unwrap();
             assert_eq!(recovered, original_secret);
         }
 

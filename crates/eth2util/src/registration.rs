@@ -59,7 +59,7 @@ pub fn get_message_signing_root(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
 
     #[test]
     fn new_message_works() {
@@ -134,7 +134,7 @@ mod tests {
                 .unwrap();
         let secret: pluto_crypto::types::PrivateKey = sk_bytes.as_slice().try_into().unwrap();
 
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
 
         let registration_json = r#"
 			{
@@ -204,8 +204,7 @@ mod tests {
         .try_into()
         .unwrap();
 
-        BlstImpl
-            .verify(&pubkey, &signing_root, &signature)
+        tbls::verify(&pubkey, &signing_root, &signature)
             .expect("BLS signature verification failed");
     }
 }
