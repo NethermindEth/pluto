@@ -21,6 +21,7 @@ use libp2p::{
     },
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
+use tracing::Instrument as _;
 
 use pluto_core::{
     eth2signeddata,
@@ -203,6 +204,12 @@ impl Handle {
         result_rx.await.map_err(|_| Error::Closed)?
     }
 
+    #[tracing::instrument(
+        name = "parsigex",
+        level = "debug",
+        skip_all,
+        fields(topic = "parsigex")
+    )]
     async fn enqueue(
         &self,
         duty: Duty,
@@ -498,12 +505,16 @@ impl Behaviour {
     /// subscribers async).
     fn notify_subscribers(&self, duty: Duty, data_set: ParSignedDataSet) {
         let shared_subs = self.shared_subs.clone();
-        tokio::spawn(async move {
-            let subs = shared_subs.subs.read().await.clone();
-            for sub in &subs {
-                sub(duty.clone(), data_set.clone()).await;
+        let span = tracing::debug_span!("parsigex", topic = "parsigex");
+        tokio::spawn(
+            async move {
+                let subs = shared_subs.subs.read().await.clone();
+                for sub in &subs {
+                    sub(duty.clone(), data_set.clone()).await;
+                }
             }
-        });
+            .instrument(span),
+        );
     }
 }
 

@@ -226,6 +226,15 @@ impl App {
 
 /// Loads the cluster lock + key, builds the consensus component and P2P
 /// behaviours, wires the core workflow, and drives the node.
+///
+/// Carries the `app-start` topic as the catch-all for log metrics not
+/// attributed to a more specific component (mirrors charon's `app.Run`).
+#[tracing::instrument(
+    name = "app-start",
+    level = "debug",
+    skip_all,
+    fields(topic = "app-start")
+)]
 async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- (1) Load cluster lock + key, derive peers and this node's index ----
     //

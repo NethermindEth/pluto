@@ -138,6 +138,7 @@ impl Component {
     }
 
     /// Called externally each slot. Mirrors Go's `Component.SlotTicked`.
+    #[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
     pub async fn slot_ticked(&self, slot: u64) -> Result<()> {
         if self.delay_on_startup().await {
             return Ok(());
@@ -270,6 +271,7 @@ impl Drop for Component {
     }
 }
 
+#[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
 async fn run_scheduler(
     inner: Arc<Inner>,
     cancel: CancellationToken,
@@ -287,7 +289,7 @@ async fn run_scheduler(
                 let Some(scheduled) = maybe else { break };
                 let inner_for_task = Arc::clone(&inner);
                 let cancel_for_task = cancel.clone();
-                duties.spawn(async move {
+                duties.spawn(tracing::Instrument::instrument(async move {
                     let start_time = scheduled.start_time;
                     let slot = scheduled.slot;
                     let duty_label = scheduled.duty_type.clone();
@@ -312,7 +314,7 @@ async fn run_scheduler(
                             }
                         }
                     }
-                });
+                }, tracing::Span::current()));
             }
             // Reap finished duties to keep the JoinSet bounded. Disabled when
             // empty — `Some(_)` does not match `None`.

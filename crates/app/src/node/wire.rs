@@ -652,26 +652,32 @@ pub async fn wire_core_workflow(
             move |duty: Duty, value: pbcore::UnsignedDataSet| {
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
-                tokio::spawn(async move {
-                    let core_set =
-                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                let span = tracing::debug_span!("app-start", topic = "app-start");
+                tokio::spawn(tracing::Instrument::instrument(
+                    async move {
+                        let core_set = match unsigneddata::unsigned_data_set_from_proto(
+                            &duty.duty_type,
+                            &value,
+                        ) {
                             Ok(set) => set,
                             Err(err) => {
                                 tracing::warn!(?err, "dutydb: decode unsigned data set");
                                 return;
                             }
                         };
-                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                    // Logged before the error moves into the tracker's `Arc`.
-                    let step_err = match dutydb.store(duty.clone(), core_set).await {
-                        Ok(()) => None,
-                        Err(err) => {
-                            tracing::warn!(?err, "dutydb: store");
-                            Some(owned_step_err(err))
-                        }
-                    };
-                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-                });
+                        let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                        // Logged before the error moves into the tracker's `Arc`.
+                        let step_err = match dutydb.store(duty.clone(), core_set).await {
+                            Ok(()) => None,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: store");
+                                Some(owned_step_err(err))
+                            }
+                        };
+                        tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                    },
+                    span,
+                ));
                 Ok(())
             },
         ));

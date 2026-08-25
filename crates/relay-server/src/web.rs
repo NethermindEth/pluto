@@ -127,7 +127,7 @@ pub async fn enr_server(
     let resolver_handle = state.p2p_config.external_host.clone().map(|external_host| {
         let state = state.clone();
         let ct = ct.child_token();
-        tokio::spawn(resolve_external_host_periodically(state, external_host, ct))
+        pluto_tracing::spawn(resolve_external_host_periodically(state, external_host, ct))
     });
 
     info!(

@@ -281,6 +281,12 @@ impl ProtocolState {
     /// Sends a peer info request and waits for a response.
     ///
     /// Returns the response `PeerInfo` on success.
+    #[tracing::instrument(
+        name = "peerinfo",
+        level = "debug",
+        skip_all,
+        fields(topic = "peerinfo")
+    )]
     pub async fn send_peer_info(
         &self,
         mut stream: Stream,
@@ -301,6 +307,12 @@ impl ProtocolState {
     /// Receives a peer info request and sends a response.
     ///
     /// Returns the stream for potential reuse after successfully responding.
+    #[tracing::instrument(
+        name = "peerinfo",
+        level = "debug",
+        skip_all,
+        fields(topic = "peerinfo")
+    )]
     pub async fn recv_peer_info(
         &self,
         mut stream: Stream,

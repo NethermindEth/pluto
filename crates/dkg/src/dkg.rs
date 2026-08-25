@@ -377,6 +377,7 @@ fn default_tracing_config() -> TracingConfig {
 }
 
 /// Runs the DKG entrypoint.
+#[tracing::instrument(name = "dkg", level = "debug", skip_all, fields(topic = "dkg"))]
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     if ct.is_cancelled() {
         return Err(DkgError::ShutdownRequestedBeforeStartup);
@@ -594,7 +595,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let sync_clients = handlers.sync.clone();
     let sync_server = handlers.sync_server.clone();
     let network_ct = ct.child_token();
-    let network_task = tokio::spawn(drive_dkg_network(node, network_ct.clone()));
+    let network_task = pluto_tracing::spawn(drive_dkg_network(node, network_ct.clone()));
 
     let result = run_ceremony(
         &conf,

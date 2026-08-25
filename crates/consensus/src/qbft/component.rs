@@ -12,6 +12,7 @@ use prost::{Message, Name};
 use prost_types::Any;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     instance::InstanceIo,
@@ -474,22 +475,26 @@ impl Consensus {
             .expect("start must be called exactly once");
         let instances = Arc::clone(&self.instances);
 
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = ct.cancelled() => return,
-                    duty = expired_rx.recv() => match duty {
-                        Some(duty) => {
-                            instances
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .remove(&duty);
-                        }
-                        None => return,
-                    },
+        let span = tracing::debug_span!("qbft", topic = "qbft");
+        tokio::spawn(
+            async move {
+                loop {
+                    tokio::select! {
+                        () = ct.cancelled() => return,
+                        duty = expired_rx.recv() => match duty {
+                            Some(duty) => {
+                                instances
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .remove(&duty);
+                            }
+                            None => return,
+                        },
+                    }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Returns existing instance I/O for `duty`, or creates an empty one.

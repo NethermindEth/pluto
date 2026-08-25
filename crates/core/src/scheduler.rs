@@ -313,6 +313,7 @@ struct SchedulerActor {
 }
 
 impl SchedulerActor {
+    #[tracing::instrument(name = "sched", level = "debug", skip_all, fields(topic = "sched"))]
     async fn run(
         mut self,
         mut slot_rx: sync::mpsc::Receiver<types::Slot>,
