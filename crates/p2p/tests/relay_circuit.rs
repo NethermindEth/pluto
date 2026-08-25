@@ -14,10 +14,10 @@
 //! and relay client paths over real sockets — the relay reservation and circuit
 //! hop, not just a direct dial.
 
-use std::time::Duration;
+mod common;
 
 use futures::StreamExt as _;
-use libp2p::{Multiaddr, PeerId, multiaddr::Protocol, relay, swarm::SwarmEvent};
+use libp2p::{PeerId, multiaddr::Protocol, relay, swarm::SwarmEvent};
 use pluto_p2p::{
     config::P2PConfig,
     p2p::{Node, NodeType},
@@ -28,71 +28,18 @@ use pluto_p2p::{
 use pluto_testutil::random::generate_insecure_k1_key;
 use tokio::time::timeout;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+use common::{TEST_TIMEOUT, spawn_relay_server};
 
 #[tokio::test]
 async fn two_nodes_connect_through_relay_circuit() {
-    let relay_key = generate_insecure_k1_key(1);
     let listener_key = generate_insecure_k1_key(2);
     let dialer_key = generate_insecure_k1_key(3);
 
-    let relay_peer = peer_id_from_key(relay_key.public_key()).expect("relay peer id");
     let listener_peer = peer_id_from_key(listener_key.public_key()).expect("listener peer id");
     let dialer_peer = peer_id_from_key(dialer_key.public_key()).expect("dialer peer id");
 
-    // --- Relay server node. ---
-    let relay_config = relay::Config {
-        max_reservations: 16,
-        max_reservations_per_peer: 4,
-        reservation_duration: Duration::from_secs(3600),
-        reservation_rate_limiters: vec![],
-        max_circuits: 16,
-        max_circuits_per_peer: 4,
-        max_circuit_duration: Duration::from_secs(120),
-        max_circuit_bytes: 32 * 1024 * 1024,
-        circuit_src_rate_limiters: vec![],
-    };
-    let mut relay_node = Node::new_server(
-        P2PConfig::default(),
-        relay_key,
-        NodeType::TCP,
-        false,
-        P2PContext::default(),
-        None,
-        move |builder, keypair| {
-            let behaviour = relay::Behaviour::new(keypair.public().to_peer_id(), relay_config);
-            builder.with_inner(behaviour)
-        },
-    )
-    .expect("build relay server node");
-
-    let relay_listen = "/ip4/127.0.0.1/tcp/0"
-        .parse::<Multiaddr>()
-        .expect("parse relay listen multiaddr");
-    relay_node.listen_on(relay_listen).expect("relay listen_on");
-
-    // Wait for the relay's concrete TCP address, then keep the relay driven in
-    // the background so it can service reservations and circuits.
-    let relay_addr = timeout(TEST_TIMEOUT, async {
-        loop {
-            let event = relay_node.select_next_some().await;
-            if let SwarmEvent::NewListenAddr { address, .. } = event {
-                return address;
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for the relay listen address");
-
-    // The relay must advertise a reachable address, otherwise reservations are
-    // rejected client-side with `NoAddressesInReservation`.
-    relay_node.add_external_address(relay_addr.clone());
-
-    let relay_handle = tokio::spawn(async move {
-        loop {
-            relay_node.select_next_some().await;
-        }
-    });
+    let (relay_peer, relay_addr, relay_handle) =
+        spawn_relay_server(generate_insecure_k1_key(1)).await;
 
     // Full relay address including its peer id, plus the circuit suffix.
     let relay_with_id = relay_addr.with(Protocol::P2p(relay_peer));

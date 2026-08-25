@@ -19,7 +19,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures::future::BoxFuture;
-use pluto_consensus::qbft;
+use pluto_consensus::wrapper::ConsensusWrapper;
 use pluto_core::{
     aggsigdb::{memory::MemoryDBHandle, types::AggSigDB},
     bcast::Broadcaster,
@@ -243,7 +243,7 @@ async fn calculate_tracker_delay(
 
 /// Already-resolved inputs to [`wire_core_workflow`].
 ///
-/// These are derived from the cluster manifest + config, but passed in so that
+/// These are derived from the cluster lock + config, but passed in so that
 /// file-loading and P2P setup (in `run`) stay separate from
 /// construction-and-wiring (here) — enabling the Tier 1 test to inject a
 /// `BeaconMock` and in-memory parsigex.
@@ -260,9 +260,9 @@ pub struct WireInputs {
     pub submission_client: BeaconNodeClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
-    /// Already-constructed consensus component, also wired into the QBFT p2p
-    /// behaviour by the caller.
-    pub consensus: Arc<qbft::Consensus>,
+    /// Current consensus implementation, from the controller. Forwards to the
+    /// default QBFT impl the caller also wires into the QBFT p2p behaviour.
+    pub consensus: Arc<ConsensusWrapper>,
     /// Whether the builder API is enabled.
     pub builder_enabled: bool,
     /// Upstream beacon URL the validator API reverse-proxies unhandled requests
@@ -606,7 +606,7 @@ pub async fn wire_core_workflow(
                     &deadline_calc,
                     &ct,
                     duty.clone(),
-                    move |duty, dct| async move { consensus.propose(duty, value, &dct).await },
+                    move |duty, dct| async move { consensus.propose(dct, duty, value).await },
                 )
                 .await;
 
@@ -648,31 +648,33 @@ pub async fn wire_core_workflow(
     {
         let dutydb = Arc::clone(&dutydb);
         let tracker = Arc::clone(&tracker);
-        consensus.subscribe(move |duty: Duty, value: pbcore::UnsignedDataSet| {
-            let dutydb = Arc::clone(&dutydb);
-            let tracker = Arc::clone(&tracker);
-            tokio::spawn(async move {
-                let core_set =
-                    match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
-                        Ok(set) => set,
+        consensus.subscribe(Box::new(
+            move |duty: Duty, value: pbcore::UnsignedDataSet| {
+                let dutydb = Arc::clone(&dutydb);
+                let tracker = Arc::clone(&tracker);
+                tokio::spawn(async move {
+                    let core_set =
+                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                            Ok(set) => set,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: decode unsigned data set");
+                                return;
+                            }
+                        };
+                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                    // Logged before the error moves into the tracker's `Arc`.
+                    let step_err = match dutydb.store(duty.clone(), core_set).await {
+                        Ok(()) => None,
                         Err(err) => {
-                            tracing::warn!(?err, "dutydb: decode unsigned data set");
-                            return;
+                            tracing::warn!(?err, "dutydb: store");
+                            Some(owned_step_err(err))
                         }
                     };
-                let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                // Logged before the error moves into the tracker's `Arc`.
-                let step_err = match dutydb.store(duty.clone(), core_set).await {
-                    Ok(()) => None,
-                    Err(err) => {
-                        tracing::warn!(?err, "dutydb: store");
-                        Some(owned_step_err(err))
-                    }
-                };
-                tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-            });
-            Ok(())
-        });
+                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                });
+                Ok(())
+            },
+        ));
     }
 
     // ---- (8) ParSigDB ----
@@ -939,7 +941,7 @@ pub async fn wire_core_workflow(
                         &deadline_calc,
                         &ct,
                         duty,
-                        move |duty, dct| async move { consensus.participate(duty, &dct).await },
+                        move |duty, dct| async move { consensus.participate(dct, duty).await },
                     )
                     .await
                 }
@@ -1163,7 +1165,7 @@ enum DutyConsensusError {
     #[error(transparent)]
     Deadline(#[from] pluto_core::deadline::DeadlineError),
     #[error(transparent)]
-    Consensus(#[from] qbft::RunnerError),
+    Consensus(#[from] pluto_consensus::wrapper::Error),
 }
 
 /// Runs `run_consensus` for `duty`, bounded by the duty's deadline.
@@ -1179,7 +1181,7 @@ async fn run_bounded_by_duty_deadline<F, Fut>(
 ) -> Result<(), DutyConsensusError>
 where
     F: FnOnce(Duty, CancellationToken) -> Fut,
-    Fut: std::future::Future<Output = qbft::RunnerResult<()>>,
+    Fut: std::future::Future<Output = pluto_consensus::wrapper::Result<()>>,
 {
     let deadline = deadline_calc.deadline(&duty)?;
     bounded_by_deadline(ct, deadline, move |dct| run_consensus(duty, dct)).await?;
@@ -1255,7 +1257,7 @@ mod deadline_bound_tests {
             let ran_probe = Arc::clone(&ran_probe);
             async move {
                 ran_probe.store(true, Ordering::SeqCst);
-                Ok::<(), qbft::RunnerError>(())
+                Ok(())
             }
         })
         .await;

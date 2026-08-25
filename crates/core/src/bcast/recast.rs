@@ -1,10 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 
-use futures::future::BoxFuture;
 use pluto_eth2api::BeaconNodeClient;
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet, Slot},
 };
 
-type RecastFuture = BoxFuture<'static, Result<()>>;
+type RecastFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 type RecastSubscriber = Arc<dyn Fn(Duty, SignedDataSet) -> RecastFuture + Send + Sync>;
 
 #[derive(Clone)]

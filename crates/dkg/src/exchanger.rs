@@ -2,7 +2,7 @@
 //!
 //! # Design
 //!
-//! The [`Exchanger`] coordinates partial-signature exchange during the DKG
+//! The `Exchanger` coordinates partial-signature exchange during the DKG
 //! ceremony.  It wraps the [`pluto_parsigex`] network layer to broadcast and
 //! receive partial signatures, accumulates them in an in-memory store, and
 //! notifies callers when all peers have contributed their share for every
@@ -15,9 +15,9 @@
 //!
 //! | Constant                 | Slot  | Purpose                                      |
 //! |--------------------------|-------|----------------------------------------------|
-//! | [`SIG_LOCK`]             | 101   | Lock-hash partial signatures                 |
-//! | [`SIG_VALIDATOR_REG`]    | 102   | Validator-registration partial signatures    |
-//! | [`SIG_DEPOSIT_DATA`]     | 200+N | Deposit-data partial sigs (one per amount N) |
+//! | `SIG_LOCK`             | 101   | Lock-hash partial signatures                 |
+//! | `SIG_VALIDATOR_REG`    | 102   | Validator-registration partial signatures    |
+//! | `SIG_DEPOSIT_DATA`     | 200+N | Deposit-data partial sigs (one per amount N) |
 //!
 //! These slot values are part of the wire protocol and **must not change**.
 //!

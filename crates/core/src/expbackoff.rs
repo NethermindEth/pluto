@@ -6,7 +6,7 @@
 //! jitter and retry until the surrounding context is cancelled.
 //!
 //! Note on jitter: Charon applies a `±20%` multiplicative jitter, whereas
-//! `backon`'s [`ExponentialBuilder::with_jitter`] adds a randomized delay in
+//! `backon`'s `ExponentialBuilder::with_jitter` adds a randomized delay in
 //! `(0, base)`. This is an approximation, but it matches every existing
 //! Pluto backoff call site, so consolidating here introduces no behavioral
 //! change.

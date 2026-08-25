@@ -11,7 +11,7 @@ Run from `pluto/` before declaring any work done:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo deny check
+cargo deny check --hide-inclusion-graph
 ```
 
 All must pass clean.

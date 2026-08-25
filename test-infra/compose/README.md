@@ -116,7 +116,6 @@ Scenarios that intentionally degrade the cluster tune the gate via config, not t
 | Config knob | Effect | Used by |
 |-------------|--------|---------|
 | `AlertExcludeJobs` | exempt a node from the per-node rules (never from `Pluto Down`) | `1_of_4_down`, `1_of_3_down` |
-| `AlertWarnExcludeTopics` | extra warn-topic exclusions | `mixed_2_charon_2_pluto` (excludes `sched` until pluto serves infosync) |
 | `AlertDisableRules` | drop an entire rule | `1_of_3_down` (disables the error-rate gates — a downed round-1 leader makes every third proposer duty unrecoverable on the mock) |
 
 ## Versioning

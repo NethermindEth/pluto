@@ -1,7 +1,7 @@
 //! Consensus debug message buffer.
 //!
-//! [`Debugger`] stores completed QBFT sniffer instances in a bounded FIFO
-//! buffer and serves them as a gzipped [`SniffedConsensusInstances`] protobuf.
+//! `Debugger` stores completed QBFT sniffer instances in a bounded FIFO
+//! buffer and serves them as a gzipped `SniffedConsensusInstances` protobuf.
 //!
 //! # Usage
 //!
@@ -21,10 +21,10 @@
 //! // Serve `app` with the node's debug HTTP server.
 //! ```
 //!
-//! Lower-level callers can use [`Debugger::add_instance`] to store an instance,
-//! [`Debugger::get_zipped_proto`] to get the raw gzipped protobuf bytes, or
-//! [`Debugger::serve_http`] to build a single HTTP response without using
-//! [`Debugger::router`].
+//! Lower-level callers can use `Debugger::add_instance` to store an instance,
+//! `Debugger::get_zipped_proto` to get the raw gzipped protobuf bytes, or
+//! `Debugger::serve_http` to build a single HTTP response without using
+//! `Debugger::router`.
 
 use std::{
     collections::VecDeque,

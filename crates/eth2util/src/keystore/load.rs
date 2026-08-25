@@ -281,6 +281,9 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
 
 /// Regex for matching keystore filenames like `keystore-0.json` or
 /// `keystore-insecure-42.json`.
+///
+/// The `.` is escaped deliberately: unescaped it is a wildcard, and
+/// `keystore-0Xjson` would count as a keystore.
 static KEYSTORE_FILE_INDEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"keystore-(?:insecure-)?([0-9]+)\.json").expect("invalid regex")
 });
@@ -312,7 +315,7 @@ pub fn extract_file_index(filename: impl AsRef<str>) -> Result<Option<usize>> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use pluto_crypto::{tbls, types::PrivateKey};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -321,8 +324,7 @@ mod tests {
 
     /// Generates a random BLS secret key for testing.
     fn generate_secret_key() -> PrivateKey {
-        let tbls = BlstImpl;
-        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+        tbls::generate_secret_key(rand::thread_rng()).unwrap()
     }
 
     /// Helper: generates a new key, stores it insecurely, then renames the

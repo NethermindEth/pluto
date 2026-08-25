@@ -556,7 +556,7 @@ impl Definition {
         }
 
         let operator_config_hash_digest = digest_eip712(
-            &get_operator_eip712_type(self.version.as_str()),
+            &get_operator_eip712_type(self.version.as_str())?,
             self,
             &Operator::default(),
         )?;
@@ -1958,6 +1958,18 @@ mod tests {
         let definition = serde_json::from_str::<Definition>(json_str).unwrap();
 
         assert!(definition.verify_hashes().is_ok());
+    }
+
+    #[test]
+    fn cluster_definition_v1_3_0_unsigned_operators() {
+        for fixture in [
+            include_str!("testdata/cluster_definition_v1_3_0_unsigned.json"),
+            include_str!("testdata/cluster_definition_v1_3_0_partial_sigs.json"),
+        ] {
+            let definition = serde_json::from_str::<Definition>(fixture).unwrap();
+
+            assert!(definition.verify_hashes().is_ok());
+        }
     }
 
     #[test]

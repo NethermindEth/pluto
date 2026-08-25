@@ -89,11 +89,14 @@
 use std::{
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat, identify,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat,
+    core::transport::ListenerId,
+    identify,
     identity::Keypair,
     noise, ping, relay,
     swarm::{ListenError, NetworkBehaviour, SwarmEvent},
@@ -229,6 +232,9 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Node type.
     node_type: NodeType,
+
+    /// Listeners registered through [`Node::listen_on`], in registration order.
+    listener_ids: Vec<ListenerId>,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -282,6 +288,7 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let keypair = utils::keypair_from_secret_key(key)?;
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
+        init_ping_metrics(&p2p_context);
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_client(keypair, p2p_context, behaviour_fn),
@@ -323,6 +330,8 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let keypair = utils::keypair_from_secret_key(key)?;
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
+        // No-op for a relay server, which tracks no cluster peers.
+        init_ping_metrics(&p2p_context);
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, bandwidth, behaviour_fn),
@@ -338,7 +347,6 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
         let mut addrs = cfg.tcp_multiaddrs()?;
-        let mut external_addrs = utils::external_tcp_multiaddrs(cfg)?;
 
         if self.node_type == NodeType::QUIC {
             let udp_addrs = cfg.udp_multiaddrs()?;
@@ -348,10 +356,6 @@ impl<B: NetworkBehaviour> Node<B> {
             }
 
             addrs.extend(udp_addrs);
-
-            let external_udp_addrs = utils::external_udp_multiaddrs(cfg)?;
-
-            external_addrs.extend(external_udp_addrs);
         }
 
         if addrs.is_empty() {
@@ -362,15 +366,39 @@ impl<B: NetworkBehaviour> Node<B> {
 
         // Listen on internal addresses only
         for addr in &addrs {
-            self.swarm.listen_on(addr.clone())?;
+            self.listen_on(addr.clone())?;
         }
+
+        self.set_advertised_addrs(cfg, filter_private_addrs, &addrs)
+    }
+
+    /// Advertises the external IP / hostname from `cfg` on the ports of
+    /// `listen_addrs`, together with `listen_addrs` themselves.
+    ///
+    /// Replaces everything the node advertises, including addresses added
+    /// through [`Node::add_external_address`].
+    ///
+    /// Callers that listen on port 0 should call this again once libp2p has
+    /// reported the kernel-assigned ports: the configured addresses advertise
+    /// port 0, which is not dialable.
+    pub fn set_advertised_addrs(
+        &mut self,
+        cfg: &P2PConfig,
+        filter_private_addrs: bool,
+        listen_addrs: &[Multiaddr],
+    ) -> Result<()> {
+        let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
 
         // Advertise filtered addresses (external + optionally filtered internal)
         let advertised_addrs = utils::filter_advertised_addresses(
             utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(addrs),
+            utils::InternalAddresses(listen_addrs.to_vec()),
             filter_private_addrs,
         )?;
+
+        for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
+            self.swarm.remove_external_address(&addr);
+        }
 
         for addr in advertised_addrs {
             self.swarm.add_external_address(addr);
@@ -429,6 +457,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -464,6 +493,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -482,6 +512,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -500,6 +531,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             p2p_context,
+            listener_ids: Vec::new(),
         })
     }
 
@@ -566,9 +598,20 @@ impl<B: NetworkBehaviour> Node<B> {
     }
 
     /// Listens on an address.
-    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<()> {
-        self.swarm.listen_on(addr)?;
-        Ok(())
+    ///
+    /// The listener is bound before this returns, but reports the address it
+    /// bound — the kernel-assigned one when the port is 0 — later, as a
+    /// [`SwarmEvent::NewListenAddr`] carrying the returned [`ListenerId`].
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<ListenerId> {
+        let listener_id = self.swarm.listen_on(addr)?;
+        self.listener_ids.push(listener_id);
+        Ok(listener_id)
+    }
+
+    /// Returns the listeners registered through [`Node::listen_on`], in
+    /// registration order.
+    pub fn listener_ids(&self) -> &[ListenerId] {
+        &self.listener_ids
     }
 
     /// Adds an external address to the peer store.
@@ -608,17 +651,18 @@ impl<B: NetworkBehaviour> Node<B> {
             SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                 peer, result, ..
             })) => {
-                let peer_label = peer_name(peer);
-                match result {
-                    Ok(duration) => {
-                        P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
-                        P2P_METRICS.ping_success[&peer_label].set(1);
-                    }
-                    Err(_) => {
-                        P2P_METRICS.ping_error_total[&peer_label].inc();
-                        P2P_METRICS.ping_success[&peer_label].set(0);
-                    }
-                }
+                record_ping_metrics(&self.p2p_context, peer, result);
+            }
+
+            // libp2p drops the ping handler with the connection, so an orderly
+            // disconnect produces no ping failure and `ping_success` would sit
+            // at 1 indefinitely.
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                num_established: 0,
+                ..
+            } => {
+                clear_ping_success(&self.p2p_context, peer_id);
             }
 
             // AutoNAT reachability status
@@ -697,6 +741,58 @@ impl<B: NetworkBehaviour> FusedStream for Node<B> {
     }
 }
 
+/// Records the outcome of a ping, gated to known cluster peers.
+///
+/// Charon pings an explicit cluster allowlist (`p2p.NewPingService`), while
+/// libp2p's ping behaviour pings every connected peer — relays included — so
+/// the allowlist is applied here instead.
+fn record_ping_metrics(
+    ctx: &P2PContext,
+    peer: &PeerId,
+    result: &std::result::Result<Duration, ping::Failure>,
+) {
+    if !ctx.is_known_peer(peer) {
+        return;
+    }
+
+    let peer_label = peer_name(peer);
+    match result {
+        Ok(duration) => {
+            P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
+            P2P_METRICS.ping_success[&peer_label].set(1);
+        }
+        Err(_) => {
+            P2P_METRICS.ping_error_total[&peer_label].inc();
+            P2P_METRICS.ping_success[&peer_label].set(0);
+        }
+    }
+}
+
+/// Publishes `p2p_ping_success{peer}=0` for every known cluster peer except
+/// this node, so a peer that never connects reads as a zero line rather than
+/// no series at all. Charon gets this for free by starting a ping loop per
+/// cluster peer regardless of reachability.
+fn init_ping_metrics(ctx: &P2PContext) {
+    let local = ctx.local_peer_id();
+    for peer in ctx.known_peers() {
+        // Charon's ping service skips self.
+        if Some(*peer) == local {
+            continue;
+        }
+        P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+    }
+}
+
+/// Marks a known cluster peer as unreachable on `p2p_ping_success`. Gated on
+/// the cluster allowlist for the same reason as [`record_ping_metrics`].
+fn clear_ping_success(ctx: &P2PContext, peer: &PeerId) {
+    if !ctx.is_known_peer(peer) {
+        return;
+    }
+
+    P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+}
+
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
 /// peers only. Addresses from unknown peers are dropped (and not cloned), since
 /// the only consumers of `peer_addresses` look up known peers exclusively — so
@@ -712,6 +808,8 @@ fn store_identify_addrs(ctx: &P2PContext, peer_id: &PeerId, addrs: &[Multiaddr])
 
 #[cfg(test)]
 mod tests {
+    use vise::{Counter, Gauge};
+
     use super::*;
 
     fn random_peer_id() -> PeerId {
@@ -750,6 +848,112 @@ mod tests {
         store_identify_addrs(&ctx, &unknown, &addrs(3));
 
         assert!(ctx.peer_store_lock().peer_addresses(&unknown).is_none());
+    }
+
+    #[test]
+    fn ping_metrics_recorded_for_known_peer() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&known);
+
+        record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(1)
+        );
+        assert!(
+            P2P_METRICS.ping_latency_secs.contains(&label),
+            "latency must be observed for a known cluster peer"
+        );
+
+        record_ping_metrics(&ctx, &known, &Err(ping::Failure::Timeout));
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(0)
+        );
+        assert_eq!(
+            P2P_METRICS.ping_error_total.get(&label).map(Counter::get),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn ping_metrics_skipped_for_relay_or_unknown_peer() {
+        let known = random_peer_id();
+        let relay = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&relay);
+
+        record_ping_metrics(&ctx, &relay, &Ok(Duration::from_millis(20)));
+        record_ping_metrics(&ctx, &relay, &Err(ping::Failure::Timeout));
+
+        // `contains` rather than indexing, so the assertions don't create the
+        // very series they check for.
+        assert!(!P2P_METRICS.ping_success.contains(&label));
+        assert!(!P2P_METRICS.ping_latency_secs.contains(&label));
+        assert!(
+            !P2P_METRICS.ping_error_total.contains(&label),
+            "the error path must be gated too, not just success/latency"
+        );
+    }
+
+    #[test]
+    fn ping_success_cleared_when_last_connection_closes() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&known);
+
+        record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(1)
+        );
+
+        clear_ping_success(&ctx, &known);
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn ping_success_not_cleared_for_relay_or_unknown_peer() {
+        let known = random_peer_id();
+        let relay = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&relay);
+
+        clear_ping_success(&ctx, &relay);
+
+        assert!(
+            !P2P_METRICS.ping_success.contains(&label),
+            "clearing must not create a series for a non-cluster peer"
+        );
+    }
+
+    #[test]
+    fn ping_success_seeded_for_known_peers_except_self() {
+        let local = random_peer_id();
+        let peer = random_peer_id();
+        let ctx = P2PContext::new([local, peer]);
+        ctx.set_local_peer_id(local);
+
+        init_ping_metrics(&ctx);
+
+        assert_eq!(
+            P2P_METRICS
+                .ping_success
+                .get(&peer_name(&peer))
+                .map(Gauge::get),
+            Some(0)
+        );
+        assert!(
+            !P2P_METRICS.ping_success.contains(&peer_name(&local)),
+            "Charon's ping service skips self, so no self series"
+        );
     }
 
     #[test]

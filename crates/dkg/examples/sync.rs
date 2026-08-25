@@ -61,7 +61,7 @@ use pluto_dkg::sync::{self, Client, Server};
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode,
-    config::P2PConfig,
+    config::{P2PConfig, RelayAddr},
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -85,7 +85,7 @@ struct ExampleBehaviour {
 struct Args {
     /// Relay URLs or relay multiaddrs to use.
     #[arg(long, value_delimiter = ',')]
-    relays: Vec<String>,
+    relays: Vec<RelayAddr>,
 
     /// Data directory containing `charon-enr-private-key` and
     /// `cluster-lock.json`, typically one of the `nodeN/` directories produced

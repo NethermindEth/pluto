@@ -45,7 +45,7 @@ pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
 /// unsigned-data type is SSZ-capable, and charon enables SSZ marshalling by
 /// default (since v0.17), so each entry is encoded as SSZ binary using the
 /// byte layout from `charon/core/ssz.go`. The decode counterpart
-/// ([`unsigned_duty_data_from_proto`]) accepts both SSZ and the legacy JSON
+/// (`unsigned_duty_data_from_proto`) accepts both SSZ and the legacy JSON
 /// encoding, matching charon's `unmarshal`.
 pub fn unsigned_data_set_to_proto(
     set: &UnsignedDataSet,

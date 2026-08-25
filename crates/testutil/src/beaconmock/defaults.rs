@@ -91,6 +91,21 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
+    // Polled once a minute by the readiness checker (`run_ready_checker`).
+    // `connected` must stay non-zero: zero peers is a readiness failure
+    // (`ReadinessError::BeaconNodeZeroPeers`). 80 matches charon's beaconmock.
+    mount_json(server, "GET", "/eth/v1/node/peer_count", |_| {
+        json!({
+            "data": {
+                "connected": "80",
+                "connecting": "0",
+                "disconnected": "0",
+                "disconnecting": "0"
+            }
+        })
+    })
+    .await;
+
     mount_json(server, "GET", "/eth/v1/beacon/headers/head", |_| {
         json!({
             "data": {
@@ -601,6 +616,8 @@ fn bellatrix_signed_block_response() -> Value {
 
     json!({
         "version": "bellatrix",
+        "execution_optimistic": false,
+        "finalized": false,
         "data": {
             "message": {
                 "slot": random_slot().to_string(),
@@ -778,6 +795,10 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
+    use pluto_eth2api::types::{
+        ConsensusVersion, GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest,
+        GetPeerCountResponse,
+    };
 
     #[test]
     fn default_spec_contains_load_bearing_keys() {
@@ -799,42 +820,61 @@ mod tests {
         }
     }
 
+    /// The inclusion checker consumes this endpoint through the generated
+    /// client, which requires `execution_optimistic` and `finalized` — the
+    /// beacon-API spec marks both required and non-nullable.
     #[tokio::test]
-    async fn bellatrix_signed_block_endpoint_returns_versioned_block() {
+    async fn block_endpoint_serves_a_decodable_bellatrix_block() {
         let mock = BeaconMock::builder()
             .build()
             .await
             .expect("build beacon mock");
 
-        let base = mock.uri();
-        let http = reqwest::Client::new();
+        let client = mock.client();
 
-        // The `block_id` segment is opaque to the mock; "head" exercises the
-        // path_regex match.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/head"))
-            .send()
+        // The `block_id` segment is opaque to the mock; "head" and a numeric
+        // id both exercise the path_regex match.
+        for block_id in ["head", "123"] {
+            let request = GetBlockV2Request::builder()
+                .block_id(block_id.to_string())
+                .build()
+                .expect("block request");
+
+            let response = client.get_block_v2(request).await.expect("get_block_v2");
+            let GetBlockV2Response::Ok(block) = response else {
+                panic!("expected a decoded 200 for {block_id}, got {response:?}");
+            };
+            assert_eq!(block.version, ConsensusVersion::Bellatrix);
+        }
+    }
+
+    /// The readiness checker polls this every minute and treats zero connected
+    /// peers as unready, so an unmounted route both warns and pins
+    /// `app_beacon_node_peers` to a misleading zero.
+    #[tokio::test]
+    async fn peer_count_reports_connected_peers() {
+        let mock = BeaconMock::builder()
+            .build()
             .await
-            .expect("blocks request");
-        assert_eq!(resp.status(), 200, "blocks endpoint should succeed");
+            .expect("build beacon mock");
 
-        let body: Value = resp.json().await.expect("blocks json");
-        assert_eq!(
-            body.get("version").and_then(Value::as_str),
-            Some("bellatrix"),
-            "version field should be bellatrix"
-        );
+        let client = mock.client();
+
+        let response = client
+            .get_peer_count(GetPeerCountRequest {})
+            .await
+            .expect("get_peer_count");
+        let GetPeerCountResponse::Ok(peers) = response else {
+            panic!("expected a decoded 200, got {response:?}");
+        };
+        let connected_peers: u64 = peers
+            .data
+            .connected
+            .parse()
+            .expect("connected parses as u64");
         assert!(
-            body.get("data").and_then(Value::as_object).is_some(),
-            "data field should be a JSON object"
+            connected_peers > 0,
+            "zero connected peers fails the readiness check"
         );
-
-        // Same endpoint should also match a numeric block_id.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/123"))
-            .send()
-            .await
-            .expect("blocks request (numeric)");
-        assert_eq!(resp.status(), 200);
     }
 }

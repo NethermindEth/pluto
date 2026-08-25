@@ -9,7 +9,7 @@ use libp2p::{
     Multiaddr, PeerId,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Index};
+use pluto_crypto::{tbls, types::Index};
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
@@ -520,18 +520,14 @@ fn verify_returned_shares(node_shares: &[Vec<Share>]) {
                         .expect("share index should not overflow"),
                 )
                 .expect("share index should fit Index");
-                let sig = BlstImpl
-                    .sign(&shares[val_idx].secret_share, msg)
+                let sig = tbls::sign(&shares[val_idx].secret_share, msg)
                     .expect("partial signature should succeed");
                 partials.insert(share_id, sig);
             }
         }
 
-        let sig = BlstImpl
-            .threshold_aggregate(&partials)
-            .expect("threshold aggregation should succeed");
-        BlstImpl
-            .verify(&pub_key, msg, &sig)
-            .expect("aggregated signature should verify");
+        let sig =
+            tbls::threshold_aggregate(&partials).expect("threshold aggregation should succeed");
+        tbls::verify(&pub_key, msg, &sig).expect("aggregated signature should verify");
     }
 }

@@ -60,8 +60,7 @@ pub(crate) async fn setup_p2p(
 
     verify_p2p_key(peers, &key)?;
 
-    let relay_addrs = bootnode::relay_addrs_for_resolution(&conf.p2p.relays);
-    let relays = bootnode::new_relays(ct, &relay_addrs, &hex::encode(&def_hash)).await?;
+    let relays = bootnode::new_relays(ct, &conf.p2p.relays, &hex::encode(&def_hash)).await?;
 
     let conn_gater = gater::ConnGater::new_conn_gater(peer_ids.clone(), relays.clone());
 

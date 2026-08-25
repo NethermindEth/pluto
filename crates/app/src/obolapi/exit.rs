@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
+use pluto_crypto::{tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
 use pluto_cluster::{
@@ -353,7 +353,7 @@ impl Client {
         }
 
         // Perform threshold aggregation
-        let full_sig = BlstImpl.threshold_aggregate(&raw_signatures)?;
+        let full_sig = tbls::threshold_aggregate(&raw_signatures)?;
 
         let epoch_u64: u64 = exit_response.epoch.parse()?;
 
