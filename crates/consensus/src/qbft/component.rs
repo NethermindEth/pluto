@@ -614,7 +614,7 @@ impl crate::wrapper::Consensus for Consensus {
         Box::pin(async move {
             Consensus::participate(self, duty, &ct)
                 .await
-                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+                .map_err(Into::into)
         })
     }
 
@@ -627,7 +627,7 @@ impl crate::wrapper::Consensus for Consensus {
         Box::pin(async move {
             Consensus::propose(self, duty, value, &ct)
                 .await
-                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+                .map_err(Into::into)
         })
     }
 

@@ -66,7 +66,7 @@ pub(crate) fn create_relay_config(config: &Config) -> relay::Config {
         reservation_duration: Duration::from_secs(ONE_HOUR_SECONDS),
         max_circuits: config.max_res_per_peer,
         max_circuits_per_peer: config.max_res_per_peer,
-        max_circuit_duration: Duration::from_secs(ONE_MINUTE_SECONDS),
+        max_circuit_duration: Duration::from_secs(ONE_HOUR_SECONDS),
         max_circuit_bytes: MB_32,
         // Restore the default rate limiters dropped by the previous
         // struct-literal construction.
@@ -121,7 +121,7 @@ mod tests {
         );
         assert_eq!(
             relay_config.max_circuit_duration,
-            Duration::from_secs(ONE_MINUTE_SECONDS)
+            Duration::from_secs(ONE_HOUR_SECONDS)
         );
         assert_eq!(relay_config.max_circuit_bytes, MB_32);
     }

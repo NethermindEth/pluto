@@ -593,8 +593,7 @@ mod eth2_verifier_tests {
         types::{Duty, ParSignedData, PubKey, SignedData},
     };
     use pluto_crypto::{
-        blst_impl::BlstImpl,
-        tbls::Tbls,
+        tbls,
         types::{Index, PrivateKey, PublicKey},
     };
     use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
@@ -650,19 +649,17 @@ mod eth2_verifier_tests {
         let signing_root = get_data_root(client, domain, epoch, message_root)
             .await
             .unwrap();
-        let signature = BlstImpl.sign(secret, &signing_root).unwrap();
+        let signature = tbls::sign(secret, &signing_root).unwrap();
         data.set_signature(signature).unwrap()
     }
 
     /// Splits `secret` into threshold BLS shares and returns each share's
     /// private key alongside the public-share map keyed by 1-indexed share id.
     fn split_shares(secret: &PrivateKey) -> (HashMap<Index, PrivateKey>, HashMap<u64, PublicKey>) {
-        let shares = BlstImpl
-            .threshold_split(secret, TOTAL_SHARES, THRESHOLD)
-            .unwrap();
+        let shares = tbls::threshold_split(secret, TOTAL_SHARES, THRESHOLD).unwrap();
         let pub_shares = shares
             .iter()
-            .map(|(idx, share)| (*idx, BlstImpl.secret_to_public_key(share).unwrap()))
+            .map(|(idx, share)| (*idx, tbls::secret_to_public_key(share).unwrap()))
             .collect();
         (shares, pub_shares)
     }
@@ -677,7 +674,7 @@ mod eth2_verifier_tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let group_pubkey = PubKey::new(tbls::secret_to_public_key(&secret).unwrap());
         let (shares, pub_shares) = split_shares(&secret);
 
         // Sign the attestation with the private share for index 2.
@@ -708,7 +705,7 @@ mod eth2_verifier_tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let group_pubkey = PubKey::new(tbls::secret_to_public_key(&secret).unwrap());
         let (shares, pub_shares) = split_shares(&secret);
 
         // Sign with share 2's secret but claim share index 3, so the verifier
@@ -734,7 +731,7 @@ mod eth2_verifier_tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let group_pubkey = PubKey::new(tbls::secret_to_public_key(&secret).unwrap());
         let (shares, _pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);
@@ -758,7 +755,7 @@ mod eth2_verifier_tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let group_pubkey = PubKey::new(tbls::secret_to_public_key(&secret).unwrap());
         let (shares, pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);

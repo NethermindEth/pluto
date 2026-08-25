@@ -5,14 +5,14 @@
 //!
 //! The work is split into a load phase and a wire phase:
 //!
-//! * [`run`] loads the cluster lock, P2P key, and beacon clients, constructs
-//!   the consensus component + P2P behaviours, then calls
-//!   [`wire::wire_core_workflow`].
-//! * [`wire::wire_core_workflow`] takes already-resolved inputs and produces
-//!   the wired component graph (so it is unit-testable against a `BeaconMock`).
+//! * `run` loads the cluster lock, P2P key, and beacon clients, constructs the
+//!   consensus component + P2P behaviours, then calls
+//!   `wire::wire_core_workflow`.
+//! * `wire::wire_core_workflow` takes already-resolved inputs and produces the
+//!   wired component graph (so it is unit-testable against a `BeaconMock`).
 //!
-//! Lifecycle is idiomatic tokio: long-lived tasks live in a [`JoinSet`], driven
-//! until the [`CancellationToken`] fires or the first task fails, after which
+//! Lifecycle is idiomatic tokio: long-lived tasks live in a `JoinSet`, driven
+//! until the `CancellationToken` fires or the first task fails, after which
 //! an explicit ordered shutdown runs.
 
 pub mod behaviour;
@@ -115,13 +115,17 @@ pub enum AppError {
     #[error("relays: {0}")]
     Relays(#[from] pluto_p2p::bootnode::BootnodeError),
 
-    /// QBFT consensus construction failed.
-    #[error("consensus: {0}")]
-    Consensus(#[from] qbft::Error),
+    /// Consensus controller construction failed.
+    #[error("consensus controller: {0}")]
+    ConsensusController(#[from] pluto_consensus::controller::Error),
 
     /// QBFT p2p adapter construction failed.
     #[error("consensus p2p: {0}")]
     ConsensusP2P(#[from] qbft::p2p::Error),
+
+    /// Priority protocol component construction failed.
+    #[error("priority: {0}")]
+    Priority(#[from] pluto_priority::Error),
 
     /// A beacon node API request failed.
     #[error("beacon node api: {0}")]
@@ -262,6 +266,16 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let peers = lock.peers()?;
     pluto_p2p::peer::verify_p2p_key(&peers, &key)?;
 
+    // Tracker view of the cluster, captured before `peers` moves into the P2P
+    // wiring. Share indices are 1-indexed, matching partial-signature share ids.
+    let tracker_peers: Vec<pluto_core::tracker::PeerInfo> = peers
+        .iter()
+        .map(|peer| pluto_core::tracker::PeerInfo {
+            name: peer.name.clone(),
+            share_idx: usize::try_from(peer.index.saturating_add(1)).unwrap_or(usize::MAX),
+        })
+        .collect();
+
     // Cluster size + quorum for the health-checker metadata, captured before
     // `peers` is moved into the P2P wiring.
     let num_peers = i64::try_from(peers.len()).unwrap_or(i64::MAX);
@@ -377,8 +391,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .map_err(AppError::Gater)?
         .into_fn();
 
-    // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
-    // beacon-derived instance backs every component's deadliner.
+    // Shared `Arc<dyn ...>` so one beacon-derived instance backs every
+    // component's deadliner (priority included).
     let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
         pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
             .await
@@ -410,10 +424,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
-    // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
-    //
-    // TODO(#402 part B): wrap in ConsensusController for dynamic protocol
-    // switching (priority/infosync).
+    // ---- Consensus (controller-owned) ----
     //
     // Resolve the broadcaster<->behaviour construction cycle with the
     // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
@@ -439,40 +450,50 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
-    let consensus = Arc::new(qbft::Consensus::new(qbft::Config {
-        peers: qbft_peers,
-        local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
-        privkey: key.clone(),
-        deadliner: cons_deadliner,
-        expired_rx: cons_expired_rx,
-        duty_gater: Arc::clone(&duty_gater),
-        broadcaster,
-        sniffer: Arc::new(|_| {}),
-        // Charon gates duplicate-attestation comparison on the alpha
-        // `ChainSplitHalt` featureset flag (off by default).
-        compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
-        feature_set: Arc::clone(&feature_set),
-        timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
-    })?);
+    // The controller owns the default QBFT impl and the swappable wrapper the
+    // duty path runs through. QBFTv2 is the only protocol today, so no swap
+    // ever happens; the indirection is what a second protocol would hook into.
+    let consensus_controller = Arc::new(pluto_consensus::controller::ConsensusController::new(
+        pluto_consensus::controller::Config {
+            peers: qbft_peers,
+            local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
+            privkey: key.clone(),
+            deadliner: cons_deadliner,
+            expired_rx: cons_expired_rx,
+            duty_gater: Arc::clone(&duty_gater),
+            broadcaster,
+            sniffer: Arc::new(|_| {}),
+            // Charon gates duplicate-attestation comparison on the alpha
+            // `ChainSplitHalt` featureset flag (off by default).
+            compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
+            feature_set: Arc::clone(&feature_set),
+            timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
+        },
+    )?);
 
     // Full public-share map (DV root pubkey -> share index -> public share),
     // used by the parsigex verifier to check each peer's partial signature.
     let pub_shares_by_key = build_pub_shares_by_key(&lock)?;
 
     // ---- P2P behaviours (relay + parsigex + qbft + peerinfo) ----
-    let (node, handles) = behaviour::wire_p2p(
-        key.clone(),
-        config.p2p.clone(),
+    let (node, handles) = behaviour::wire_p2p(behaviour::WireP2PParams {
+        key: key.clone(),
+        p2p_config: config.p2p.clone(),
         peers,
-        Arc::clone(&consensus),
-        Arc::clone(&duty_gater),
-        eth2_cl.clone(),
+        consensus: consensus_controller.default_qbft(),
+        // Priority quorum = cluster signing threshold (Charon's
+        // `int(cluster.GetThreshold())`).
+        min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
+        deadline_calc: Arc::clone(&deadline_calc),
+        feature_set: Arc::clone(&feature_set),
+        duty_gater: Arc::clone(&duty_gater),
+        eth2_cl: eth2_cl.clone(),
         pub_shares_by_key,
-        lock.lock_hash.clone(),
-        config.builder_api,
-        config.nickname.clone(),
-        ct.clone(),
-    )
+        lock_hash: lock.lock_hash.clone(),
+        builder_enabled: config.builder_api,
+        nickname: config.nickname.clone(),
+        cancellation: ct.clone(),
+    })
     .await?;
     // Complete the broadcaster<->behaviour cycle.
     handle_slot
@@ -536,7 +557,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             eth2_cl,
             submission_client,
             validators,
-            consensus: Arc::clone(&consensus),
+            consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
             upstream_url,
             parsigex: parsigex_seam,
@@ -547,6 +568,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             fetch_only_comm_idx0,
             seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
+            peers: tracker_peers,
+            feature_set: Arc::clone(&feature_set),
+            infosync: Some(Arc::clone(&handles.infosync)),
         },
         ct.clone(),
     )
@@ -555,7 +579,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- Lifecycle: spawn long-lived tasks ----
     run_lifecycle(
         node,
-        consensus,
+        consensus_controller,
         handles,
         wired,
         priv_key_lock,
@@ -667,7 +691,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
 )]
 async fn run_lifecycle(
     node: pluto_p2p::p2p::Node<CoreBehaviour>,
-    consensus: Arc<qbft::Consensus>,
+    consensus_controller: Arc<pluto_consensus::controller::ConsensusController>,
     handles: CoreHandles,
     wired: WiredComponents,
     priv_key_lock: Option<Arc<privkeylock::Service>>,
@@ -683,11 +707,24 @@ async fn run_lifecycle(
         parsigdb_deadliner_rx,
         aggsigdb: _aggsigdb,
         fetcher: _fetcher,
+        inclusion_checker,
         validator_api_router,
     } = wired;
 
-    // Self-spawning actor: consensus expired-duty pruner.
-    let _consensus_task = consensus.start(ct.clone());
+    // Self-spawning actor: consensus expired-duty pruner. Starts the default
+    // impl only; a swapped-in protocol would be started by the controller.
+    consensus_controller.start(ct.clone());
+
+    // Priority state-cleanup loop; the per-epoch infosync trigger is registered
+    // as a slot subscriber in `wire_core_workflow`.
+    handles
+        .priority
+        .start(handles.priority_expired_rx, ct.clone());
+
+    // TODO(#402 part B): consume the decided infosync result. Charon's
+    // `wirePrioritise` swaps the duty-consensus implementation via
+    // `ConsensusController::set_current_consensus_for_protocol`; deferred because
+    // it is a no-op while QBFTv2 is the only consensus protocol.
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 
@@ -712,6 +749,16 @@ async fn run_lifecycle(
         let parsigdb = Arc::clone(&parsigdb);
         tasks.spawn(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
+            Ok(())
+        });
+    }
+
+    // Networked inclusion checker: polls the beacon node once per due slot and
+    // resolves each tracked duty's on-chain inclusion step.
+    {
+        let ct = ct.clone();
+        tasks.spawn(async move {
+            inclusion_checker.run(ct).await;
             Ok(())
         });
     }

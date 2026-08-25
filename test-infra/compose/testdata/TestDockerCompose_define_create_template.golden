@@ -1,0 +1,20 @@
+{
+ "ComposeDir": "testdir",
+ "CharonImageTag": "latest",
+ "CharonEntrypoint": "echo",
+ "CharonCommand": "No charon commands needed for keygen=create define step",
+ "Nodes": [
+  {
+   "Image": "",
+   "Entrypoint": "",
+   "Command": "",
+   "EnvVars": null,
+   "Ports": null
+  }
+ ],
+ "VCs": null,
+ "Relay": false,
+ "Monitoring": false,
+ "Alerting": false,
+ "MonitoringPorts": false
+}

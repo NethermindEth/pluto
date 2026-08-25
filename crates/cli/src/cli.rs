@@ -36,7 +36,7 @@ pub struct Cli {
 pub enum Commands {
     #[command(
         about = "Print the ENR that identifies this client",
-        long_about = "Prints an Ethereum Node Record (ENR) from this client's pluto-enr-private-key. This serves as a public key that identifies this client to its peers."
+        long_about = "Prints an Ethereum Node Record (ENR) from this client's charon-enr-private-key. This serves as a public key that identifies this client to its peers."
     )]
     Enr(EnrArgs),
 
@@ -185,4 +185,47 @@ pub enum CreateCommands {
         long_about = "Creates a local charon cluster configuration including validator keys, charon p2p keys, cluster-lock.json and deposit-data.json file(s). See flags for supported features."
     )]
     Cluster(Box<CreateClusterArgs>),
+}
+
+/// Builds the fully-configured root command.
+///
+/// Use this instead of [`Cli::command`] anywhere the command is rendered or
+/// parsed, so every entrypoint gets the same hardening.
+pub fn build_command() -> clap::Command {
+    let cmd =
+        crate::commands::test::update_test_cases_help(<Cli as clap::CommandFactory>::command());
+
+    hide_env_values(ignore_empty_env(cmd))
+}
+
+/// Treats a `CHARON_*` variable that is set but empty as unset.
+///
+/// Charon resolves env vars through Viper, which reports an empty value as
+/// absent (it does not enable `AllowEmptyEnv`). clap instead binds the literal
+/// `""`, so a common empty placeholder would fail numeric parsing, turn a
+/// comma-delimited list into one blank element, or flip an `Option` flag from
+/// `None` to `Some("")`.
+fn ignore_empty_env(cmd: clap::Command) -> clap::Command {
+    cmd.mut_args(|arg| {
+        let is_empty = arg
+            .get_env()
+            .is_some_and(|name| std::env::var_os(name).is_some_and(|value| value.is_empty()));
+
+        if is_empty {
+            arg.env(clap::builder::Resettable::Reset)
+        } else {
+            arg
+        }
+    })
+    .mut_subcommands(ignore_empty_env)
+}
+
+/// Suppresses environment variable *values* in `--help`.
+///
+/// clap renders `[env: VAR=value]` by default, printing the caller's actual
+/// value — including secrets such as `CHARON_KEYMANAGER_AUTH_TOKEN(S)` — into
+/// terminals, CI logs and support captures. The variable names stay documented.
+fn hide_env_values(cmd: clap::Command) -> clap::Command {
+    cmd.mut_args(|arg| arg.hide_env_values(true))
+        .mut_subcommands(hide_env_values)
 }

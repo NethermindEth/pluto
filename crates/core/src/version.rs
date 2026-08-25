@@ -74,7 +74,7 @@ const GIT_HASH_FALLBACK: &str = "0000000";
 /// metadata (e.g. Docker builds lacking a `.git` dir) yield `""` or `"unknown"`
 /// — both of which Charon rejects, hiding pluto peers from the cluster
 /// dashboard. This normalises whatever the build produced (lowercasing, keeping
-/// hex digits, and truncating to seven) and falls back to [`GIT_HASH_FALLBACK`]
+/// hex digits, and truncating to seven) and falls back to `GIT_HASH_FALLBACK`
 /// so pluto always advertises a well-formed hash and interoperates with Charon
 /// normally.
 pub fn git_commit_hash_short() -> String {

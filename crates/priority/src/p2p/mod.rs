@@ -1,18 +1,18 @@
 //! libp2p request/response transport for the priority protocol.
 //!
-//! The transport is split into the user-facing [`Sender`] handle and the
-//! libp2p-owned [`Behaviour`]/[`handler::Handler`] runtime objects. It performs
+//! The transport is split into the user-facing `Sender` handle and the
+//! libp2p-owned `Behaviour`/`handler::Handler` runtime objects. It performs
 //! a single round-trip per exchange on the priority protocol:
 //!
-//! - Outbound: [`Sender::send_receive`] sends a [`PriorityMsg`] to a peer and
-//!   resolves with that peer's [`PriorityMsg`] response.
-//! - Inbound: a negotiated stream reads a [`PriorityMsg`], invokes the
-//!   registered [`InboundHandler`] callback to produce a response, and writes
-//!   it back. A `None` response closes the stream without replying.
+//! - Outbound: `Sender::send_receive` sends a `PriorityMsg` to a peer and
+//!   resolves with that peer's `PriorityMsg` response.
+//! - Inbound: a negotiated stream reads a `PriorityMsg`, invokes the registered
+//!   `InboundHandler` callback to produce a response, and writes it back. A
+//!   `None` response closes the stream without replying.
 //!
-//! [`new`] takes the inbound handler callback (the prioritiser's request
-//! handler) and returns the [`Behaviour`] to register with the swarm plus a
-//! cloneable [`Sender`] that the prioritiser uses to drive exchanges.
+//! `new` takes the inbound handler callback (the prioritiser's request
+//! handler) and returns the `Behaviour` to register with the swarm plus a
+//! cloneable `Sender` that the prioritiser uses to drive exchanges.
 
 mod behaviour;
 mod handler;

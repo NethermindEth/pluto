@@ -1,2 +1,10 @@
 allow-unwrap-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# Raise `result_large_err`'s default 128-byte ceiling. Our top-level aggregate
+# error enums (`AppError`, `CliError`) and the `LockError`/`DefinitionError`
+# chain they wrap naturally sit just under 128 bytes; routine dependency
+# upgrades nudge them a few bytes over, tripping the lint on the many command
+# entry points that return them. These are cold error paths, so boxing every
+# variant to shave bytes off the enum is not worth the churn.
+large-error-threshold = 256

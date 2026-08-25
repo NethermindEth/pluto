@@ -3,7 +3,7 @@
 //! This module provides utilities for determining whether multiaddresses are
 //! public, private, or unroutable based on IP ranges and DNS domain names.
 //!
-//! Original implementation: https://github.com/multiformats/go-multiaddr/blob/master/net/private.go
+//! Original implementation: <https://github.com/multiformats/go-multiaddr/blob/master/net/private.go>
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -79,7 +79,7 @@ const NAT64_CIDRS: &[(&str, Ipv6Addr, u8)] = &[
 ];
 
 /// Unresolvable domains that do not resolve to an IP address.
-/// Ref: https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names
+/// Ref: <https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names>
 const UNRESOLVABLE_DOMAINS: &[&str] = &[
     // Reverse DNS Lookup
     ".in-addr.arpa",
@@ -89,7 +89,7 @@ const UNRESOLVABLE_DOMAINS: &[&str] = &[
 ];
 
 /// Private use domains reserved for private use with no central authority.
-/// Ref: https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names
+/// Ref: <https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names>
 const PRIVATE_USE_DOMAINS: &[&str] = &[
     // RFC 8375: Reserved for home networks
     ".home.arpa",

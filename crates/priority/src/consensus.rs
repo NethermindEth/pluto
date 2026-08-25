@@ -1,6 +1,6 @@
 //! Consensus seam for the priority protocol.
 //!
-//! The prioritiser proposes each deterministically-computed [`PriorityResult`]
+//! The prioritiser proposes each deterministically-computed `PriorityResult`
 //! through cluster QBFT consensus and subscribes to the decided result. This
 //! module defines the [`Consensus`] trait abstracting that interaction so the
 //! prioritiser can be unit-tested against a mock, and implements it for the

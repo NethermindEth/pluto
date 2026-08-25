@@ -1,22 +1,22 @@
 //! DKG sync protocol.
 //!
 //! Sync is intentionally split between user-facing handles and libp2p runtime
-//! objects. The caller only keeps [`Client`] and [`Server`] handles; libp2p
-//! owns [`Behaviour`] and [`handler::Handler`] while the swarm is running.
+//! objects. The caller only keeps `Client` and `Server` handles; libp2p
+//! owns `Behaviour` and `handler::Handler` while the swarm is running.
 //!
 //! The protocol has four moving parts:
-//! - [`Client`] is the local outbound handle for one remote peer. It owns local
+//! - `Client` is the local outbound handle for one remote peer. It owns local
 //!   send-side state: active flag, current step, shutdown request, stream
 //!   ownership, and completion result.
-//! - [`Server`] is the local inbound aggregate state for all remote peers. It
+//! - `Server` is the local inbound aggregate state for all remote peers. It
 //!   records which peers connected, which step each peer reported, which peers
 //!   requested shutdown, and the first fatal sync error.
-//! - [`Behaviour`] is the swarm-level bridge. It turns client activation into
+//! - `Behaviour` is the swarm-level bridge. It turns client activation into
 //!   libp2p dials, creates per-peer connection handlers, retries selected dial
 //!   failures, and forwards handler events to the swarm owner.
-//! - [`handler::Handler`] is the per-connection protocol executor. It accepts
+//! - `handler::Handler` is the per-connection protocol executor. It accepts
 //!   inbound sync streams and, when this connection wins the outbound claim,
-//!   opens the outbound sync stream for the matching [`Client`].
+//!   opens the outbound sync stream for the matching `Client`.
 //!
 //! High-level flow:
 //!
@@ -49,43 +49,43 @@
 //! ```
 //!
 //! Runtime sequence:
-//! 1. [`new`] creates one [`Server`] and one [`Client`] per remote peer.
-//! 2. The caller starts the server with [`Server::start`] and runs every
-//!    [`Client::run`].
+//! 1. `new` creates one `Server` and one `Client` per remote peer.
+//! 2. The caller starts the server with `Server::start` and runs every
+//!    `Client::run`.
 //! 3. `Client::run` activates the client and sends an internal activation
-//!    command to [`Behaviour`].
-//! 4. [`Behaviour`] queues a libp2p dial when no connection to that peer is
+//!    command to `Behaviour`.
+//! 4. `Behaviour` queues a libp2p dial when no connection to that peer is
 //!    active.
-//! 5. libp2p creates a [`handler::Handler`] for the peer connection.
-//! 6. The handler serves inbound sync messages into [`Server`] state, and runs
-//!    one outbound message loop for the [`Client`] that claimed the connection.
-//! 7. Callers wait on [`Server::await_all_connected`],
-//!    [`Server::await_all_at_step`], and [`Server::await_all_shutdown`].
+//! 5. libp2p creates a `handler::Handler` for the peer connection.
+//! 6. The handler serves inbound sync messages into `Server` state, and runs
+//!    one outbound message loop for the `Client` that claimed the connection.
+//! 7. Callers wait on `Server::await_all_connected`,
+//!    `Server::await_all_at_step`, and `Server::await_all_shutdown`.
 //!
 //! Inbound path:
 //! - libp2p negotiates the sync protocol and gives the stream to
-//!   [`handler::Handler`].
+//!   `handler::Handler`.
 //! - The handler reads [`crate::dkgpb::v1::sync::MsgSync`], validates version
-//!   and definition-hash signature, then updates [`Server`].
+//!   and definition-hash signature, then updates `Server`.
 //! - Valid messages mark the peer connected, update the peer step, and record
 //!   shutdown when requested.
-//! - Invalid messages store a fatal server error. Waiters on [`Server`] return
+//! - Invalid messages store a fatal server error. Waiters on `Server` return
 //!   that error instead of blocking forever.
 //!
 //! Outbound path:
-//! - [`Client::run`] marks the peer active and asks [`Behaviour`] to connect.
-//! - [`Behaviour`] dials only when the peer has an active client and no live
+//! - `Client::run` marks the peer active and asks `Behaviour` to connect.
+//! - `Behaviour` dials only when the peer has an active client and no live
 //!   client stream.
-//! - A connection's [`handler::Handler`] claims outbound ownership before
-//!   opening a stream, so duplicate connections do not create duplicate sync
-//!   loops for the same [`Client`].
+//! - A connection's `handler::Handler` claims outbound ownership before opening
+//!   a stream, so duplicate connections do not create duplicate sync loops for
+//!   the same `Client`.
 //! - The outbound loop periodically sends the current client step, version,
 //!   definition-hash signature, and shutdown flag. Stream errors either retry
 //!   or finish the client depending on reconnect state and error type.
 //!
-//! Keep the ownership boundary clear: [`Client`] describes what this node
-//! sends, [`Server`] records what this node received, [`Behaviour`] manages
-//! swarm connectivity, and [`handler::Handler`] owns live stream execution.
+//! Keep the ownership boundary clear: `Client` describes what this node
+//! sends, `Server` records what this node received, `Behaviour` manages
+//! swarm connectivity, and `handler::Handler` owns live stream execution.
 
 mod behaviour;
 mod client;

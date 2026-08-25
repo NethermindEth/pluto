@@ -19,7 +19,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures::future::BoxFuture;
-use pluto_consensus::qbft;
+use pluto_consensus::wrapper::ConsensusWrapper;
 use pluto_core::{
     aggsigdb::{memory::MemoryDBHandle, types::AggSigDB},
     bcast::Broadcaster,
@@ -33,6 +33,10 @@ use pluto_core::{
     scheduler::SchedulerBuilder,
     sigagg::{Aggregator, VerifyFn},
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
+    tracker::{
+        AnalyserRx, DeleterRx, PeerInfo, StepError, Tracker, TrackerService,
+        inclusion::{INCL_CHECK_LAG, INCL_MISSED_LAG, InclusionChecker},
+    },
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
     validatorapi::{self, Component, Handler, SeenPubkeysFn},
@@ -42,6 +46,7 @@ use pluto_eth2api::{
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
+use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
 
 use crate::node::AppError;
@@ -98,9 +103,147 @@ pub struct ValidatorInfo {
     pub fee_recipient: ExecutionAddress,
 }
 
+/// Shares one step error between the tracker and the caller that must still
+/// propagate it.
+///
+/// The tracker needs an owned [`StepError`] (`Arc<dyn Error>`), but the stitch
+/// points also have to return their original error, and those error types are
+/// not `Clone`. Moving the error into an `Arc` and handing the caller this
+/// wrapper keeps a single allocation while preserving the chain: `source()`
+/// returns the original error, so the tracker's reason inference — which walks
+/// `source()` looking for an `EthBeaconNodeApiClientError` — still classifies
+/// beacon-node failures correctly.
+#[derive(Debug, Clone)]
+struct SharedStepError(StepError);
+
+impl std::fmt::Display for SharedStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for SharedStepError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
+    }
+}
+
+/// Splits a step result into the error to report to the tracker and the error
+/// to return to the caller, sharing one allocation between them.
+fn share_step_err<E>(err: E) -> (StepError, SharedStepError)
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let shared: StepError = Arc::new(err);
+    (Arc::clone(&shared), SharedStepError(shared))
+}
+
+/// Reports a step error to the tracker without needing to propagate it, for
+/// stitch points whose errors are logged and swallowed locally.
+fn owned_step_err<E>(err: E) -> StepError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    Arc::new(err)
+}
+
+/// Wraps a [`DeadlineCalculator`], shifting every deadline later by a fixed
+/// offset. Used to derive the tracker's analyser/deleter deadlines from the
+/// shared duty deadline. Parity: the closures charon builds in `newTracker`.
+struct OffsetCalculator {
+    inner: Arc<dyn DeadlineCalculator>,
+    offset: std::time::Duration,
+}
+
+impl OffsetCalculator {
+    fn new(inner: Arc<dyn DeadlineCalculator>, offset: std::time::Duration) -> Self {
+        Self { inner, offset }
+    }
+}
+
+impl DeadlineCalculator for OffsetCalculator {
+    fn deadline(
+        &self,
+        duty: &Duty,
+    ) -> pluto_core::deadline::Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let Some(deadline) = self.inner.deadline(duty)? else {
+            return Ok(None);
+        };
+        // A deadline that cannot be shifted (overflow) is treated as
+        // never-expiring rather than silently wrapping to an earlier instant.
+        let shifted = chrono::Duration::from_std(self.offset)
+            .ok()
+            .and_then(|offset| deadline.checked_add_signed(offset));
+        Ok(shifted)
+    }
+}
+
+/// Feature set the tracker subsystem runs under.
+///
+/// The networked inclusion checker only resolves proposer inclusion; the
+/// attestation-inclusion path (attester/aggregator) is a follow-up, and its
+/// core panics if fed those submissions. So mask the (alpha, off-by-default)
+/// `AttestationInclusion` feature off until that path lands, keeping the
+/// analyser and the checker consistent.
+fn tracker_feature_set(feature_set: &Arc<FeatureSet>) -> Arc<FeatureSet> {
+    if !feature_set.enabled(Feature::AttestationInclusion) {
+        return Arc::clone(feature_set);
+    }
+
+    tracing::warn!(
+        "Feature attestation_inclusion is enabled but not yet supported by the \
+         inclusion checker; disabling it for duty tracking"
+    );
+    let mut fs = (**feature_set).clone();
+    fs.state
+        .insert(Feature::AttestationInclusion, Status::Disable);
+    Arc::new(fs)
+}
+
+/// Returns the slot to start tracking from, which suppresses noisy failed
+/// duties at startup caused by a validator client that is still coming up.
+///
+/// Delays at most 10 seconds but never fewer than 2 slots. Parity: charon
+/// `app.go` `calculateTrackerDelay`.
+async fn calculate_tracker_delay(
+    eth2_cl: &EthBeaconNodeApiClient,
+    slot_duration: std::time::Duration,
+) -> Result<u64, AppError> {
+    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+    const MIN_DELAY_SLOTS: u64 = 2;
+
+    let genesis = eth2_cl
+        .fetch_genesis_time()
+        .await
+        .map_err(AppError::BeaconApi)?;
+
+    let elapsed = chrono::Utc::now()
+        .signed_duration_since(genesis)
+        .to_std()
+        .unwrap_or(std::time::Duration::ZERO);
+    let slot_nanos = slot_duration.as_nanos();
+    let current_slot = elapsed
+        .as_nanos()
+        .checked_div(slot_nanos)
+        .and_then(|slots| u64::try_from(slots).ok())
+        .unwrap_or(u64::MAX);
+
+    let max_delay_slots = MAX_DELAY
+        .as_nanos()
+        .checked_div(slot_nanos)
+        .and_then(|slots| u64::try_from(slots).ok())
+        .unwrap_or(u64::MAX);
+    let max_delay_time_slot = current_slot
+        .saturating_add(max_delay_slots)
+        .saturating_add(1);
+    let min_delay_slot = current_slot.saturating_add(MIN_DELAY_SLOTS);
+
+    Ok(max_delay_time_slot.max(min_delay_slot))
+}
+
 /// Already-resolved inputs to [`wire_core_workflow`].
 ///
-/// These are derived from the cluster manifest + config, but passed in so that
+/// These are derived from the cluster lock + config, but passed in so that
 /// file-loading and P2P setup (in `run`) stay separate from
 /// construction-and-wiring (here) — enabling the Tier 1 test to inject a
 /// `BeaconMock` and in-memory parsigex.
@@ -117,9 +260,9 @@ pub struct WireInputs {
     pub submission_client: BeaconNodeClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
-    /// Already-constructed consensus component, also wired into the QBFT p2p
-    /// behaviour by the caller.
-    pub consensus: Arc<qbft::Consensus>,
+    /// Current consensus implementation, from the controller. Forwards to the
+    /// default QBFT impl the caller also wires into the QBFT p2p behaviour.
+    pub consensus: Arc<ConsensusWrapper>,
     /// Whether the builder API is enabled.
     pub builder_enabled: bool,
     /// Upstream beacon URL the validator API reverse-proxies unhandled requests
@@ -153,6 +296,15 @@ pub struct WireInputs {
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
+    /// Cluster peers, used by the tracker to attribute per-peer participation.
+    /// Empty disables participation reporting but still tracks duty outcomes.
+    pub peers: Vec<PeerInfo>,
+    /// Resolved feature set. The tracker consults it to decide which duty types
+    /// have an on-chain inclusion step (`Feature::AttestationInclusion`).
+    pub feature_set: Arc<FeatureSet>,
+    /// Infosync component, triggered on each epoch's last slot to run the
+    /// cluster-wide priority exchange. `None` in tests.
+    pub infosync: Option<Arc<pluto_infosync::Component>>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -173,6 +325,9 @@ pub struct WiredComponents {
     pub aggsigdb: MemoryDBHandle,
     /// The fetcher (driven via scheduler subscriptions).
     pub fetcher: Arc<Fetcher>,
+    /// Networked inclusion checker; its `run` loop is spawned and supervised by
+    /// the caller.
+    pub inclusion_checker: Arc<InclusionChecker>,
     /// The validator API axum router, ready to be served.
     pub validator_api_router: axum::Router,
 }
@@ -281,6 +436,9 @@ pub async fn wire_core_workflow(
         fetch_only_comm_idx0,
         seen_pubkeys,
         slot_tick,
+        peers,
+        feature_set,
+        infosync,
     } = inputs;
 
     // ---- Derived validator maps ----
@@ -323,6 +481,75 @@ pub async fn wire_core_workflow(
     let (aggsigdb_deadliner, aggsigdb_deadliner_rx) =
         DeadlinerTask::start(ct.clone(), "aggsigdb", Arc::clone(&deadline_calc));
 
+    // ---- Tracker ----
+    //
+    // Analysis has to wait until a duty's inclusion verdict can have arrived, so
+    // both tracker deadliners sit `INCL_MISSED_LAG + INCL_CHECK_LAG` slots past
+    // the duty deadline, and the deleter a further minute past the analyser so
+    // duties of the same slot are analysed before their events are dropped.
+    // Parity: charon `app.go` `newTracker`.
+    let (slot_duration, _slots_per_epoch) = eth2_cl
+        .fetch_slots_config()
+        .await
+        .map_err(AppError::BeaconApi)?;
+    let tracker_lag = slot_duration
+        .saturating_mul(u32::try_from(INCL_MISSED_LAG + INCL_CHECK_LAG).unwrap_or(u32::MAX));
+
+    let (tracker_analyser, tracker_analyser_rx) = DeadlinerTask::start(
+        ct.clone(),
+        "tracker_analyser",
+        Arc::new(OffsetCalculator::new(
+            Arc::clone(&deadline_calc),
+            tracker_lag,
+        )),
+    );
+    let (tracker_deleter, tracker_deleter_rx) = DeadlinerTask::start(
+        ct.clone(),
+        "tracker_deleter",
+        Arc::new(OffsetCalculator::new(
+            Arc::clone(&deadline_calc),
+            tracker_lag.saturating_add(std::time::Duration::from_secs(60)),
+        )),
+    );
+
+    let tracker_feature_set = tracker_feature_set(&feature_set);
+
+    let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
+    let tracker = TrackerService::start(
+        ct.clone(),
+        tracker_analyser,
+        AnalyserRx(tracker_analyser_rx),
+        tracker_deleter,
+        DeleterRx(tracker_deleter_rx),
+        peers,
+        track_from,
+        Arc::clone(&tracker_feature_set),
+    );
+
+    // Resolves the terminal `ChainInclusion` step; without it every duty with an
+    // inclusion step would stall unresolved and be reported as failed. Spawned
+    // and supervised by `run_lifecycle`.
+    let inclusion_checker = {
+        let tracker = Arc::clone(&tracker);
+        Arc::new(
+            InclusionChecker::new(
+                eth2_cl.clone(),
+                Box::new(move |duty: &Duty, pubkey: PubKey, err| {
+                    let tracker = Arc::clone(&tracker);
+                    let duty = duty.clone();
+                    // The core's callback is sync but `inclusion_checked` is
+                    // async, so hand the event to the runtime.
+                    tokio::spawn(async move {
+                        tracker.inclusion_checked(duty, pubkey, err).await;
+                    });
+                }),
+                Arc::clone(&tracker_feature_set),
+            )
+            .await
+            .map_err(AppError::BeaconApi)?,
+        )
+    };
+
     // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target) ----
     let aggsigdb = MemoryDBHandle::new(aggsigdb_deadliner, aggsigdb_deadliner_rx, ct.clone());
 
@@ -364,22 +591,38 @@ pub async fn wire_core_workflow(
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
         let deadline_calc = Arc::clone(&deadline_calc);
+        let tracker = Arc::clone(&tracker);
         Arc::new(move |duty: Duty, set: UnsignedDataSet| {
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
             let deadline_calc = Arc::clone(&deadline_calc);
+            let tracker = Arc::clone(&tracker);
             Box::pin(async move {
+                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
                 let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
                 // Bound consensus by the duty deadline so a stuck instance is
                 // cancelled (-> ConsensusTimeout) instead of running until shutdown.
-                run_bounded_by_duty_deadline(
+                let result = run_bounded_by_duty_deadline(
                     &deadline_calc,
                     &ct,
-                    duty,
-                    move |duty, dct| async move { consensus.propose(duty, value, &dct).await },
+                    duty.clone(),
+                    move |duty, dct| async move { consensus.propose(dct, duty, value).await },
                 )
-                .await?;
-                Ok(())
+                .await;
+
+                match result {
+                    Ok(()) => {
+                        tracker.consensus_proposed(duty, &pubkeys, None).await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        let (reported, returned) = share_step_err(err);
+                        tracker
+                            .consensus_proposed(duty, &pubkeys, Some(reported))
+                            .await;
+                        Err(returned.into())
+                    }
+                }
             })
         })
     };
@@ -404,23 +647,34 @@ pub async fn wire_core_workflow(
     // we spawn the async `dutydb.store` inside it.
     {
         let dutydb = Arc::clone(&dutydb);
-        consensus.subscribe(move |duty: Duty, value: pbcore::UnsignedDataSet| {
-            let dutydb = Arc::clone(&dutydb);
-            tokio::spawn(async move {
-                let core_set =
-                    match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
-                        Ok(set) => set,
+        let tracker = Arc::clone(&tracker);
+        consensus.subscribe(Box::new(
+            move |duty: Duty, value: pbcore::UnsignedDataSet| {
+                let dutydb = Arc::clone(&dutydb);
+                let tracker = Arc::clone(&tracker);
+                tokio::spawn(async move {
+                    let core_set =
+                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                            Ok(set) => set,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: decode unsigned data set");
+                                return;
+                            }
+                        };
+                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                    // Logged before the error moves into the tracker's `Arc`.
+                    let step_err = match dutydb.store(duty.clone(), core_set).await {
+                        Ok(()) => None,
                         Err(err) => {
-                            tracing::warn!(?err, "dutydb: decode unsigned data set");
-                            return;
+                            tracing::warn!(?err, "dutydb: store");
+                            Some(owned_step_err(err))
                         }
                     };
-                if let Err(err) = dutydb.store(duty, core_set).await {
-                    tracing::warn!(?err, "dutydb: store");
-                }
-            });
-            Ok(())
-        });
+                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                });
+                Ok(())
+            },
+        ));
     }
 
     // ---- (8) ParSigDB ----
@@ -433,17 +687,31 @@ pub async fn wire_core_workflow(
     // Stitch: parsigdb.subscribe_internal(parsigex.broadcast).
     {
         let broadcast = Arc::clone(&parsigex.broadcast);
+        let tracker = Arc::clone(&tracker);
         parsigdb
             .subscribe_internal(parsigdb::memory::internal_subscriber(
                 move |duty: Duty, set: ParSignedDataSet| {
                     let broadcast = Arc::clone(&broadcast);
+                    let tracker = Arc::clone(&tracker);
                     async move {
-                        broadcast(duty, set).await.map_err(|e| {
-                            parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                source: Box::new(e),
+                        match broadcast(duty.clone(), set.clone()).await {
+                            Ok(()) => {
+                                tracker.par_sig_ex_broadcasted(duty, &set, None).await;
+                                Ok(())
                             }
-                            .into()
-                        })
+                            Err(err) => {
+                                let (reported, returned) = share_step_err(err);
+                                tracker
+                                    .par_sig_ex_broadcasted(duty, &set, Some(reported))
+                                    .await;
+                                Err(
+                                    parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
+                                        source: Box::new(returned),
+                                    }
+                                    .into(),
+                                )
+                            }
+                        }
                     }
                 },
             ))
@@ -462,14 +730,22 @@ pub async fn wire_core_workflow(
     // sinks; in Charon they are wrapped in async-retry subscribers — part B).
     {
         let aggsigdb = aggsigdb.clone();
+        let tracker = Arc::clone(&tracker);
         aggregator.subscribe(Arc::new(move |duty: &Duty, set: &SignedDataSet| {
             let aggsigdb = aggsigdb.clone();
+            let tracker = Arc::clone(&tracker);
             let duty = duty.clone();
             let set = set.clone();
             Box::pin(async move {
-                if let Err(err) = aggsigdb.store(duty, set).await {
-                    tracing::warn!(?err, "aggsigdb: store");
-                }
+                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                let step_err = match aggsigdb.store(duty.clone(), set).await {
+                    Ok(()) => None,
+                    Err(err) => {
+                        tracing::warn!(?err, "aggsigdb: store");
+                        Some(owned_step_err(err))
+                    }
+                };
+                tracker.agg_sig_db_stored(duty, &pubkeys, step_err).await;
                 Ok(())
             })
         }));
@@ -483,14 +759,40 @@ pub async fn wire_core_workflow(
     // Stitch: sigagg.subscribe(broadcaster.broadcast).
     {
         let broadcaster = Arc::clone(&broadcaster);
+        let tracker = Arc::clone(&tracker);
+        let inclusion = Arc::clone(&inclusion_checker);
         aggregator.subscribe(Arc::new(move |duty: &Duty, set: &SignedDataSet| {
             let broadcaster = Arc::clone(&broadcaster);
+            let tracker = Arc::clone(&tracker);
+            let inclusion = Arc::clone(&inclusion);
             let duty = duty.clone();
             let set = set.clone();
             Box::pin(async move {
-                if let Err(err) = broadcaster.broadcast(duty, set).await {
-                    tracing::warn!(?err, "broadcaster: broadcast");
+                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+
+                // Register for inclusion checking before broadcasting, and even
+                // if the broadcast fails: peers may still succeed, so the duty
+                // can land on-chain regardless. Parity: charon
+                // `core/tracking.go` `BroadcasterBroadcast`.
+                if let Err(err) = inclusion.submitted(&duty, &set) {
+                    tracing::error!(
+                        ?err,
+                        duty = %duty,
+                        "Internal error: failed to submit duty to inclusion checker. \
+                         This indicates a tracking bug that should be reported",
+                    );
                 }
+
+                let step_err = match broadcaster.broadcast(duty.clone(), set).await {
+                    Ok(()) => None,
+                    Err(err) => {
+                        tracing::warn!(?err, "broadcaster: broadcast");
+                        Some(owned_step_err(err))
+                    }
+                };
+                tracker
+                    .broadcaster_broadcast(duty, &pubkeys, step_err)
+                    .await;
                 Ok(())
             })
         }));
@@ -504,28 +806,47 @@ pub async fn wire_core_workflow(
     // spawning the aggregation and awaiting its `JoinHandle` (which is `Sync`).
     {
         let aggregator = Arc::clone(&aggregator);
+        let tracker_agg = Arc::clone(&tracker);
         parsigdb
             .subscribe_threshold(parsigdb::memory::threshold_subscriber(
                 move |duty: Duty, set: HashMap<PubKey, Vec<ParSignedData>>| {
                     let aggregator = Arc::clone(&aggregator);
+                    let tracker = Arc::clone(&tracker_agg);
                     async move {
+                        let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                        let tracked = duty.clone();
                         let result =
                             tokio::spawn(async move { aggregator.aggregate(&duty, &set).await })
                                 .await;
                         match result {
-                            Ok(Ok(())) => Ok(()),
-                            Ok(Err(e)) => Err(
-                                parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                    source: Box::new(e),
-                                }
-                                .into(),
-                            ),
-                            Err(e) => Err(
-                                parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                    source: Box::new(e),
-                                }
-                                .into(),
-                            ),
+                            Ok(Ok(())) => {
+                                tracker.sig_agg_aggregated(tracked, &pubkeys, None).await;
+                                Ok(())
+                            }
+                            Ok(Err(e)) => {
+                                let (reported, returned) = share_step_err(e);
+                                tracker
+                                    .sig_agg_aggregated(tracked, &pubkeys, Some(reported))
+                                    .await;
+                                Err(
+                                    parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
+                                        source: Box::new(returned),
+                                    }
+                                    .into(),
+                                )
+                            }
+                            Err(e) => {
+                                let (reported, returned) = share_step_err(e);
+                                tracker
+                                    .sig_agg_aggregated(tracked, &pubkeys, Some(reported))
+                                    .await;
+                                Err(
+                                    parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
+                                        source: Box::new(returned),
+                                    }
+                                    .into(),
+                                )
+                            }
                         }
                     }
                 },
@@ -536,12 +857,21 @@ pub async fn wire_core_workflow(
     // ---- (9) parsigex inbound subscription -> parsigdb.store_external ----
     {
         let parsigdb = Arc::clone(&parsigdb);
+        let tracker_ext = Arc::clone(&tracker);
         let received: ParSigExReceived = Arc::new(move |duty: Duty, set: ParSignedDataSet| {
             let parsigdb = Arc::clone(&parsigdb);
+            let tracker = Arc::clone(&tracker_ext);
             Box::pin(async move {
-                if let Err(err) = parsigdb.store_external(&duty, &set).await {
-                    tracing::warn!(?err, "parsigdb: store external");
-                }
+                let step_err = match parsigdb.store_external(&duty, &set).await {
+                    Ok(()) => None,
+                    Err(err) => {
+                        tracing::warn!(?err, "parsigdb: store external");
+                        Some(owned_step_err(err))
+                    }
+                };
+                tracker
+                    .par_sig_db_stored_external(duty, &set, step_err)
+                    .await;
             })
         });
         (parsigex.subscribe)(received).await;
@@ -558,14 +888,17 @@ pub async fn wire_core_workflow(
     {
         let fetcher = Arc::clone(&fetcher);
         let ct = ct.clone();
+        let tracker = Arc::clone(&tracker);
         sched_builder.subscribe_duty(
             move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
                 let fetcher = Arc::clone(&fetcher);
                 let ct = ct.clone();
+                let tracker = Arc::clone(&tracker);
                 let duty = duty.clone();
                 let set = set.clone();
                 async move {
-                    match fetcher.fetch(duty, set).await {
+                    let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                    match fetcher.fetch(duty.clone(), set).await {
                         // In-flight fetches racing shutdown fail against already
                         // terminated components (e.g. the aggsigdb back-edge);
                         // don't surface those as duty errors.
@@ -573,7 +906,19 @@ pub async fn wire_core_workflow(
                             tracing::debug!(?err, "fetch aborted by shutdown");
                             Ok(())
                         }
-                        res => res,
+                        Ok(()) => {
+                            tracker.fetcher_fetched(duty, &pubkeys, None).await;
+                            Ok(())
+                        }
+                        Err(err) => {
+                            let (reported, returned) = share_step_err(err);
+                            tracker
+                                .fetcher_fetched(duty, &pubkeys, Some(reported))
+                                .await;
+                            // `subscribe_duty` is generic over the error type, so
+                            // the shared wrapper propagates as-is.
+                            Err(returned)
+                        }
                     }
                 }
             },
@@ -596,7 +941,7 @@ pub async fn wire_core_workflow(
                         &deadline_calc,
                         &ct,
                         duty,
-                        move |duty, dct| async move { consensus.participate(duty, &dct).await },
+                        move |duty, dct| async move { consensus.participate(dct, duty).await },
                     )
                     .await
                 }
@@ -607,6 +952,25 @@ pub async fn wire_core_workflow(
     // Optional per-slot subscriber (simnet validator mock).
     if let Some(slot_tick) = slot_tick {
         sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
+    }
+    // Per-epoch infosync trigger, fired on each epoch's last slot. A failure is
+    // logged by `subscribe_slot` and does not fail the node.
+    if let Some(infosync) = infosync {
+        let ct = ct.clone();
+        sched_builder.subscribe_slot(
+            move |slot: &Slot| {
+                let infosync = Arc::clone(&infosync);
+                let ct = ct.clone();
+                let slot = slot.clone();
+                async move {
+                    if slot.last_in_epoch() {
+                        infosync.trigger(ct.child_token(), slot.slot).await?;
+                    }
+                    Ok::<(), AppError>(())
+                }
+            },
+            "infosync",
+        );
     }
     // Slot subscriber: per-epoch validator cache trim + refresh (Charon's
     // `wireCoreWorkflow`).
@@ -711,13 +1075,24 @@ pub async fn wire_core_workflow(
     // Stitch: vapi.subscribe(parsigdb.store_internal).
     {
         let parsigdb = Arc::clone(&parsigdb);
+        let tracker = Arc::clone(&tracker);
         vapi.subscribe(move |duty: Duty, set: ParSignedDataSet| {
             let parsigdb = Arc::clone(&parsigdb);
+            let tracker = Arc::clone(&tracker);
             async move {
-                parsigdb
-                    .store_internal(&duty, &set)
-                    .await
-                    .map_err(Into::into)
+                match parsigdb.store_internal(&duty, &set).await {
+                    Ok(()) => {
+                        tracker.par_sig_db_stored_internal(duty, &set, None).await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        let (reported, returned) = share_step_err(err);
+                        tracker
+                            .par_sig_db_stored_internal(duty, &set, Some(reported))
+                            .await;
+                        Err(returned.into())
+                    }
+                }
             }
         });
     }
@@ -740,6 +1115,7 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner_rx,
         aggsigdb,
         fetcher,
+        inclusion_checker,
         validator_api_router,
     })
 }
@@ -789,7 +1165,7 @@ enum DutyConsensusError {
     #[error(transparent)]
     Deadline(#[from] pluto_core::deadline::DeadlineError),
     #[error(transparent)]
-    Consensus(#[from] qbft::RunnerError),
+    Consensus(#[from] pluto_consensus::wrapper::Error),
 }
 
 /// Runs `run_consensus` for `duty`, bounded by the duty's deadline.
@@ -805,7 +1181,7 @@ async fn run_bounded_by_duty_deadline<F, Fut>(
 ) -> Result<(), DutyConsensusError>
 where
     F: FnOnce(Duty, CancellationToken) -> Fut,
-    Fut: std::future::Future<Output = qbft::RunnerResult<()>>,
+    Fut: std::future::Future<Output = pluto_consensus::wrapper::Result<()>>,
 {
     let deadline = deadline_calc.deadline(&duty)?;
     bounded_by_deadline(ct, deadline, move |dct| run_consensus(duty, dct)).await?;
@@ -881,7 +1257,7 @@ mod deadline_bound_tests {
             let ran_probe = Arc::clone(&ran_probe);
             async move {
                 ran_probe.store(true, Ordering::SeqCst);
-                Ok::<(), qbft::RunnerError>(())
+                Ok(())
             }
         })
         .await;
@@ -1175,5 +1551,35 @@ mod tests {
             "refetched the epoch's first slot (0), where the validator is active"
         );
         assert!(active.contains_key(&1));
+    }
+
+    fn feature_set(enabled: Vec<Feature>) -> Arc<FeatureSet> {
+        Arc::new(
+            FeatureSet::from_config(pluto_featureset::Config {
+                enabled,
+                ..Default::default()
+            })
+            .expect("valid featureset"),
+        )
+    }
+
+    /// `AttestationInclusion` is masked off for the tracker so the
+    /// proposer-only inclusion checker is never fed attester/aggregator
+    /// submissions.
+    #[test]
+    fn tracker_feature_set_masks_attestation_inclusion() {
+        let fs = feature_set(vec![Feature::AttestationInclusion]);
+        assert!(fs.enabled(Feature::AttestationInclusion));
+
+        let tracker_fs = tracker_feature_set(&fs);
+        assert!(!tracker_fs.enabled(Feature::AttestationInclusion));
+    }
+
+    /// Without the feature the set is passed through untouched (same `Arc`).
+    #[test]
+    fn tracker_feature_set_is_passthrough_when_disabled() {
+        let fs = feature_set(vec![]);
+        let tracker_fs = tracker_feature_set(&fs);
+        assert!(Arc::ptr_eq(&fs, &tracker_fs));
     }
 }

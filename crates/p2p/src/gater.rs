@@ -155,13 +155,22 @@ impl NetworkBehaviour for ConnGater {
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _addr: &Multiaddr,
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Allow all outbound connections
-        Ok(dummy::ConnectionHandler)
+        // Charon's `InterceptSecured` ignores the connection direction and gates
+        // both inbound and outbound secured connections, so mirror the inbound
+        // gating logic here. Legitimate outbound dials (relay dials,
+        // force-direct, QUIC-upgrade) target relays and cluster peers, which are
+        // both in the allow-list.
+        if self.is_peer_allowed(&peer) {
+            Ok(dummy::ConnectionHandler)
+        } else {
+            self.events.push_back(Event::PeerBlocked(peer));
+            Err(ConnectionDenied::new(PeerNotAllowed(peer)))
+        }
     }
 
     fn on_swarm_event(&mut self, _event: FromSwarm) {
@@ -202,3 +211,149 @@ impl std::fmt::Display for PeerNotAllowed {
 }
 
 impl std::error::Error for PeerNotAllowed {}
+
+#[cfg(test)]
+mod tests {
+    use std::task::Waker;
+
+    use libp2p::core::{Endpoint, transport::PortUse};
+
+    use super::*;
+    use crate::peer::Peer;
+
+    fn dummy_addr() -> Multiaddr {
+        "/ip4/127.0.0.1/tcp/9000".parse().unwrap()
+    }
+
+    fn relay_peer(id: PeerId) -> MutablePeer {
+        MutablePeer::new(Peer {
+            id,
+            addresses: vec![],
+            index: 0,
+            name: "relay".to_string(),
+        })
+    }
+
+    fn try_inbound(gater: &mut ConnGater, peer: PeerId) -> bool {
+        gater
+            .handle_established_inbound_connection(
+                ConnectionId::new_unchecked(0),
+                peer,
+                &dummy_addr(),
+                &dummy_addr(),
+            )
+            .is_ok()
+    }
+
+    fn try_outbound(gater: &mut ConnGater, peer: PeerId) -> bool {
+        gater
+            .handle_established_outbound_connection(
+                ConnectionId::new_unchecked(0),
+                peer,
+                &dummy_addr(),
+                Endpoint::Dialer,
+                PortUse::Reuse,
+            )
+            .is_ok()
+    }
+
+    /// Drains a single event from `poll`, mirroring how the swarm would
+    /// consume generated events.
+    fn poll_event(gater: &mut ConnGater) -> Option<Event> {
+        let mut cx = Context::from_waker(Waker::noop());
+        match gater.poll(&mut cx) {
+            Poll::Ready(ToSwarm::GenerateEvent(event)) => Some(event),
+            _ => None,
+        }
+    }
+
+    /// Mirrors Charon's `TestOpenGater`: an open gater allows any peer in
+    /// either direction.
+    #[test]
+    fn open_gater_allows_all() {
+        let mut gater = ConnGater::new_open_gater();
+        let peer = PeerId::random();
+
+        assert!(gater.is_open());
+        assert!(try_inbound(&mut gater, peer));
+        assert!(try_outbound(&mut gater, peer));
+        assert!(poll_event(&mut gater).is_none());
+    }
+
+    /// Mirrors Charon's `TestInterceptSecured`: a known cluster peer is
+    /// allowed, an unknown peer is denied. Charon ignores the direction, so we
+    /// assert both directions behave identically.
+    #[test]
+    fn known_peer_allowed_unknown_denied_both_directions() {
+        let known = PeerId::random();
+        let unknown = PeerId::random();
+
+        let mut gater = ConnGater::new_conn_gater(vec![known], vec![]);
+
+        // Known peer: allowed inbound and outbound, no event.
+        assert!(try_inbound(&mut gater, known));
+        assert!(try_outbound(&mut gater, known));
+        assert!(poll_event(&mut gater).is_none());
+
+        // Unknown peer: denied inbound and outbound.
+        assert!(!try_inbound(&mut gater, unknown));
+        assert!(!try_outbound(&mut gater, unknown));
+    }
+
+    /// Relays are part of the allow-list, so both directions must succeed for a
+    /// relay peer. This pins the invariant that outbound relay dials keep
+    /// working after the outbound gate is enabled.
+    #[test]
+    fn relay_peer_allowed_both_directions() {
+        let relay_id = PeerId::random();
+        let mut gater = ConnGater::new_conn_gater(vec![], vec![relay_peer(relay_id)]);
+
+        assert!(try_inbound(&mut gater, relay_id));
+        assert!(try_outbound(&mut gater, relay_id));
+        assert!(poll_event(&mut gater).is_none());
+    }
+
+    /// A closed gater with no allowed peers denies everything in both
+    /// directions.
+    #[test]
+    fn closed_gater_denies_unknown_both_directions() {
+        let mut gater = ConnGater::new_conn_gater(vec![], vec![]);
+        let peer = PeerId::random();
+
+        assert!(!try_inbound(&mut gater, peer));
+        assert!(!try_outbound(&mut gater, peer));
+    }
+
+    /// Denying an inbound connection queues a `PeerBlocked` event that `poll`
+    /// surfaces to the swarm.
+    #[test]
+    fn inbound_denial_emits_peer_blocked_event() {
+        let mut gater = ConnGater::new_conn_gater(vec![], vec![]);
+        let peer = PeerId::random();
+
+        assert!(!try_inbound(&mut gater, peer));
+
+        match poll_event(&mut gater) {
+            Some(Event::PeerBlocked(blocked)) => assert_eq!(blocked, peer),
+            other => panic!("expected PeerBlocked event, got {other:?}"),
+        }
+        // No further events are pending.
+        assert!(poll_event(&mut gater).is_none());
+    }
+
+    /// Denying an outbound connection also queues a `PeerBlocked` event that
+    /// `poll` surfaces to the swarm — the behaviour the issue requires.
+    #[test]
+    fn outbound_denial_emits_peer_blocked_event() {
+        let mut gater = ConnGater::new_conn_gater(vec![], vec![]);
+        let peer = PeerId::random();
+
+        assert!(!try_outbound(&mut gater, peer));
+
+        match poll_event(&mut gater) {
+            Some(Event::PeerBlocked(blocked)) => assert_eq!(blocked, peer),
+            other => panic!("expected PeerBlocked event, got {other:?}"),
+        }
+        assert!(poll_event(&mut gater).is_none());
+    }
+}

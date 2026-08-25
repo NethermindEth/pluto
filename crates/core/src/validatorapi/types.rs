@@ -216,7 +216,7 @@ pub struct ValIndexes(pub Vec<String>);
 /// cluster has at most a few hundred validators; the cap is set generously
 /// above that to leave room for future growth while still bounding the work
 /// per request so a single misbehaving caller cannot drive unbounded
-/// allocation. Pairs with the route-level [`DUTIES_BODY_LIMIT`]
+/// allocation. Pairs with the route-level `DUTIES_BODY_LIMIT`
 /// (`router.rs`) which limits the *bytes* the deserializer ever sees;
 /// this limits the *count* even within those bytes.
 pub const VAL_INDEXES_MAX_LEN: usize = 8192;

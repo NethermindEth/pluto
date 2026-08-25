@@ -323,10 +323,12 @@ pub(crate) fn hash_definition_v1x3or4<H: HashWalker>(
                 put_byte_list(hh, o.enr.as_bytes(), SSZ_MAX_ENR, "enr")?;
 
                 // Field (2) 'ConfigSignature' Bytes65
-                put_bytes_n(hh, &o.config_signature, SSZ_LEN_K1_SIG)?;
+                hh.put_bytes(&o.config_signature)
+                    .map_err(SSZError::<H>::HashWalkerError)?;
 
                 // Field (3) 'ENRSignature' Bytes65
-                put_bytes_n(hh, &o.enr_signature, SSZ_LEN_K1_SIG)?;
+                hh.put_bytes(&o.enr_signature)
+                    .map_err(SSZError::<H>::HashWalkerError)?;
             }
 
             hh.merkleize(op_sub_idx)
