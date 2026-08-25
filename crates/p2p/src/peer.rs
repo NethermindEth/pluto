@@ -9,7 +9,7 @@ use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiadd
 use pluto_eth2util::enr::Record;
 use tokio::sync::watch;
 
-use crate::name::peer_name;
+use crate::name;
 
 /// Peer error.
 #[derive(Debug, thiserror::Error)]
@@ -86,7 +86,7 @@ impl Peer {
             id: info.id,
             addresses: info.addrs.clone(),
             index: 0,
-            name: peer_name(&info.id),
+            name: name::peer_name(&info.id),
         }
     }
 
@@ -97,7 +97,7 @@ impl Peer {
         Ok(Peer {
             id,
             index,
-            name: peer_name(&id),
+            name: name::peer_name(&id),
             addresses: vec![],
         })
     }

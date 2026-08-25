@@ -17,17 +17,16 @@ use libp2p::{
 };
 use pluto_cluster::{definition::Definition, lock::Lock};
 use pluto_eth2util::enr::Record;
-use pluto_k1util::load as load_key;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
-    bootnode::new_relays,
+    bootnode,
     config::{DEFAULT_RELAYS, P2PConfig, RelayAddr},
     gater::ConnGater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer, peer_id_from_key, verify_p2p_key},
     relay::RelayManager,
-    utils::is_relay_addr,
+    utils,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -41,7 +40,7 @@ use super::{
     write_result_to_writer,
 };
 use crate::{
-    commands::common::parse_relay_addrs,
+    commands::common,
     duration::Duration as CliDuration,
     error::{CliError, Result},
 };
@@ -258,7 +257,7 @@ pub async fn run(
     tracing::debug!("enr_strings: {:?}", enr_strings);
     let cluster_peers = parse_peers(&enr_strings)?;
 
-    let private_key = load_key(&args.private_key_file)?;
+    let private_key = pluto_k1util::load(&args.private_key_file)?;
 
     verify_p2p_key(&cluster_peers, &private_key)?;
 
@@ -280,7 +279,7 @@ pub async fn run(
         disable_reuse_port: args.p2p_disable_reuseport,
     };
 
-    let relay_addrs = parse_relay_addrs(&args.p2p_relays)?;
+    let relay_addrs = common::parse_relay_addrs(&args.p2p_relays)?;
 
     let (node, relay_peers) = setup_p2p(
         timeout_ct.clone(),
@@ -707,7 +706,7 @@ async fn run_peer_event_loop(
                 // Once we have a relay circuit listen address our reservation is
                 // active and other nodes can reach us. Trigger outbound dials.
                 if let SwarmEvent::NewListenAddr { ref address, .. } = event
-                    && is_relay_addr(address)
+                    && utils::is_relay_addr(address)
                     && !dialed_via_relay
                     && !queued_tests.is_empty()
                 {
@@ -800,7 +799,7 @@ fn handle_swarm_event(
         } => {
             if let Some(state) = states.get_mut(&peer_id) {
                 let addr = endpoint_addr(&endpoint);
-                let is_relay = is_relay_addr(addr);
+                let is_relay = utils::is_relay_addr(addr);
 
                 if state.connect_time.is_none() {
                     state.connect_time = Some(Instant::now());
@@ -855,7 +854,7 @@ fn handle_swarm_event(
                         tracing::info!(timeout = ?direct_connection_timeout, target = %peer_target_name(peer, enr_str), "Trying to establish direct connection...");
                     }
                     for addr in &info.listen_addrs {
-                        if !is_relay_addr(addr) {
+                        if !utils::is_relay_addr(addr) {
                             let mut direct_addr = addr.clone();
                             direct_addr.push(Protocol::P2p(peer_id));
                             if let Err(e) = node.dial(direct_addr.clone()) {
@@ -1063,7 +1062,7 @@ async fn setup_p2p(
     self_peer_id: PeerId,
     enr_hash: &str,
 ) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
-    let relay_peers = new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
+    let relay_peers = bootnode::new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
 
     let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
     all_peer_ids.push(self_peer_id);
@@ -1401,7 +1400,7 @@ mod tests {
         // `--p2p-relays=""` parses to no relays, so there is nothing to probe.
         // Probing the raw flag strings instead used to key a target off the
         // empty string and report it as a failing relay.
-        let relays = parse_relay_addrs(&["".to_string()]).expect("relays");
+        let relays = common::parse_relay_addrs(&["".to_string()]).expect("relays");
         let queued = [TestCaseName::new("PingRelay", 1)];
 
         let results = run_relay_http_tests(&relays, &queued, CancellationToken::new()).await;
@@ -1411,7 +1410,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_http_tests_key_targets_by_address() {
-        let relays = parse_relay_addrs(&[
+        let relays = common::parse_relay_addrs(&[
             "http://127.0.0.1:1/enr".to_string(),
             "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs"
                 .to_string(),

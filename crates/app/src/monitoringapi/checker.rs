@@ -22,7 +22,7 @@ use super::{
     metrics::MONITORING_METRICS,
     readiness::{ReadinessError, ReadyResult, ReadyState},
 };
-use crate::eth2wrap::version::check_beacon_node_version;
+use crate::eth2wrap::version;
 
 /// Slots behind head after which the beacon node is considered too far behind.
 const BN_FAR_BEHIND_SLOTS: u64 = 320;
@@ -128,7 +128,7 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
     MONITORING_METRICS.beacon_node_version[&label].set(1);
 
     // The semantic compatibility check uses the FULL (untruncated) version.
-    check_beacon_node_version(&version);
+    version::check_beacon_node_version(&version);
 }
 
 /// Maximum length (in bytes) for the upstream-supplied beacon-node version

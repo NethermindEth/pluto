@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use pluto_consensus::qbft::msg::hash_proto_bytes;
+use pluto_consensus::qbft::msg;
 use pluto_core::corepb::v1::priority::{
     PriorityMsg, PriorityResult, PriorityScoredResult, PriorityTopicProposal, PriorityTopicResult,
 };
@@ -31,7 +31,7 @@ const COUNT_WEIGHT: i64 = MAX_PRIORITIES as i64;
 /// envelope bytes are hashed directly rather than the inner concrete message.
 fn hash_any(any: &Any) -> Result<HashRoot> {
     let encoded = any.encode_to_vec();
-    hash_proto_bytes(&encoded).map_err(Error::HashProto)
+    msg::hash_proto_bytes(&encoded).map_err(Error::HashProto)
 }
 
 /// Returns the cluster-wide priorities given the priorities of each peer.

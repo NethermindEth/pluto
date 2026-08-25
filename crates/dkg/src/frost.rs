@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
-use pluto_crypto::types::{PublicKey, privkey_from_bytes, pubkey_from_bytes};
+use pluto_crypto::types::{self, PublicKey};
 use pluto_frost::{
     G1Affine, G1Projective, KeyPackage,
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
@@ -437,7 +437,7 @@ fn make_shares(
 
         shares.push(Share {
             pub_key: point_to_pubkey(G1Affine::from(pub_key).to_compressed())?,
-            secret_share: privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
+            secret_share: types::privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
             public_shares: pub_shares.get(&v_idx).cloned().unwrap_or_default(),
         });
     }
@@ -449,7 +449,7 @@ fn point_to_pubkey(point: [u8; 48]) -> Result<PublicKey, FrostError> {
     // `pubkey_from_bytes` only checks length; transport bytes still need G1
     // validation.
     G1Projective::from_compressed(&point).ok_or(FrostError::InvalidPublicKeyPoint)?;
-    Ok(pubkey_from_bytes(&point)?)
+    Ok(types::pubkey_from_bytes(&point)?)
 }
 
 fn validate_participant_inputs(

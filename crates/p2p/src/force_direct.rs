@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::time::Interval;
 use tracing::{debug, warn};
 
-use crate::{name::peer_name, p2p_context::P2PContext, utils};
+use crate::{name, p2p_context::P2PContext, utils};
 
 const FORCE_DIRECT_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -123,7 +123,7 @@ impl ForceDirectBehaviour {
 
             if connections.is_empty() {
                 warn!(
-                    peer = %peer_name(peer),
+                    peer = %name::peer_name(peer),
                     "no connections to peer"
                 );
                 continue;
@@ -134,7 +134,7 @@ impl ForceDirectBehaviour {
                 .any(|c| !utils::is_relay_addr(&c.remote_addr))
             {
                 debug!(
-                    peer = %peer_name(peer),
+                    peer = %name::peer_name(peer),
                     "not all connections to peer are relay connections, skipping force direct"
                 );
                 continue;
@@ -142,7 +142,7 @@ impl ForceDirectBehaviour {
 
             let Some(addresses) = available_addresses else {
                 warn!(
-                    peer = %peer_name(peer),
+                    peer = %name::peer_name(peer),
                     "no known addresses for peer"
                 );
                 continue;
@@ -157,14 +157,14 @@ impl ForceDirectBehaviour {
 
             if direct_addresses.is_empty() {
                 warn!(
-                    peer = %peer_name(peer),
+                    peer = %name::peer_name(peer),
                     "no direct addresses for peer, cannot force direct connection"
                 );
                 continue;
             }
 
             debug!(
-                peer = %peer_name(peer),
+                peer = %name::peer_name(peer),
                 direct_addresses = ?direct_addresses,
                 "forcing direct connection to peer using {} available addresses",
                 direct_addresses.len()

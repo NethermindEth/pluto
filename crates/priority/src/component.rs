@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use chrono::Utc;
 use k256::{PublicKey, SecretKey};
 use libp2p::PeerId;
-use pluto_consensus::qbft::msg::hash_proto;
+use pluto_consensus::qbft::msg;
 use pluto_core::{
     corepb::v1::priority::{PriorityMsg, PriorityTopicProposal, PriorityTopicResult},
     deadline::{DeadlineCalculator, DeadlinerTask},
@@ -84,7 +84,7 @@ pub fn sign_msg(msg: &PriorityMsg, privkey: &SecretKey) -> Result<PriorityMsg> {
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let sig = pluto_k1util::sign(privkey, &hash).map_err(Error::Sign)?;
 
     clone.signature = sig.to_vec().into();
@@ -104,7 +104,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let recovered = pluto_k1util::recover(&hash, &msg.signature).map_err(Error::Recover)?;
 
     Ok(&recovered == pubkey)

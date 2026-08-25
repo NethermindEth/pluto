@@ -55,7 +55,7 @@ use pluto_core::{
     },
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey, SlotNumber},
 };
-use pluto_parsigex::{Handle, ReceivedSub, received_subscriber};
+use pluto_parsigex::{Handle, ReceivedSub};
 
 /// Numeric identifier for a DKG signature exchange round, encoded as
 /// `Duty.slot`.
@@ -215,7 +215,7 @@ impl Exchanger {
 
         {
             let sigdb_clone = Arc::clone(&sigdb);
-            let sub: ReceivedSub = received_subscriber(move |duty, set| {
+            let sub: ReceivedSub = pluto_parsigex::received_subscriber(move |duty, set| {
                 let sigdb = sigdb_clone.clone();
                 async move {
                     if let Err(e) = sigdb.lock().await.store_external(&duty, &set).await {

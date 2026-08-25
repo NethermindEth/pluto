@@ -11,14 +11,12 @@ use pluto_cluster::{
     definition::{Creator, Definition},
     operator::Operator,
 };
-use pluto_consensus::protocols::is_supported_protocol_name;
+use pluto_consensus::protocols;
 use pluto_eth2util::{
-    deposit::{eths_to_gweis, verify_deposit_amounts},
+    deposit,
     enr::Record,
-    helpers::{checksum_address, public_key_to_address},
-    network::{
-        GNOSIS, GOERLI, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version, valid_network,
-    },
+    helpers,
+    network::{self, GNOSIS, GOERLI, HOODI, MAINNET, PRATER, SEPOLIA},
 };
 use thiserror::Error;
 use tracing::{info, warn};
@@ -328,7 +326,7 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
     }
 
     for (i, addr) in args.operator_addresses.iter().enumerate() {
-        let checksum_addr = checksum_address(addr)
+        let checksum_addr = helpers::checksum_address(addr)
             .map_err(|source| CreateDkgError::InvalidOperatorAddress { index: i, source })?;
         operators.push(Operator {
             address: checksum_addr,
@@ -351,12 +349,12 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         args.threshold
     };
 
-    let fork_version_hex = network_to_fork_version(&args.network)?;
+    let fork_version_hex = network::network_to_fork_version(&args.network)?;
 
     let (priv_key, creator) = if args.publish {
         // Temporary creator address
         let key = SecretKey::random(&mut OsRng);
-        let addr = public_key_to_address(&key.public_key());
+        let addr = helpers::public_key_to_address(&key.public_key());
         (
             Some(key),
             Creator {
@@ -368,7 +366,7 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         (None, Creator::default())
     };
 
-    let deposit_amounts_gwei: Vec<u64> = eths_to_gweis(&args.deposit_amounts);
+    let deposit_amounts_gwei: Vec<u64> = deposit::eths_to_gweis(&args.deposit_amounts);
 
     let mut def = Definition::new(
         args.name.clone(),
@@ -430,16 +428,17 @@ fn validate_dkg_config(
         return Err(CreateDkgError::TooFewOperators { num_operators });
     }
 
-    if !valid_network(network) {
+    if !network::valid_network(network) {
         return Err(CreateDkgError::UnsupportedNetwork);
     }
 
     if !deposit_amounts.is_empty() {
-        let gweis = eths_to_gweis(deposit_amounts);
-        verify_deposit_amounts(&gweis, compounding)?;
+        let gweis = deposit::eths_to_gweis(deposit_amounts);
+        deposit::verify_deposit_amounts(&gweis, compounding)?;
     }
 
-    if !consensus_protocol.is_empty() && !is_supported_protocol_name(consensus_protocol) {
+    if !consensus_protocol.is_empty() && !protocols::is_supported_protocol_name(consensus_protocol)
+    {
         return Err(CreateDkgError::UnsupportedConsensusProtocol);
     }
 
@@ -485,7 +484,7 @@ pub fn validate_withdrawal_addrs(
     network: &str,
 ) -> Result<(), WithdrawalValidationError> {
     for addr in addrs {
-        let checksum_addr = checksum_address(addr).map_err(|e| {
+        let checksum_addr = helpers::checksum_address(addr).map_err(|e| {
             WithdrawalValidationError::InvalidWithdrawalAddress {
                 address: addr.clone(),
                 reason: e.to_string(),

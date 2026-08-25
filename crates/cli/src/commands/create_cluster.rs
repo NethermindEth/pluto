@@ -40,13 +40,12 @@ use pluto_eth2util::{
     network, registration as eth2util_registration,
 };
 use pluto_p2p::k1 as p2p_k1;
-use pluto_ssz::to_0x_hex;
 use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
     commands::{
-        address_validation::validate_addresses,
+        address_validation,
         constants::{MIN_NODES, MIN_THRESHOLD},
         create_dkg,
     },
@@ -935,7 +934,7 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         return Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile);
     }
 
-    let (fee_recipient_addrs, withdrawal_addrs) = validate_addresses(
+    let (fee_recipient_addrs, withdrawal_addrs) = address_validation::validate_addresses(
         num_validators,
         &args.fee_recipient_addrs,
         &args.withdrawal_addrs,
@@ -1201,7 +1200,7 @@ async fn load_definition(
 
         info!(
             url = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition downloaded from URL"
         );
 
@@ -1213,7 +1212,7 @@ async fn load_definition(
 
         info!(
             path = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition loaded from disk",
         );
 
@@ -2331,7 +2330,7 @@ mod tests {
     async fn multiple_addresses() {
         // "insufficient fee recipient addresses": 0 addrs for 4 validators → error
         {
-            let err = super::validate_addresses(4, &[], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(4, &[], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --fee-recipient-addresses"),
@@ -2343,7 +2342,7 @@ mod tests {
         // error
         {
             let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
-            let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --withdrawal-addresses"),

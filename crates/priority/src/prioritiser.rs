@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    calculate::calculate_result,
+    calculate,
     component::MsgVerifier,
     consensus::{Consensus, PrioritySubscriber},
     error::{Error, Result},
@@ -508,7 +508,7 @@ fn start_consensus(
     msgs: &[PriorityMsg],
     ct: &CancellationToken,
 ) -> Result<()> {
-    let result = calculate_result(msgs, inner.min_required)
+    let result = calculate::calculate_result(msgs, inner.min_required)
         .map_err(|e| Error::CalculateResult(Box::new(e)))?;
 
     let consensus = inner.consensus.clone();

@@ -18,7 +18,6 @@ use tree_hash::TreeHash;
 pub use recast::Recaster;
 
 use crate::{
-    bcast::metrics::instrument_duty,
     signeddata::{
         SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
         VersionedAttestation, VersionedSignedAggregateAndProof, VersionedSignedProposal,
@@ -303,7 +302,7 @@ impl Broadcaster {
                 tracing::warn!(%error, %duty, "Failed to compute broadcast delay");
             })
             .ok();
-        instrument_duty(&duty, delay);
+        metrics::instrument_duty(&duty, delay);
 
         Ok(())
     }

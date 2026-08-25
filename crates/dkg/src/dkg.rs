@@ -33,9 +33,7 @@ use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
-use pluto_p2p::{
-    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
-};
+use pluto_p2p::{bootnode::BootnodeError, config::P2PConfig, k1, p2p::P2PError, peer::Peer};
 use pluto_tracing::TracingConfig;
 use url::Url;
 
@@ -431,7 +429,7 @@ fn log_private_key_lock_result(
 }
 
 fn private_key_lock_path(data_dir: &path::Path) -> path::PathBuf {
-    let mut lock_path = key_path(data_dir);
+    let mut lock_path = k1::key_path(data_dir);
     let file_name = lock_path
         .file_name()
         .and_then(OsStr::to_str)

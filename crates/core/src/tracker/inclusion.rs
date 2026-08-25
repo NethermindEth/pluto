@@ -37,7 +37,7 @@ use crate::{
         Attestation, SignedAggregateAndProof, SignedDataError, VersionedAttestation,
         VersionedSignedAggregateAndProof, VersionedSignedProposal,
     },
-    tracker::{StepError, analysis::incl_supported, metrics::TRACKER_METRICS},
+    tracker::{StepError, analysis, metrics::TRACKER_METRICS},
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
 
@@ -221,7 +221,7 @@ impl InclusionCore {
         data: Box<dyn SignedData>,
         delay: Duration,
     ) -> Result<(), InclusionError> {
-        if !incl_supported(&self.feature_set).contains(&duty.duty_type) {
+        if !analysis::incl_supported(&self.feature_set).contains(&duty.duty_type) {
             return Ok(());
         }
 

@@ -29,7 +29,7 @@ pub fn key_path(data_dir: &Path) -> PathBuf {
 
 /// Loads the private key from the data dir.
 pub fn load_priv_key(data_dir: &Path) -> Result<SecretKey> {
-    pluto_k1util::load(&key_path(data_dir)).map_err(K1Error::K1UtilError)
+    pluto_k1util::load(key_path(data_dir)).map_err(K1Error::K1UtilError)
 }
 
 /// Generates a new private key and saves it to the data dir.
@@ -40,7 +40,7 @@ pub fn new_saved_priv_key(data_dir: &Path) -> Result<SecretKey> {
 
     let key = SecretKey::random(&mut OsRng);
 
-    pluto_k1util::save(&key, &key_path(data_dir)).map_err(K1Error::K1UtilError)?;
+    pluto_k1util::save(&key, key_path(data_dir)).map_err(K1Error::K1UtilError)?;
 
     Ok(key)
 }
@@ -89,7 +89,7 @@ mod tests {
 
     fn create_test_key_file(data_dir: &Path) -> Result<SecretKey> {
         let key = SecretKey::random(&mut OsRng);
-        pluto_k1util::save(&key, &key_path(data_dir))?;
+        pluto_k1util::save(&key, key_path(data_dir))?;
         Ok(key)
     }
 

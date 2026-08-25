@@ -1,6 +1,6 @@
 //! Shared serde helpers for consensus-spec JSON encoding.
 
-use pluto_ssz::serde_utils::trim_0x_prefix;
+use pluto_ssz::serde_utils;
 
 /// Error raised while converting a loosely-typed beacon-API value (whose
 /// numeric and byte fields are carried as decimal / `0x`-hex strings) into a
@@ -30,7 +30,8 @@ pub(crate) fn parse_u64(value: &str, field: &'static str) -> Result<u64, Convers
 
 /// Decodes a `0x`-prefixed (or bare) hex string into a byte vector.
 pub(crate) fn decode_hex_var(value: &str, field: &'static str) -> Result<Vec<u8>, ConversionError> {
-    hex::decode(trim_0x_prefix(value)).map_err(|_| ConversionError::DecodeHex { field })
+    hex::decode(serde_utils::trim_0x_prefix(value))
+        .map_err(|_| ConversionError::DecodeHex { field })
 }
 
 /// Decodes a `0x`-prefixed (or bare) hex string into a fixed-size byte array,

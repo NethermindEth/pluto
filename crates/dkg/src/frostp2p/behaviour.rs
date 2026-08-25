@@ -24,7 +24,7 @@ use tracing::{debug, warn};
 use super::{
     FrostP2PError, FrostP2PEvent,
     handler::{FrostP2PHandler, InEvent, OutEvent},
-    transport::validate_round1_p2p,
+    transport,
 };
 use crate::{dkgpb::v1::frost::FrostRound1P2p, frost::FrostError};
 
@@ -383,7 +383,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
         };
         match event {
             OutEvent::Received(msg) => {
-                if let Err(error) = validate_round1_p2p(
+                if let Err(error) = transport::validate_round1_p2p(
                     peer_id,
                     &self.share_idx_by_peer,
                     self.local_share_idx,

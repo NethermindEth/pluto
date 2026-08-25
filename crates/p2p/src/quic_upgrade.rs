@@ -20,7 +20,7 @@ use tokio::time::Interval;
 use tracing::{debug, info};
 
 use crate::{
-    name::peer_name,
+    name,
     p2p_context::P2PContext,
     utils::{
         filter_direct_quic_addrs, has_direct_quic_conn, has_direct_tcp_conn, is_quic_addr,
@@ -166,7 +166,7 @@ impl QuicUpgradeBehaviour {
         {
             backoff.tickers_remaining = backoff.tickers_remaining.saturating_sub(1);
             debug!(
-                peer = %peer_name(peer),
+                peer = %name::peer_name(peer),
                 remaining = backoff.tickers_remaining,
                 backoff_duration_minutes = backoff.backoff_duration,
                 "skipping QUIC upgrade due to backoff"
@@ -222,7 +222,7 @@ impl QuicUpgradeBehaviour {
 
             if conns.is_empty() {
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "no connection to peer"
                 );
                 continue;
@@ -232,7 +232,7 @@ impl QuicUpgradeBehaviour {
 
             if has_direct_quic_conn(&conn_refs) {
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "already has direct QUIC connection to peer"
                 );
 
@@ -243,7 +243,7 @@ impl QuicUpgradeBehaviour {
                     .collect();
 
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "closing {} redundant TCP connections after QUIC upgrade",
                     tcp_conn_ids.len()
                 );
@@ -254,7 +254,7 @@ impl QuicUpgradeBehaviour {
 
             if !has_direct_tcp_conn(&conn_refs) {
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "no direct connection via TCP to peer"
                 );
                 continue;
@@ -269,14 +269,14 @@ impl QuicUpgradeBehaviour {
 
             if quic_addrs.is_empty() {
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "no known QUIC addresses to peer"
                 );
                 continue;
             }
 
             info!(
-                peer = %peer_name(&peer_id),
+                peer = %name::peer_name(&peer_id),
                 quic_addrs = ?quic_addrs,
                 "trying to upgrade to QUIC connection with peer"
             );
@@ -315,13 +315,13 @@ impl QuicUpgradeBehaviour {
         {
             if is_quic_addr(addr) && !is_relay_addr(addr) {
                 info!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     addr = %addr,
                     "upgraded connection to QUIC"
                 );
 
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     "closing {} redundant TCP connections after QUIC upgrade",
                     tcp_conn_ids.len()
                 );
@@ -334,7 +334,7 @@ impl QuicUpgradeBehaviour {
                     }));
             } else {
                 debug!(
-                    peer = %peer_name(&peer_id),
+                    peer = %name::peer_name(&peer_id),
                     addr = %addr,
                     "connected via non-direct address instead of direct QUIC"
                 );
@@ -352,7 +352,7 @@ impl QuicUpgradeBehaviour {
             && self.pending_upgrades.remove(&peer_id).is_some()
         {
             info!(
-                peer = %peer_name(&peer_id),
+                peer = %name::peer_name(&peer_id),
                 "failed to connect to peer during QUIC upgrade"
             );
             self.record_failure(peer_id, "dial failed");
