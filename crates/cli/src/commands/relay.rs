@@ -1,15 +1,11 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
+    commands::common::{LICENSE, parse_relay_addrs},
     error::CliError,
 };
 use pluto_p2p::k1;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-/// Grace period given to the Loki background task to flush buffered logs
-/// once `BackgroundTaskController::shutdown` has been signalled.
-const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -25,12 +21,6 @@ pub struct RelayArgs {
 
     #[clap(flatten)]
     pub p2p: RelayP2PArgs,
-
-    #[clap(flatten)]
-    pub log: RelayLogFlags,
-
-    #[clap(flatten)]
-    pub loki: RelayLokiArgs,
 }
 
 impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
@@ -65,35 +55,6 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let loki_config = match self.loki.loki_addresses.as_slice() {
-            [] => None,
-            [loki_url, rest @ ..] => {
-                if !rest.is_empty() {
-                    // Charon fans logs out to every entry in `loki-addresses`, but
-                    // `pluto_tracing::TracingConfig` only supports a single Loki
-                    // layer today. `tracing::warn!` would be a no-op here because
-                    // no subscriber is installed yet (init happens later inside
-                    // `commands::relay::run`), so write directly to stderr.
-                    eprintln!(
-                        "warning: {extra} additional --loki-addresses ignored; only the first is used",
-                        extra = rest.len(),
-                    );
-                }
-
-                let labels =
-                    HashMap::from([("service".to_string(), self.loki.loki_service.clone())]);
-
-                Some(pluto_tracing::LokiConfig {
-                    loki_url: loki_url.clone(),
-                    labels,
-                    extra_fields: HashMap::new(),
-                })
-            }
-        };
-
-        let log_config =
-            build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
-
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
@@ -107,8 +68,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .filter_private_addrs(!self.relay.advertise_priv)
             .maybe_monitoring_addr(self.debug_monitoring.monitor_addr)
             .maybe_debug_addr(self.debug_monitoring.debug_addr)
-            .p2p_config(p2p_config)
-            .log_config(log_config);
+            .p2p_config(p2p_config);
 
         Ok(builder.build())
     }
@@ -245,99 +205,11 @@ pub struct RelayP2PArgs {
     pub disable_reuseport: bool,
 }
 
-#[derive(clap::Args, Clone)]
-pub struct RelayLogFlags {
-    #[arg(
-        long = "log-format",
-        env = "CHARON_LOG_FORMAT",
-        default_value = "console",
-        help = "Log format; console, logfmt or json"
-    )]
-    pub format: String,
-
-    #[arg(
-        long = "log-level",
-        env = "CHARON_LOG_LEVEL",
-        default_value = "info",
-        help = "Log level; debug, info, warn or error"
-    )]
-    pub level: String,
-
-    #[arg(long = "log-color", default_value = "auto", help = "Log color")]
-    pub color: ConsoleColor,
-
-    #[arg(
-        long = "log-output-path",
-        env = "CHARON_LOG_OUTPUT_PATH",
-        help = "Path in which to write on-disk logs."
-    )]
-    pub log_output_path: Option<PathBuf>,
-}
-
-#[derive(clap::Args, Clone)]
-pub struct RelayLokiArgs {
-    #[arg(
-        long = "loki-addresses",
-        env = "CHARON_LOKI_ADDRESSES",
-        value_delimiter = ',',
-        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
-    )]
-    pub loki_addresses: Vec<String>,
-
-    #[arg(
-        long = "loki-service",
-        env = "CHARON_LOKI_SERVICE",
-        default_value = "pluto",
-        help = "Service label sent with logs to Loki."
-    )]
-    pub loki_service: String,
-}
-
 pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    let loki_shutdown = match pluto_tracing::init(&config.log_config) {
-        Ok(Some(loki)) => {
-            let controller = loki.controller;
-            let handle = tokio::spawn(loki.task);
-            Some((controller, handle))
-        }
-        Ok(None) => None,
-        // In tests, the global tracing subscriber is shared across runs in the
-        // same process, so reinitializing fails. In production this would mean
-        // the relay silently uses an unrelated subscriber and Loki forwarding
-        // is dropped — fail loudly instead.
-        #[cfg(test)]
-        Err(pluto_tracing::init::Error::Init(_)) => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    // Run the relay in an inner scope so every early `?` / `return Err(..)` is
-    // captured into `result` and the Loki cleanup below always runs.
-    let result = serve_relay(&config, ct).await;
-
-    if let Err(err) = &result {
-        // Surface the shutdown reason through the subscriber so it reaches
-        // Loki before we close the worker; `main` only `eprintln!`s the
-        // returned error and that path bypasses the tracing subscriber.
-        error!(error = %err, "relay exited with error");
-    }
-
-    // Drain the Loki worker under a single budget so a hung Loki endpoint
-    // (e.g. `controller.shutdown` blocked on a full mpsc) cannot wedge
-    // process exit. After the budget elapses we hard-abort the worker.
-    if let Some((controller, handle)) = loki_shutdown {
-        let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
-            controller.shutdown().await;
-            let _ = handle.await;
-        })
-        .await;
-        abort_handle.abort();
-    }
-
-    result
+    serve_relay(&config, ct).await
 }
 
 async fn serve_relay(
@@ -424,16 +296,6 @@ mod tests {
                 udp_addrs: vec![],
                 disable_reuseport: false,
             },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: "error".into(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "pluto".into(),
-            },
         }
     }
 
@@ -503,9 +365,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = relay_args(dir.path());
 
-        // Covers the CLI entry point that the fixture bypasses: tracing init and
-        // the Loki drain. A pre-cancelled token is deterministic because the
-        // shutdown arm of the serve loop is the `biased` first branch.
+        // A pre-cancelled token is deterministic because the shutdown arm of
+        // the serve loop is the `biased` first branch.
         let ct = CancellationToken::new();
         ct.cancel();
 
@@ -749,7 +610,7 @@ mod tests {
     static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
     /// Relay arguments every test starts from: all listeners on [`ANY_ADDR`],
-    /// quiet logs, no relays to dial.
+    /// no relays to dial.
     ///
     /// `advertise_priv` is load-bearing: without it, `filter_private_addrs`
     /// drops the loopback listen addresses, and `/enr` answers 500 forever.
@@ -777,16 +638,6 @@ mod tests {
                 tcp_addrs: vec![ANY_ADDR.into()],
                 udp_addrs: vec![ANY_ADDR.into()],
                 disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: "error".into(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "".into(),
             },
         }
     }

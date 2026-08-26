@@ -1,5 +1,7 @@
 //! Shared helpers for CLI commands.
 
+use std::{collections::HashMap, path::PathBuf};
+
 use pluto_p2p::config::RelayAddr;
 use tracing::warn;
 
@@ -24,32 +26,148 @@ pub enum ConsoleColor {
     Disable,
 }
 
-/// Builds a tracing configuration for CLI commands, optionally enabling Loki.
+/// Console log verbosity, matching the levels Charon accepts.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Everything, including per-duty detail.
+    Debug,
+    /// Normal operational events.
+    #[default]
+    Info,
+    /// Only recoverable problems.
+    Warn,
+    /// Only failures.
+    Error,
+}
+
+impl LogLevel {
+    /// The `EnvFilter` directive this level maps to.
+    fn as_directive(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Logging and Loki flags, accepted by every subcommand.
 ///
-/// `loki` is `Some` when the caller wants events forwarded to a Loki endpoint
-/// (e.g. via `--loki-addresses`), and `None` for commands that only need
-/// console output.
+/// These are `global`, so they parse identically before or after the
+/// subcommand and are readable from the root [`crate::cli::Cli`] before any
+/// command-specific config conversion runs. That ordering is what lets
+/// `main` install the subscriber before validation starts.
 // TODO: wire `log-output-path` (file output) and `log-format` (logfmt/json)
 // into the tracing layers. `pluto_tracing` supports console + Loki only, so
-// `run`/`dkg`/`relay` accept these flags but do not yet apply them.
-pub fn build_console_tracing_config(
-    level: impl Into<String>,
-    color: &ConsoleColor,
-    loki: Option<pluto_tracing::LokiConfig>,
-) -> pluto_tracing::TracingConfig {
-    let mut builder = pluto_tracing::TracingConfig::builder().with_default_console();
+// these flags are accepted but not yet applied.
+#[derive(clap::Args, Clone, Debug)]
+#[command(next_help_heading = "Logging")]
+pub struct TracingArgs {
+    #[arg(
+        long = "log-format",
+        env = "CHARON_LOG_FORMAT",
+        default_value = "console",
+        global = true,
+        display_order = 1000,
+        help = "Log format; console, logfmt or json"
+    )]
+    pub log_format: String,
 
-    builder = match color {
-        ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
-        ConsoleColor::Force => builder.console_with_ansi(true),
-        ConsoleColor::Disable => builder.console_with_ansi(false),
-    };
+    #[arg(
+        long = "log-level",
+        env = "CHARON_LOG_LEVEL",
+        default_value = "info",
+        global = true,
+        display_order = 1001,
+        help = "Log level; debug, info, warn or error"
+    )]
+    pub log_level: LogLevel,
 
-    if let Some(loki) = loki {
-        builder = builder.loki(loki);
+    #[arg(
+        long = "log-color",
+        env = "CHARON_LOG_COLOR",
+        default_value = "auto",
+        global = true,
+        display_order = 1002,
+        help = "Log color; auto, force, disable."
+    )]
+    pub log_color: ConsoleColor,
+
+    #[arg(
+        long = "log-output-path",
+        env = "CHARON_LOG_OUTPUT_PATH",
+        global = true,
+        display_order = 1003,
+        help = "Path in which to write on-disk logs."
+    )]
+    pub log_output_path: Option<PathBuf>,
+
+    #[arg(
+        long = "loki-addresses",
+        env = "CHARON_LOKI_ADDRESSES",
+        value_delimiter = ',',
+        global = true,
+        display_order = 1004,
+        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
+    )]
+    pub loki_addresses: Vec<String>,
+
+    #[arg(
+        long = "loki-service",
+        env = "CHARON_LOKI_SERVICE",
+        default_value = "pluto",
+        global = true,
+        display_order = 1005,
+        help = "Service label sent with logs to Loki."
+    )]
+    pub loki_service: String,
+}
+
+impl TracingArgs {
+    /// Builds the subscriber configuration.
+    ///
+    /// Emits nothing: this runs before the subscriber exists, so any diagnostic
+    /// it produced would be dropped. Deferred warnings live in
+    /// [`TracingArgs::warn_unused`].
+    pub fn tracing_config(&self) -> pluto_tracing::TracingConfig {
+        let ansi = match self.log_color {
+            ConsoleColor::Auto => std::env::var_os("NO_COLOR").is_none(),
+            ConsoleColor::Force => true,
+            ConsoleColor::Disable => false,
+        };
+
+        let mut builder = pluto_tracing::TracingConfig::builder()
+            .with_default_console()
+            .console_with_ansi(ansi)
+            .override_env_filter(self.log_level.as_directive());
+
+        // Only the first address is used; see `warn_unused`.
+        if let Some(loki_url) = self.loki_addresses.first() {
+            builder = builder.loki(pluto_tracing::LokiConfig {
+                loki_url: loki_url.clone(),
+                labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
+                extra_fields: HashMap::new(),
+            });
+        }
+
+        builder.build()
     }
 
-    builder.override_env_filter(level.into()).build()
+    /// Reports flag values that were accepted but not applied.
+    ///
+    /// Call once the subscriber is installed.
+    pub fn warn_unused(&self) {
+        // Charon fans logs out to every entry in `loki-addresses`, but
+        // `pluto_tracing::TracingConfig` supports a single Loki layer today.
+        let ignored = self.loki_addresses.len().saturating_sub(1);
+        if ignored > 0 {
+            warn!(
+                ignored,
+                "Additional --loki-addresses ignored; only the first is used"
+            );
+        }
+    }
 }
 
 /// Parses the configured relay addresses, warning about insecure ones.

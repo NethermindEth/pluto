@@ -33,7 +33,6 @@ pluto-parsigex.workspace = true
 pluto-peerinfo.workspace = true
 pluto-frost.workspace = true
 async-trait.workspace = true
-pluto-tracing.workspace = true
 hex.workspace = true
 rand.workspace = true
 serde.workspace = true
