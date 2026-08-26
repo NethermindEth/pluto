@@ -268,7 +268,7 @@ pub enum DefinitionError {
 
     /// Failed to convert hex string
     #[error("Failed to convert hex string")]
-    FailedToConvertHexString(#[from] hex::FromHexError),
+    FailedToConvertHexString(#[from] pluto_ssz::HexDecodeError),
 
     /// Invalid target gas limit
     #[error("Invalid target gas limit: {0}")]

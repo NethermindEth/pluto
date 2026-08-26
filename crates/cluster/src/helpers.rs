@@ -11,7 +11,7 @@ use crate::{
     eip712sigs, operator,
 };
 
-pub use pluto_ssz::{from_0x_hex_str, left_pad, to_0x_hex};
+pub use pluto_ssz::{HexDecodeError, from_0x_hex_str, left_pad, to_0x_hex};
 
 /// Error type returned by `verify_sig`.
 #[derive(Debug, thiserror::Error)]

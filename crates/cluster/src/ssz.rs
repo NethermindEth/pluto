@@ -84,7 +84,7 @@ pub enum SSZError<H: HashWalker> {
 
     /// Failed to convert hex string
     #[error("Failed to convert hex string: {0}")]
-    FailedToConvertHexString(#[from] hex::FromHexError),
+    FailedToConvertHexString(#[from] pluto_ssz::HexDecodeError),
 
     /// Failed to convert timestamp
     #[error("Failed to convert timestamp")]
