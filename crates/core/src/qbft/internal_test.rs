@@ -2149,12 +2149,9 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
 }
 
 fn buffer_by_source(msgs: &[Msg<TestQbft>]) -> HashMap<i64, Vec<Msg<TestQbft>>> {
-    let mut buffer = HashMap::new();
+    let mut buffer: HashMap<i64, Vec<_>> = HashMap::new();
     for msg in msgs {
-        buffer
-            .entry(msg.source())
-            .or_insert_with(Vec::new)
-            .push(msg.clone());
+        buffer.entry(msg.source()).or_default().push(msg.clone());
     }
     buffer
 }
