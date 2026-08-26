@@ -247,7 +247,7 @@ mod tests {
     use libp2p::{relay, swarm::SwarmEvent};
     use pluto_cluster::test_cluster;
     use pluto_testutil::random::generate_insecure_k1_key;
-    use tokio::time::timeout;
+    use tokio::time;
 
     use super::*;
     use crate::{
@@ -308,7 +308,7 @@ mod tests {
             "the one configured address must be registered as a listener"
         );
 
-        timeout(Duration::from_secs(10), async {
+        time::timeout(Duration::from_secs(10), async {
             loop {
                 if let SwarmEvent::NewListenAddr { address, .. } = node.select_next_some().await {
                     return address;

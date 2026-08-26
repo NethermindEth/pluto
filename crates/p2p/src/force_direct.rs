@@ -1,7 +1,7 @@
 //! Force direct connection behaviour.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     task::{Context, Poll},
 };
@@ -34,8 +34,9 @@ pub struct ForceDirectBehaviour {
     /// Pending events to emit.
     pending_events: VecDeque<ToSwarm<ForceDirectEvent, Infallible>>,
 
-    /// Pending forcings to emit.
-    pending_forcings: HashSet<PeerId>,
+    /// Peers with a force-direct dial in flight, and the direct addresses it
+    /// was given.
+    pending_forcings: HashMap<PeerId, Vec<Multiaddr>>,
 
     /// Interval timer for running force direct logic periodically.
     ticker: Interval,
@@ -64,6 +65,8 @@ pub enum ForceDirectEvent {
     ForceDirectFailure {
         /// The peer to force direct connection to.
         peer: PeerId,
+        /// The direct addresses the failed dial was given.
+        addresses: Vec<Multiaddr>,
         /// The reason for the failure.
         reason: String,
     },
@@ -80,7 +83,7 @@ impl ForceDirectBehaviour {
             local_peer_id,
             pending_events: VecDeque::new(),
             ticker,
-            pending_forcings: HashSet::new(),
+            pending_forcings: HashMap::new(),
         }
     }
 
@@ -100,7 +103,7 @@ impl ForceDirectBehaviour {
                 continue;
             }
 
-            if self.pending_forcings.contains(peer) {
+            if self.pending_forcings.contains_key(peer) {
                 continue;
             }
 
@@ -170,7 +173,8 @@ impl ForceDirectBehaviour {
                 direct_addresses.len()
             );
 
-            self.pending_forcings.insert(*peer);
+            self.pending_forcings
+                .insert(*peer, direct_addresses.clone());
 
             self.pending_events.push_back(ToSwarm::Dial {
                 opts: DialOpts::peer_id(*peer)
@@ -187,7 +191,7 @@ impl ForceDirectBehaviour {
             libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
         };
 
-        if self.pending_forcings.contains(&event.peer_id) && utils::is_direct_addr(addr) {
+        if self.pending_forcings.contains_key(&event.peer_id) && utils::is_direct_addr(addr) {
             self.pending_forcings.remove(&event.peer_id);
             self.pending_events.push_back(ToSwarm::GenerateEvent(
                 ForceDirectEvent::ForceDirectSuccess {
@@ -202,10 +206,11 @@ impl ForceDirectBehaviour {
             return;
         };
 
-        if self.pending_forcings.remove(&peer_id) {
+        if let Some(addresses) = self.pending_forcings.remove(&peer_id) {
             self.pending_events.push_back(ToSwarm::GenerateEvent(
                 ForceDirectEvent::ForceDirectFailure {
                     peer: peer_id,
+                    addresses,
                     reason: "dial failed".to_string(),
                 },
             ));
@@ -329,22 +334,6 @@ mod tests {
         }
     }
 
-    /// The `Debug` rendering of the queued dial to `peer`. `DialOpts` keeps its
-    /// address list `pub(crate)`, so this is the only way to see which
-    /// addresses were selected.
-    fn dial_debug(behaviour: &ForceDirectBehaviour, peer: &PeerId) -> String {
-        behaviour
-            .pending_events
-            .iter()
-            .find_map(|event| match event {
-                ToSwarm::Dial { opts } if opts.get_peer_id().as_ref() == Some(peer) => {
-                    Some(format!("{opts:?}"))
-                }
-                _ => None,
-            })
-            .expect("a dial to the peer should be queued")
-    }
-
     /// The peers the queued events dial.
     fn dialled(behaviour: &ForceDirectBehaviour) -> Vec<PeerId> {
         behaviour
@@ -376,13 +365,12 @@ mod tests {
         behaviour.force_direct_connections();
 
         assert_eq!(dialled(behaviour), vec![peer]);
-        assert!(behaviour.pending_forcings.contains(&peer));
-
         // The relayed address is filtered out of the dial: forcing a direct
         // connection through the relay would be a no-op.
-        let dial = dial_debug(behaviour, &peer);
-        assert!(dial.contains("/ip4/5.6.7.8/tcp/3610"), "{dial}");
-        assert!(!dial.contains("p2p-circuit"), "{dial}");
+        assert_eq!(
+            behaviour.pending_forcings.get(&peer),
+            Some(&vec![addr("/ip4/5.6.7.8/tcp/3610")])
+        );
     }
 
     #[tokio::test]
@@ -414,7 +402,7 @@ mod tests {
             Some(vec![addr("/ip4/5.6.7.8/tcp/3610")]),
         );
 
-        behaviour.pending_forcings.insert(peer);
+        behaviour.pending_forcings.insert(peer, vec![]);
 
         behaviour.force_direct_connections();
 

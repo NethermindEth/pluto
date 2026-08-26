@@ -394,7 +394,7 @@ impl<B: NetworkBehaviour> Node<B> {
             utils::ExternalAddresses(external_addrs),
             utils::InternalAddresses(listen_addrs.to_vec()),
             filter_private_addrs,
-        )?;
+        );
 
         for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
             self.swarm.remove_external_address(&addr);

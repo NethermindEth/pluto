@@ -9,6 +9,7 @@
 //! These utilities are primarily used internally by the [`crate::p2p`] module.
 
 use std::{
+    collections::HashSet,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
@@ -118,29 +119,41 @@ pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);
 
 pub(crate) struct InternalAddresses(pub Vec<Multiaddr>);
 
-/// Filters the advertised addresses to exclude private addresses if the
-/// `exclude_internal_private` flag is set.
+/// Returns the unique external and internal addresses to advertise, in source
+/// order, optionally excluding private internal addresses.
+///
+/// External addresses are never dropped for being private: they were configured
+/// explicitly. Deduplication spans both groups, so an address listed as both
+/// external and internal is advertised once.
+///
 /// Since the type of external and internal addresses is the same, we use type
 /// wrappers to avoid confusion.
 pub(crate) fn filter_advertised_addresses(
     external_addrs: ExternalAddresses,
     internal_addrs: InternalAddresses,
     exclude_internal_private: bool,
-) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut external_addrs = external_addrs.0;
-    let mut internal_addrs = internal_addrs.0;
+) -> Vec<Multiaddr> {
+    let mut seen = HashSet::new();
+    let mut advertised = Vec::new();
 
-    external_addrs.sort();
-    internal_addrs.sort();
+    let mut add = |addrs: Vec<Multiaddr>, exclude_private: bool| {
+        for addr in addrs {
+            if !seen.insert(addr.clone()) {
+                continue;
+            }
 
-    external_addrs.dedup();
-    internal_addrs.dedup();
+            if exclude_private && addr.is_private() {
+                continue;
+            }
 
-    if exclude_internal_private {
-        internal_addrs.retain(|addr| !addr.is_private());
-    }
+            advertised.push(addr);
+        }
+    };
 
-    Ok(external_addrs.into_iter().chain(internal_addrs).collect())
+    add(external_addrs.0, false);
+    add(internal_addrs.0, exclude_internal_private);
+
+    advertised
 }
 
 /// Returns the default swarm configuration.
@@ -226,6 +239,8 @@ pub fn is_direct_addr(addr: &Multiaddr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
 
     /// Config with the external overrides under test.
@@ -355,66 +370,30 @@ mod tests {
         assert!(!has_direct_tcp_conn(&[]));
     }
 
+    const PRIV1: &str = "/ip4/192.168.1.1/tcp/80";
+    const PRIV2: &str = "/ip4/127.0.0.1/udp/123";
+    const PUB1: &str = "/ip4/1.1.1.1/tcp/80";
+
     /// Charon's `TestFilterAdvertisedAddrs` table (`p2p/p2p_internal_test.go`).
-    ///
-    /// DEVIATION: charon preserves source order and deduplicates globally
-    /// across both groups. This implementation sorts each group and
-    /// deduplicates only within it, so the two duplicate cases advertise an
-    /// address twice and in a different order. `want` is what this
-    /// implementation returns today; the inline `charon:` notes record what
-    /// upstream returns for the cases that differ.
-    #[test]
-    fn advertised_addresses_match_the_charon_table() {
-        const PRIV1: &str = "/ip4/192.168.1.1/tcp/80";
-        const PRIV2: &str = "/ip4/127.0.0.1/udp/123";
-        const PUB1: &str = "/ip4/1.1.1.1/tcp/80";
+    #[test_case(&[], &[], false, &[] ; "empty")]
+    #[test_case(&[], &[PUB1, PRIV1], true, &[PUB1] ; "drop one private")]
+    #[test_case(&[], &[PUB1, PRIV1], false, &[PUB1, PRIV1] ; "keep one private")]
+    #[test_case(&[PRIV1, PUB1], &[PUB1, PRIV1], true, &[PRIV1, PUB1] ; "duplicate public")]
+    #[test_case(&[PRIV2, PRIV1], &[PRIV1, PRIV2], false, &[PRIV2, PRIV1] ; "duplicate private")]
+    #[test_case(&[], &[PRIV1, PRIV2], true, &[] ; "drop all private")]
+    fn filters_advertised_addresses(
+        external: &[&str],
+        internal: &[&str],
+        exclude_private: bool,
+        want: &[&str],
+    ) {
+        let got = filter_advertised_addresses(
+            ExternalAddresses(external.iter().map(|a| addr(a)).collect()),
+            InternalAddresses(internal.iter().map(|a| addr(a)).collect()),
+            exclude_private,
+        );
 
-        let cases = [
-            ("empty", vec![], vec![], false, vec![]),
-            (
-                "drop one private",
-                vec![],
-                vec![PUB1, PRIV1],
-                true,
-                vec![PUB1],
-            ),
-            (
-                "keep one private",
-                vec![],
-                vec![PUB1, PRIV1],
-                false,
-                vec![PUB1, PRIV1],
-            ),
-            (
-                // charon: [PRIV1, PUB1]. An external address is never dropped
-                // for being private, but here it also survives deduplication.
-                "duplicate public",
-                vec![PRIV1, PUB1],
-                vec![PUB1, PRIV1],
-                true,
-                vec![PUB1, PRIV1, PUB1],
-            ),
-            (
-                // charon: [PRIV2, PRIV1]
-                "duplicate private",
-                vec![PRIV2, PRIV1],
-                vec![PRIV1, PRIV2],
-                false,
-                vec![PRIV2, PRIV1, PRIV2, PRIV1],
-            ),
-            ("drop all private", vec![], vec![PRIV1, PRIV2], true, vec![]),
-        ];
-
-        for (name, external, internal, exclude_private, want) in cases {
-            let got = filter_advertised_addresses(
-                ExternalAddresses(external.iter().map(|a| addr(a)).collect()),
-                InternalAddresses(internal.iter().map(|a| addr(a)).collect()),
-                exclude_private,
-            )
-            .unwrap();
-
-            assert_eq!(as_strings(&got), want, "case {name:?}");
-        }
+        assert_eq!(as_strings(&got), want);
     }
 
     #[test]

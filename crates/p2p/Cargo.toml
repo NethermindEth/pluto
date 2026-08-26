@@ -44,6 +44,7 @@ k256.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 futures.workspace = true
 wiremock.workspace = true
+test-case.workspace = true
 
 [lints]
 workspace = true
