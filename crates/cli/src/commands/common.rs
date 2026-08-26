@@ -79,6 +79,7 @@ pub struct TracingArgs {
         env = "CHARON_LOG_LEVEL",
         default_value = "info",
         global = true,
+        ignore_case = true,
         display_order = 1001,
         help = "Log level; debug, info, warn or error"
     )]
@@ -89,6 +90,7 @@ pub struct TracingArgs {
         env = "CHARON_LOG_COLOR",
         default_value = "auto",
         global = true,
+        ignore_case = true,
         display_order = 1002,
         help = "Log color; auto, force, disable."
     )]
@@ -209,6 +211,56 @@ pub fn parse_relay_addrs(relays: &[String]) -> std::result::Result<Vec<RelayAddr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Cli;
+
+    #[test]
+    fn log_flags_accept_any_casing() {
+        // Charon takes these from env as often as from the command line, where
+        // `CHARON_LOG_LEVEL=INFO` is idiomatic.
+        for level in ["debug", "DEBUG", "Debug"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-level={level}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-level={level} should parse: {err}"));
+
+            assert_eq!(
+                cli.tracing.tracing_config().override_env_filter.as_deref(),
+                Some("debug")
+            );
+        }
+
+        for color in ["disable", "DISABLE", "Disable"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-color={color}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-color={color} should parse: {err}"));
+
+            assert!(
+                !cli.tracing
+                    .tracing_config()
+                    .console
+                    .expect("console")
+                    .with_ansi
+            );
+        }
+    }
+
+    #[test]
+    fn log_level_still_rejects_values_charon_does_not_accept() {
+        // A free-form level would parse as an `EnvFilter` target directive and
+        // silently disable all logging.
+        let err =
+            match <Cli as clap::Parser>::try_parse_from(["pluto", "enr", "--log-level=nonsense"]) {
+                Ok(_) => panic!("bogus level should be rejected"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
 
     // Per-address parsing is covered by `RelayAddr`'s own tests; what is left
     // to check here is the empty-value contract and the error wrapping.
