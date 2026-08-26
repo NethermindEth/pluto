@@ -57,10 +57,6 @@ pub enum DepositError {
     #[error("Crypto error: {0}")]
     CryptoError(String),
 
-    /// Hash tree root computation error
-    #[error("Hash tree root error: {0}")]
-    HashTreeRootError(String),
-
     // File operations errors
     /// IO error
     #[error("IO error: {0}")]

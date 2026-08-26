@@ -241,7 +241,6 @@ pub(crate) async fn sign_and_agg_deposit_data(
 }
 
 /// Signs, exchanges, and aggregates validator registrations.
-#[allow(dead_code, reason = "will be used in dkg later ")]
 pub(crate) async fn sign_and_agg_validator_registrations(
     exchanger: &Exchanger,
     shares: &[Share],

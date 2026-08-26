@@ -33,7 +33,4 @@ pub enum SszBinaryError {
         /// Actual byte count.
         actual: usize,
     },
-    /// Invalid byte value for a boolean field.
-    #[error("invalid bool byte: {0}")]
-    InvalidBool(u8),
 }

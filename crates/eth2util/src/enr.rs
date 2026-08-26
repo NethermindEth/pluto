@@ -66,10 +66,6 @@ pub enum RecordError {
     /// Failed to sign the record.
     #[error("Failed to sign the record: {0}")]
     FailedToSign(pluto_k1util::K1UtilError),
-
-    /// Failed to convert the signature.
-    #[error("Failed to convert the signature: {0}")]
-    FailedToConvertSignature(std::array::TryFromSliceError),
 }
 
 /// InvalidFormatError is an error type for invalid format errors.

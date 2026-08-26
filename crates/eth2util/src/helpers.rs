@@ -19,10 +19,6 @@ pub enum HelperError {
     #[error("Invalid ethereum address: {0}")]
     InvalidAddress(String),
 
-    /// Hex decoding error
-    #[error("Invalid ethereum hex address: {0}")]
-    InvalidHexAddress(String),
-
     /// Invalid HTTP header format
     #[error("http headers must be comma separated values formatted as header=value")]
     InvalidHTTPHeader,

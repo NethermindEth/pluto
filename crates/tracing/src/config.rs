@@ -11,9 +11,6 @@ pub struct TracingConfig {
     /// console logging is enabled.
     pub console: Option<ConsoleConfig>,
 
-    /// Enables metrics logging. If not - no metrics logging is enabled.
-    pub metrics: bool,
-
     /// Overrides the environment filter. If not - the environment filter is
     /// used.
     pub override_env_filter: Option<String>,
@@ -175,18 +172,6 @@ impl TracingConfigBuilder {
             .console
             .get_or_insert_with(ConsoleConfig::default)
             .with_ansi = with_ansi;
-        self
-    }
-
-    /// Enables metrics logging.
-    pub fn with_metrics(mut self, enabled: bool) -> Self {
-        self.tracing_config.metrics = enabled;
-        self
-    }
-
-    /// Sets whether metrics logging is enabled.
-    pub fn metrics(mut self, enabled: bool) -> Self {
-        self.tracing_config.metrics = enabled;
         self
     }
 

@@ -22,7 +22,6 @@ async fn main() {
     // Initialize tracing with default console config
     let config = TracingConfig::builder()
         .with_default_console()
-        .with_metrics(true)
         .loki(LokiConfig {
             loki_url: "http://localhost:3100".to_string(),
             labels: HashMap::new(),

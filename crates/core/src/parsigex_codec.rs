@@ -37,10 +37,6 @@ pub enum ParSigExCodecError {
     #[error("invalid unsigned data set fields")]
     InvalidUnsignedDataSetFields,
 
-    /// Invalid partial signed proto.
-    #[error("invalid partial signed proto")]
-    InvalidParSignedProto,
-
     /// Invalid duty type.
     #[error("invalid duty")]
     InvalidDuty,
