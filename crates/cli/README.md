@@ -276,7 +276,7 @@ All log output goes to stderr, leaving each command's stdout free for its own da
 - `--log-level <LEVEL>`: Log level; `debug`, `info`, `warn` or `error`. (default: `info`)
 - `--log-color <COLOR>`: Log color; `auto`, `force` or `disable`. `auto` means "unless `NO_COLOR` is set", not TTY detection. (default: `auto`)
 - `--log-output-path <PATH>`: **[IGNORED]** Accepted but not yet applied — no log file is written.
-- `--loki-addresses <ADDRS>`: Enables sending of logfmt structured logs to a Loki log aggregation server, in addition to normal stderr logs. Only the first address is used; extra entries are ignored with a warning (charon fans out to every address).
+- `--loki-addresses <ADDRS>`: Enables sending of logfmt structured logs to a Loki log aggregation server, in addition to normal stderr logs. Only the first address is used; extra entries are silently ignored (charon fans out to every address).
 - `--loki-service <NAME>`: Service label sent with logs to Loki. (default: `pluto`)
 
 ## Example

@@ -36,7 +36,6 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    cli.tracing.warn_unused();
 
     let result = run(cli.command).await;
 
