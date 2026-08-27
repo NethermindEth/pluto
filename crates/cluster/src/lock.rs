@@ -159,7 +159,7 @@ pub struct Lock {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     pub signature_aggregate: Vec<u8>,
 
     /// Signatures of the lock hash for each operator
@@ -291,8 +291,7 @@ impl Lock {
 
         if self.signature_aggregate.is_empty() {
             if matches!(self.version.as_str(), V1_0 | V1_1) {
-                // Earlier versions of `charon create cluster` didn't populate
-                // SignatureAggregate.
+                // Earlier versions didn't populate SignatureAggregate.
                 return Ok(());
             }
 
@@ -375,11 +374,9 @@ impl Lock {
         let fee_recipient_addresses = self.fee_recipient_addresses();
 
         for (validator_idx, validator) in self.distributed_validators.iter().enumerate() {
-            // In Go, `noRegistration` checks `len == 0` (empty slice), which catches fields
-            // missing from JSON. The zero Ethereum address ([0;20]) is a valid
-            // fee_recipient (len=20 in Go, passes the check). Only BLS
-            // signature and pubkey can never be legitimately all-zero for a
-            // real registration.
+            // A missing registration shows up as zero-valued fields. The zero
+            // Ethereum address is a legitimate fee_recipient, so only the BLS
+            // signature and pubkey can be treated as never-legitimately-zero.
             let no_registration = validator.builder_registration.signature == EMPTY_SIGNATURE
                 || validator.builder_registration.message.pub_key == EMPTY_VALIDATOR_PUBKEY;
 
@@ -457,7 +454,7 @@ pub struct LockV1x0or1 {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     #[serde_as(as = "Base64<Standard>")]
     pub signature_aggregate: Vec<u8>,
 }
@@ -513,7 +510,7 @@ pub struct LockV1x2to5 {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 }
@@ -569,7 +566,7 @@ pub struct LockV1x6 {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 }
@@ -625,7 +622,7 @@ pub struct LockV1x7 {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 
@@ -687,7 +684,7 @@ pub struct LockV1x8orLater {
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
-    /// validators of the charon cluster they are part of.
+    /// validators of the cluster they are part of.
     #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 
@@ -733,21 +730,52 @@ impl From<LockV1x8orLater> for Lock {
 mod tests {
     use super::*;
 
-    async fn test_eth1_client() -> EthClient {
-        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+    /// The version-specific parser and the dispatching `Deserialize` must
+    /// agree, and the fixture must report the expected counts and verify.
+    fn assert_versioned_lock<V>(
+        json: &str,
+        version: &str,
+        operators: usize,
+        validators: usize,
+        node_signatures: usize,
+    ) where
+        V: serde::de::DeserializeOwned,
+        Lock: From<V>,
+    {
+        let versioned = serde_json::from_str::<V>(json)
+            .unwrap_or_else(|err| panic!("{version} parser must accept the fixture: {err}"));
+        let lock = serde_json::from_str::<Lock>(json)
+            .unwrap_or_else(|err| panic!("dispatching parser must accept {version}: {err}"));
+
+        assert_eq!(
+            Lock::from(versioned),
+            lock,
+            "dispatching parser disagrees with the {version} parser"
+        );
+
+        assert_eq!(lock.version, version);
+        assert_eq!(lock.operators.len(), operators, "operators");
+        assert_eq!(
+            lock.distributed_validators.len(),
+            validators,
+            "distributed validators"
+        );
+        assert_eq!(
+            lock.node_signatures.len(),
+            node_signatures,
+            "node signatures"
+        );
+        lock.verify_hashes().expect("hashes must verify");
     }
 
-    /// Mirrors charon's `TestExamples`: every checked-in example cluster file —
-    /// definitions *and* locks — must deserialize with the versioned parsers
-    /// and then pass `verify_hashes`/`verify_signatures`. These fixtures
-    /// exercise charon's `null`/omitempty/empty-hex shapes across the full
-    /// supported version range (v1.0 through v1.10).
+    /// Every checked-in example cluster file — definitions *and* locks — must
+    /// deserialize with the versioned parsers and then pass
+    /// `verify_hashes`/`verify_signatures`. These fixtures exercise the
+    /// `null`/omitempty/empty-hex shapes across v1.0 through v1.10.
     #[tokio::test]
     async fn parses_every_example_file() {
-        // charon's `TestExamples` passes a nil eth1 client; the noop client
-        // returned for an empty address is the equivalent (none of the example
-        // fixtures carry ERC-1271 smart-contract signatures).
-        let eth1 = EthClient::new("").await.unwrap();
+        // No example fixture carries an ERC-1271 smart-contract signature.
+        let eth1 = EthClient::Noop;
 
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/examples");
 
@@ -790,6 +818,34 @@ mod tests {
         // Guard against the glob silently matching nothing (e.g. a renamed dir).
         assert!(definitions > 0, "no example definitions found");
         assert!(locks > 0, "no example locks found");
+    }
+
+    /// Every example lock must parse from its *pristine* bytes and verify.
+    /// Named per file so a regression points at one version rather than at the
+    /// directory walk above.
+    #[test_case::test_case(include_str!("examples/cluster-lock-000.json"), V1_1, 4, 5, 0 ; "v1.1")]
+    #[test_case::test_case(include_str!("examples/cluster-lock-001.json"), V1_1, 6, 1, 0 ; "v1.1-2")]
+    #[test_case::test_case(include_str!("examples/cluster-lock-002.json"), V1_2, 4, 1, 0 ; "v1.2")]
+    #[test_case::test_case(include_str!("examples/cluster-lock-003.json"), V1_7, 4, 3, 4 ; "v1.7")]
+    #[tokio::test]
+    async fn example_lock_parses_as_is(
+        lock_json: &str,
+        version: &str,
+        operators: usize,
+        validators: usize,
+        node_signatures: usize,
+    ) {
+        let lock = serde_json::from_str::<Lock>(lock_json)
+            .unwrap_or_else(|err| panic!("pristine {version} example must parse: {err}"));
+
+        assert_eq!(lock.version, version);
+        assert_eq!(lock.operators.len(), operators);
+        assert_eq!(lock.distributed_validators.len(), validators);
+        assert_eq!(lock.node_signatures.len(), node_signatures);
+        lock.verify_hashes().expect("hashes must verify");
+        lock.verify_signatures(&EthClient::Noop)
+            .await
+            .expect("signatures must verify");
     }
 
     #[test]
@@ -985,92 +1041,123 @@ mod tests {
 
     #[test]
     fn cluster_lock_v1_10_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
-        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
-            .unwrap();
-
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x8orLater>(
+            include_str!("testdata/cluster_lock_v1_10_0.json"),
+            V1_10,
+            2,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_9_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
-        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x8orLater>(
+            include_str!("testdata/cluster_lock_v1_9_0.json"),
+            V1_9,
+            2,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_8_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
-        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x8orLater>(
+            include_str!("testdata/cluster_lock_v1_8_0.json"),
+            V1_8,
+            2,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_7_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
-        let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x7>(
+            include_str!("testdata/cluster_lock_v1_7_0.json"),
+            V1_7,
+            2,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_6_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
-        let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x6>(
+            include_str!("testdata/cluster_lock_v1_6_0.json"),
+            V1_6,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_5_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
-        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x2to5>(
+            include_str!("testdata/cluster_lock_v1_5_0.json"),
+            V1_5,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_4_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
-        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x2to5>(
+            include_str!("testdata/cluster_lock_v1_4_0.json"),
+            V1_4,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_3_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
-        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x2to5>(
+            include_str!("testdata/cluster_lock_v1_3_0.json"),
+            V1_3,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_2_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
-        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x2to5>(
+            include_str!("testdata/cluster_lock_v1_2_0.json"),
+            V1_2,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_1_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
-        let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x0or1>(
+            include_str!("testdata/cluster_lock_v1_1_0.json"),
+            V1_1,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
     fn cluster_lock_v1_0_0() {
-        let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
-        let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
-        assert!(lock.verify_hashes().is_ok());
+        assert_versioned_lock::<LockV1x0or1>(
+            include_str!("testdata/cluster_lock_v1_0_0.json"),
+            V1_0,
+            2,
+            2,
+            0,
+        );
     }
 
     #[test]
@@ -1123,7 +1210,7 @@ mod tests {
             serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_0_0.json"))
                 .unwrap();
         lock.signature_aggregate = Vec::new();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         assert!(lock.verify_signatures(&eth1).await.is_ok());
     }
@@ -1134,7 +1221,7 @@ mod tests {
             serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_2_0.json"))
                 .unwrap();
         lock.signature_aggregate = Vec::new();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = lock.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -1147,7 +1234,7 @@ mod tests {
     async fn verify_signatures_v1_7_happy_path() {
         let lock =
             serde_json::from_str::<Lock>(include_str!("examples/cluster-lock-003.json")).unwrap();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         assert!(lock.verify_signatures(&eth1).await.is_ok());
     }
@@ -1157,7 +1244,7 @@ mod tests {
         let mut lock =
             serde_json::from_str::<Lock>(include_str!("examples/cluster-lock-003.json")).unwrap();
         lock.node_signatures[0] = lock.node_signatures[1].clone();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = lock.verify_signatures(&eth1).await;
         assert!(matches!(
