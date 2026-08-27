@@ -76,15 +76,20 @@ impl fmt::Display for Status {
     }
 }
 
+/// Error returned when a string does not name a known [`Status`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("unknown status: {0}")]
+pub struct ParseStatusError(pub String);
+
 impl std::convert::TryFrom<&str> for Status {
-    type Error = String;
+    type Error = ParseStatusError;
 
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         Status::all()
             .iter()
             .find(|status| value.eq_ignore_ascii_case(status.as_str()))
             .copied()
-            .ok_or_else(|| format!("unknown status: {}", value))
+            .ok_or_else(|| ParseStatusError(value.to_string()))
     }
 }
 
@@ -178,15 +183,20 @@ impl fmt::Display for Feature {
     }
 }
 
+/// Error returned when a string does not name a known [`Feature`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("unknown feature: {0}")]
+pub struct ParseFeatureError(pub String);
+
 impl std::convert::TryFrom<&str> for Feature {
-    type Error = String;
+    type Error = ParseFeatureError;
 
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         Feature::all()
             .iter()
             .find(|feature| value.eq_ignore_ascii_case(feature.as_str()))
             .copied()
-            .ok_or_else(|| format!("unknown feature: {}", value))
+            .ok_or_else(|| ParseFeatureError(value.to_string()))
     }
 }
 
@@ -379,7 +389,11 @@ mod tests {
     fn status_try_from_rejects_unknown() {
         assert_eq!(
             Status::try_from("foo"),
-            Err("unknown status: foo".to_string())
+            Err(ParseStatusError("foo".to_string()))
+        );
+        assert_eq!(
+            Status::try_from("foo").unwrap_err().to_string(),
+            "unknown status: foo"
         );
     }
 

@@ -113,20 +113,9 @@ pub struct ValidatorInfo {
 /// returns the original error, so the tracker's reason inference — which walks
 /// `source()` looking for an `EthBeaconNodeApiClientError` — still classifies
 /// beacon-node failures correctly.
-#[derive(Debug, Clone)]
-struct SharedStepError(StepError);
-
-impl std::fmt::Display for SharedStepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for SharedStepError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&*self.0)
-    }
-}
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+struct SharedStepError(#[source] StepError);
 
 /// Splits a step result into the error to report to the tracker and the error
 /// to return to the caller, sharing one allocation between them.

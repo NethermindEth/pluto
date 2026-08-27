@@ -311,9 +311,7 @@ pub async fn run(
     let mut queued = filter_tests(&all_cases, args.test_config.test_cases.as_deref());
 
     if queued.is_empty() {
-        return Err(crate::error::CliError::Other(
-            "test case not supported".into(),
-        ));
+        return Err(crate::error::CliError::TestCaseNotSupported);
     }
     sort_tests(&mut queued);
 
