@@ -107,6 +107,8 @@ mod transport;
 
 pub(crate) use behaviour::{FrostP2PBehaviour, FrostP2PHandle, FrostP2PSender};
 pub(crate) use event::FrostP2PEvent;
+// `FrostP2P` is only referenced from the `#[cfg(test)]` integration test, so it
+// reads as unused in a non-test build; `#[expect]` would be unfulfilled there.
 #[allow(unused_imports)]
 pub(crate) use transport::{FrostP2P, new_frost_p2p};
 

@@ -255,7 +255,10 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "constructor wires together the full priority component; each argument is a distinct collaborator"
+)]
 pub fn new_component(
     peers: Vec<PeerId>,
     min_required: i64,

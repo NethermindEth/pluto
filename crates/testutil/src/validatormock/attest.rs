@@ -105,7 +105,10 @@ pub struct BeaconCommitteeSelection {
 pub struct SlotAttester {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     slot: Slot,
-    #[allow(dead_code)] // matched against duties via the active-validator map
+    #[expect(
+        dead_code,
+        reason = "matched against duties via the active-validator map"
+    )]
     pubkeys: Vec<BLSPubKey>,
     sign_func: SignFunc,
 

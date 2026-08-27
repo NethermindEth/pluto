@@ -264,7 +264,10 @@ impl SecretShare {
     /// Checks that `G * signing_share == evaluate_vss(identifier, commitment)`.
     ///
     /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468>
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "BLS12-381 group/scalar ops have no meaningful overflow semantics"
+    )]
     pub fn verify(&self) -> Result<(), FrostCoreError> {
         let f_result = G1Projective::generator() * self.signing_share.to_scalar();
         let result = evaluate_vss(self.identifier, &self.commitment);
@@ -419,7 +422,10 @@ impl PublicKeyPackage {
 /// `a_0 + a_1 * x + a_2 * x^2 + ... + a_{t-1} * x^{t-1}`.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595>
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 scalar field arithmetic wraps modulo the field order; no integer overflow"
+)]
 fn evaluate_polynomial(
     identifier: Identifier,
     coefficients: &[Scalar],
@@ -442,7 +448,10 @@ fn evaluate_polynomial(
 /// Computes `sum_{k=0}^{t-1} commitment[k] * identifier^k`.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615>
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 group/scalar arithmetic has no integer overflow semantics"
+)]
 fn evaluate_vss(
     identifier: Identifier,
     commitment: &VerifiableSecretSharingCommitment,
@@ -465,7 +474,10 @@ fn evaluate_vss(
 /// elements across all participants.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62>
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 group element addition has no integer overflow semantics"
+)]
 fn sum_commitments(
     commitments: &[&VerifiableSecretSharingCommitment],
 ) -> Result<VerifiableSecretSharingCommitment, FrostCoreError> {

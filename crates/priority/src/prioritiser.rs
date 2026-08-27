@@ -241,7 +241,10 @@ impl Prioritiser {
     /// handler and its exchange silently skipped, so the instance could
     /// otherwise reach consensus on a partial message set. Callers using this
     /// seam directly must uphold that invariant.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal constructor wires the full engine; each argument is a distinct collaborator"
+    )]
     pub fn new_internal(
         local_id: PeerId,
         peers: Vec<PeerId>,

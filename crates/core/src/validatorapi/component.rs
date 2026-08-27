@@ -187,7 +187,6 @@ pub struct Component {
     /// user-provided callback.
     subs: Vec<SubscriberFn>,
     /// Looks up an unsigned beacon proposal for a slot.
-    #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
     await_proposal_fn: Option<AwaitProposalFn>,
     /// Looks up an aggregated attestation by `(slot, attestation_root)`.
     await_agg_attestation_fn: Option<AwaitAggAttestationFn>,
@@ -2777,7 +2776,6 @@ mod tests {
         }
 
         /// A cache pre-populated with `validators`.
-        #[allow(dead_code, reason = "consumed by submit_* handler tests in later PRs")]
         pub(super) fn arc(
             validators: HashMap<ValidatorIndex, BLSPubKey>,
         ) -> Arc<dyn CachedValidatorsProvider> {

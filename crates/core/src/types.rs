@@ -819,25 +819,37 @@ pub struct Slot {
 impl Slot {
     /// Get the epoch of the slot
     pub fn epoch(&self) -> u64 {
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "saturating division cannot overflow or panic"
+        )]
         self.slot.inner().saturating_div(self.slots_per_epoch)
     }
 
     /// Returns true if this is the last slot in the epoch.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "comparison uses wrapping and saturating operations that cannot panic"
+    )]
     pub fn last_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch)
             == self.slots_per_epoch.saturating_sub(1)
     }
 
     /// Returns true if this is the first slot in the epoch.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping remainder cannot panic"
+    )]
     pub fn first_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch) == 0
     }
 
     /// Returns the next slot
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "time addition of slot_duration is bounded and cannot realistically overflow"
+    )]
     pub fn next_slot(&self) -> Slot {
         Slot {
             slot: self.slot.next(),

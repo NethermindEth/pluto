@@ -188,7 +188,10 @@ pub fn scalar_from_be(bytes: &[u8; 32]) -> Result<Scalar, KryptologyError> {
 }
 
 /// RFC 9380 Section 5.3.1 using SHA-256
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "loop bounds (ell, i) are asserted <= 255 and sizes are RFC 9380 bounded, so index arithmetic cannot overflow"
+)]
 fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
     const B_IN_BYTES: usize = 32; // SHA-256 output
     const S_IN_BYTES: usize = 64; // SHA-256 block size
@@ -317,7 +320,10 @@ fn deserialize_commitment(
 /// - `max_signers`: Total number of signers (n).
 /// - `ctx`: DKG context byte (typically 0).
 /// - `rng`: Cryptographic RNG.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 group/scalar arithmetic has no integer overflow semantics"
+)]
 pub fn round1<R: RngCore + CryptoRng>(
     id: u32,
     threshold: u16,
@@ -414,7 +420,10 @@ pub fn round1<R: RngCore + CryptoRng>(
 ///   [`Round1Bcast`].
 /// - `received_shares`: Map from source participant ID to the [`ShamirShare`]
 ///   they sent us.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "threshold/max_signers bounds are validated in round1 so -1 cannot underflow, and BLS12-381 group/scalar arithmetic has no integer overflow semantics"
+)]
 pub fn round2(
     secret: Round1Secret,
     received_bcasts: &BTreeMap<u32, Round1Bcast>,
@@ -632,7 +641,10 @@ impl BlsSignature {
     ///
     /// Returns [`KryptologyError::InsufficientSigners`] if `min_signers < 2` or
     /// fewer than `min_signers` partial signatures are provided.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "BLS12-381 scalar Lagrange arithmetic wraps modulo the field order; no integer overflow"
+    )]
     pub fn from_partial_signatures(
         min_signers: u16,
         partial_sigs: &[BlsPartialSignature],
