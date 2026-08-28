@@ -49,9 +49,6 @@ pub struct Config {
     /// Whether to filter private addresses.
     #[builder(default = false)]
     pub filter_private_addrs: bool,
-    /// LibP2PLogLevel.
-    #[builder(default = "Info".to_string())]
-    pub libp2p_log_level: String,
 }
 
 pub(crate) fn create_relay_config(config: &Config) -> relay::Config {

@@ -1,5 +1,7 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
+    commands::common::{
+        ConsoleColor, LICENSE, LogLevel, build_console_tracing_config, parse_relay_addrs,
+    },
     error::CliError,
 };
 use pluto_p2p::k1;
@@ -10,6 +12,15 @@ use tracing::{error, info};
 /// Grace period given to the Loki background task to flush buffered logs
 /// once `BackgroundTaskController::shutdown` has been signalled.
 const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
+/// prefix-matches against every `libp2p_relay::*` target.
+fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
+    match relay_level {
+        Some(level) => format!("{base},libp2p_relay={level}"),
+        None => base.to_string(),
+    }
+}
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -91,14 +102,16 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config =
-            build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
+        let log_config = build_console_tracing_config(
+            relay_filter(self.log.level, self.relay.p2p_relay_log_level),
+            &self.log.color,
+            loki_config,
+        );
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
             .auto_p2p_key(self.relay.auto_p2p_key)
-            .libp2p_log_level(self.relay.p2p_relay_log_level)
             .max_res_per_peer(self.relay.max_res_per_peer)
             .max_conns(self.relay.max_conns)
             // Invert p2p-advertise-private-addresses flag boolean:
@@ -146,10 +159,10 @@ pub struct RelayRelayArgs {
     #[arg(
         long = "p2p-relay-loglevel",
         env = "CHARON_P2P_RELAY_LOGLEVEL",
-        default_value = "",
-        help = "Libp2p circuit relay log level. E.g., debug, info, warn, error."
+        ignore_case = true,
+        help = "Libp2p circuit relay log level. Defaults to --log-level."
     )]
-    pub p2p_relay_log_level: String,
+    pub p2p_relay_log_level: Option<LogLevel>,
 
     // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is relevant for the Rust libp2p implementation
     // If so, decrease defaults after this has been addressed
@@ -259,9 +272,10 @@ pub struct RelayLogFlags {
         long = "log-level",
         env = "CHARON_LOG_LEVEL",
         default_value = "info",
-        help = "Log level; debug, info, warn or error"
+        ignore_case = true,
+        help = "Log level"
     )]
-    pub level: String,
+    pub level: LogLevel,
 
     #[arg(long = "log-color", default_value = "auto", help = "Log color")]
     pub color: ConsoleColor,
@@ -387,6 +401,7 @@ fn load_or_create_key(
 
 #[cfg(test)]
 mod tests {
+    use clap::{Parser as _, ValueEnum as _};
     use std::{
         net::{Ipv4Addr, SocketAddr},
         path::Path,
@@ -396,6 +411,10 @@ mod tests {
     };
     use tokio::{net, task::JoinHandle};
     use tokio_util::sync::CancellationToken;
+    use tracing::{Level, enabled};
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
+
+    use crate::cli::Cli;
 
     /// Args mirroring the clap defaults (notably `debug_addr: Some("")`),
     /// plus a TCP address so the baseline conversion succeeds.
@@ -407,7 +426,7 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: "127.0.0.1:3640".into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
+                p2p_relay_log_level: None,
                 max_res_per_peer: 512,
                 max_conns: 16384,
                 advertise_priv: false,
@@ -426,7 +445,7 @@ mod tests {
             },
             log: super::RelayLogFlags {
                 format: "console".into(),
-                level: "error".into(),
+                level: super::LogLevel::Error,
                 color: super::ConsoleColor::Disable,
                 log_output_path: None,
             },
@@ -761,7 +780,7 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: ANY_ADDR.into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
+                p2p_relay_log_level: None,
                 max_res_per_peer: 0,
                 max_conns: 0,
                 advertise_priv: true,
@@ -780,7 +799,7 @@ mod tests {
             },
             log: super::RelayLogFlags {
                 format: "console".into(),
-                level: "error".into(),
+                level: super::LogLevel::Error,
                 color: super::ConsoleColor::Disable,
                 log_output_path: None,
             },
@@ -924,5 +943,47 @@ mod tests {
         let listener = net::TcpListener::bind(ANY_ADDR).await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         (listener, addr)
+    }
+
+    /// Runs `f` with a subscriber that only lets `filter` through.
+    fn with_filter(filter: &str, f: impl FnOnce()) {
+        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
+    }
+
+    #[test]
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An unset relay level leaves the base filter alone.
+        with_filter(&super::relay_filter(super::LogLevel::Info, None), || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+        });
+
+        // A relay level silences the upstream relay crate but not our own logs.
+        with_filter(
+            &super::relay_filter(super::LogLevel::Info, Some(super::LogLevel::Error)),
+            || {
+                assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+                assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
+            },
+        );
+    }
+
+    #[test]
+    fn every_log_level_composes_into_a_valid_filter() {
+        for base in super::LogLevel::value_variants() {
+            for relay in super::LogLevel::value_variants() {
+                let filter = super::relay_filter(*base, Some(*relay));
+                EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
+            }
+        }
+    }
+    #[test]
+    fn unknown_log_level_is_rejected() {
+        let err = match Cli::try_parse_from(["pluto", "relay", "--p2p-relay-loglevel=fatal"]) {
+            Ok(_) => panic!("`fatal` is not an EnvFilter level"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 }
