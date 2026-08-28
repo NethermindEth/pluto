@@ -200,19 +200,12 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    serve_relay(&config, ct).await
-}
-
-async fn serve_relay(
-    config: &pluto_relay_server::config::Config,
-    ct: CancellationToken,
-) -> Result<(), CliError> {
     info!("{LICENSE}");
     info!(config = ?config);
 
-    let key = load_or_create_key(config)?;
+    let key = load_or_create_key(&config)?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
+    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
         .map_err(Into::into)
 }
