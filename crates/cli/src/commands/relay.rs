@@ -59,7 +59,6 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
             .auto_p2p_key(self.relay.auto_p2p_key)
-            .libp2p_log_level(self.relay.p2p_relay_log_level)
             .max_res_per_peer(self.relay.max_res_per_peer)
             .max_conns(self.relay.max_conns)
             // Invert p2p-advertise-private-addresses flag boolean:
@@ -102,14 +101,6 @@ pub struct RelayRelayArgs {
         help = "Automatically generate and persist a p2p key if one does not exist."
     )]
     pub auto_p2p_key: bool,
-
-    #[arg(
-        long = "p2p-relay-loglevel",
-        env = "CHARON_P2P_RELAY_LOGLEVEL",
-        default_value = "",
-        help = "Libp2p circuit relay log level. E.g., debug, info, warn, error."
-    )]
-    pub p2p_relay_log_level: String,
 
     // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is relevant for the Rust libp2p implementation
     // If so, decrease defaults after this has been addressed
@@ -279,7 +270,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: "127.0.0.1:3640".into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 512,
                 max_conns: 16384,
                 advertise_priv: false,
@@ -622,7 +612,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: ANY_ADDR.into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
                 max_conns: 0,
                 advertise_priv: true,

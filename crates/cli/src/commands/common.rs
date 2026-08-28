@@ -1,6 +1,6 @@
 //! Shared helpers for CLI commands.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, fmt, path::PathBuf};
 
 use pluto_p2p::config::RelayAddr;
 use tracing::warn;
@@ -26,29 +26,39 @@ pub enum ConsoleColor {
     Disable,
 }
 
-/// Console log verbosity, matching the levels Charon accepts.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The log levels `tracing_subscriber`'s `EnvFilter` understands.
+///
+/// `Display` renders the directive spelling, so these compose into a filter
+/// string that always parses.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {
-    /// Everything, including per-duty detail.
-    Debug,
-    /// Normal operational events.
-    #[default]
-    Info,
-    /// Only recoverable problems.
-    Warn,
-    /// Only failures.
+    Off,
     Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
 }
 
-impl LogLevel {
-    /// The `EnvFilter` directive this level maps to.
-    fn as_directive(self) -> &'static str {
-        match self {
-            Self::Debug => "debug",
-            Self::Info => "info",
-            Self::Warn => "warn",
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
             Self::Error => "error",
-        }
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        })
+    }
+}
+
+/// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
+/// prefix-matches against every `libp2p_relay::*` target.
+fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
+    match relay_level {
+        Some(level) => format!("{base},libp2p_relay={level}"),
+        None => base.to_string(),
     }
 }
 
@@ -94,7 +104,7 @@ pub struct TracingArgs {
         global = true,
         ignore_case = true,
         display_order = 1001,
-        help = "Log level; debug, info, warn or error"
+        help = "Log level"
     )]
     pub log_level: LogLevel,
 
@@ -137,6 +147,16 @@ pub struct TracingArgs {
         help = "Service label sent with logs to Loki."
     )]
     pub loki_service: String,
+
+    #[arg(
+        long = "p2p-relay-loglevel",
+        env = "CHARON_P2P_RELAY_LOGLEVEL",
+        global = true,
+        ignore_case = true,
+        display_order = 1006,
+        help = "Libp2p circuit relay log level. Defaults to --log-level."
+    )]
+    pub p2p_relay_log_level: Option<LogLevel>,
 }
 
 impl TracingArgs {
@@ -155,7 +175,7 @@ impl TracingArgs {
         let mut builder = pluto_tracing::TracingConfig::builder()
             .with_default_console()
             .console_with_ansi(ansi)
-            .override_env_filter(self.log_level.as_directive());
+            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level));
 
         // Only the first address is used; see `warn_unused`.
         if let Some(loki_url) = self.loki_addresses.first() {
@@ -225,6 +245,10 @@ pub fn parse_relay_addrs(relays: &[String]) -> std::result::Result<Vec<RelayAddr
 mod tests {
     use super::*;
     use crate::cli::Cli;
+    use clap::ValueEnum as _;
+    use std::str::FromStr as _;
+    use tracing::{Level, enabled};
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
     #[test]
     fn log_flags_accept_any_casing() {
@@ -274,8 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn log_flags_reject_values_charon_does_not_accept() {
-        for flag in ["--log-level=nonsense", "--log-format=nonsense"] {
+    fn log_flags_reject_unknown_values() {
+        for flag in [
+            "--log-level=nonsense",
+            "--log-format=nonsense",
+            "--p2p-relay-loglevel=fatal",
+        ] {
             let err = match <Cli as clap::Parser>::try_parse_from(["pluto", "enr", flag]) {
                 Ok(_) => panic!("{flag} should be rejected"),
                 Err(err) => err,
@@ -283,6 +311,54 @@ mod tests {
 
             assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
         }
+    }
+
+    /// Runs `f` with a subscriber that only lets `filter` through.
+    fn with_filter(filter: &str, f: impl FnOnce()) {
+        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
+    }
+
+    #[test]
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An unset relay level leaves the base filter alone.
+        with_filter(&relay_filter(LogLevel::Info, None), || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+        });
+
+        // A relay level silences the upstream relay crate but not our own logs.
+        with_filter(&relay_filter(LogLevel::Info, Some(LogLevel::Error)), || {
+            assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+            assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
+        });
+    }
+
+    #[test]
+    fn every_log_level_composes_into_a_valid_filter() {
+        for base in LogLevel::value_variants() {
+            for relay in LogLevel::value_variants() {
+                let filter = relay_filter(*base, Some(*relay));
+                EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn p2p_relay_loglevel_reaches_the_env_filter() {
+        // The flag is global, so it composes with `--log-level` from the root
+        // rather than from the `relay` subcommand that used to own it.
+        let cli = <Cli as clap::Parser>::try_parse_from([
+            "pluto",
+            "relay",
+            "--log-level=info",
+            "--p2p-relay-loglevel=error",
+        ])
+        .expect("relay args should parse");
+
+        assert_eq!(
+            cli.tracing.tracing_config().override_env_filter.as_deref(),
+            Some("info,libp2p_relay=error")
+        );
     }
 
     // Per-address parsing is covered by `RelayAddr`'s own tests; what is left
