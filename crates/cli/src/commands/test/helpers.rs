@@ -1,7 +1,9 @@
 //! Shared types and helper functions for all test categories.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, io::Write, path::Path, time::Duration as StdDuration};
+use std::{
+    collections::HashMap, fmt, io::Write, path::Path, sync::LazyLock, time::Duration as StdDuration,
+};
 
 use crate::{
     ascii::{append_score, get_category_ascii, get_score_ascii},
@@ -581,6 +583,22 @@ pub(crate) fn hash_ssz(data: &[u8]) -> CliResult<HashRoot> {
     Ok(hasher.hash_root()?)
 }
 
+/// Per-request timeout for diagnostic HTTP calls, so a hostile or slow endpoint
+/// cannot stall a diagnostic indefinitely.
+const DIAG_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+
+/// Returns the shared diagnostic HTTP client. One client means one connection
+/// pool, so probes keep alive instead of handshaking inside their own RTT.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(DIAG_HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_default()
+    });
+    &CLIENT
+}
+
 /// Measures the round-trip time (RTT) for an HTTP request and logs a warning if
 /// the response status code doesn't match the expected status.
 pub(crate) async fn request_rtt(
@@ -589,9 +607,7 @@ pub(crate) async fn request_rtt(
     body: Option<Vec<u8>>,
     expected_status: StatusCode,
 ) -> CliResult<StdDuration> {
-    let client = reqwest::Client::new();
-
-    let mut request_builder = client.request(method, url.as_ref());
+    let mut request_builder = http_client().request(method, url.as_ref());
 
     if let Some(body_bytes) = body {
         request_builder = request_builder

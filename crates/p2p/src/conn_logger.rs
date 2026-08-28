@@ -263,9 +263,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     // Drop cached identify addresses once the peer has no active
                     // connections and is not a known cluster peer, to bound
                     // `peer_addresses` growth.
-                    if store.connections_to_peer(&event.peer_id).is_empty()
-                        && !known.contains(&event.peer_id)
-                    {
+                    if !store.has_connection(&event.peer_id) && !known.contains(&event.peer_id) {
                         store.remove_peer_addresses(&event.peer_id);
                     }
                 }

@@ -1,12 +1,13 @@
 //! Health checks: severity, cluster metadata, the check type, the fixed list of
-//! 9 checks, and the label-pair helper.
+//! 9 checks, and their precompiled label matchers.
+
+use std::sync::LazyLock;
 
 use super::{
     checker::QueryFunc,
     error::Result,
-    model::LabelPair,
     reducers::{gauge_max, increase},
-    select::{count_labels, count_non_zero_labels, no_labels, sum_labels},
+    select::{LabelMatcher, count_labels, count_non_zero_labels, no_labels, sum_labels},
 };
 
 /// Severity of a health check.
@@ -59,13 +60,13 @@ pub(crate) struct Check {
     pub(crate) func: fn(&QueryFunc<'_>, &Metadata) -> Result<bool>,
 }
 
-/// Convenience constructor for a label pair.
-fn label(name: &str, value: &str) -> LabelPair {
-    LabelPair {
-        name: name.to_owned(),
-        value: value.to_owned(),
-    }
-}
+/// Label matchers for [`pending_validators`], compiled once.
+static PENDING_STATUS_LABELS: LazyLock<[LabelMatcher; 1]> =
+    LazyLock::new(|| [LabelMatcher::new("status", "pending")]);
+
+/// Label matchers for [`proposal_failures`], compiled once.
+static PROPOSAL_DUTY_LABELS: LazyLock<[LabelMatcher; 1]> =
+    LazyLock::new(|| [LabelMatcher::new("duty", ".*proposal")]);
 
 /// Lossy `i64` → `f64` conversion used only for threshold comparisons.
 #[allow(
@@ -78,7 +79,7 @@ fn to_f64(n: i64) -> f64 {
 
 fn high_error_log_rate(q: &QueryFunc<'_>, m: &Metadata) -> Result<bool> {
     // Allow 2 errors per validator.
-    let value = q.query("app_log_error_total", sum_labels(Vec::new()), increase)?;
+    let value = q.query("app_log_error_total", sum_labels(&[]), increase)?;
     Ok(value > 2.0 * to_f64(m.num_validators))
 }
 
@@ -87,7 +88,7 @@ fn high_warning_log_rate(q: &QueryFunc<'_>, m: &Metadata) -> Result<bool> {
     // but the warn counter is emitted as `app_log_warn_total`, so Charon's own
     // check never matches it. We query the emitted name so this check fires.
     // Allow 2 warnings per validator.
-    let value = q.query("app_log_warn_total", sum_labels(Vec::new()), increase)?;
+    let value = q.query("app_log_warn_total", sum_labels(&[]), increase)?;
     Ok(value > 2.0 * to_f64(m.num_validators))
 }
 
@@ -105,7 +106,7 @@ fn insufficient_connected_peers(q: &QueryFunc<'_>, m: &Metadata) -> Result<bool>
 fn pending_validators(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
     let max_val = q.query(
         "core_scheduler_validator_status",
-        count_labels(vec![label("status", "pending")]),
+        count_labels(&*PENDING_STATUS_LABELS),
         gauge_max,
     )?;
     Ok(max_val > 0.0)
@@ -114,32 +115,28 @@ fn pending_validators(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
 fn proposal_failures(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
     let value = q.query(
         "core_tracker_failed_duties_total",
-        sum_labels(vec![label("duty", ".*proposal")]),
+        sum_labels(&*PROPOSAL_DUTY_LABELS),
         increase,
     )?;
     Ok(value > 0.0)
 }
 
 fn high_registration_failures_rate(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
-    let value = q.query(
-        "core_bcast_recast_errors_total",
-        sum_labels(Vec::new()),
-        increase,
-    )?;
+    let value = q.query("core_bcast_recast_errors_total", sum_labels(&[]), increase)?;
     Ok(value > 0.0)
 }
 
 fn metrics_high_cardinality(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
     let max_val = q.query(
         "app_health_metrics_high_cardinality",
-        sum_labels(Vec::new()),
+        sum_labels(&[]),
         gauge_max,
     )?;
     Ok(max_val > 0.0)
 }
 
 fn using_fallback_beacon_nodes(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool> {
-    let max_val = q.query("app_eth2_using_fallback", sum_labels(Vec::new()), gauge_max)?;
+    let max_val = q.query("app_eth2_using_fallback", sum_labels(&[]), gauge_max)?;
     Ok(max_val > 0.0)
 }
 
