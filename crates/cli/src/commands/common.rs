@@ -58,10 +58,12 @@ impl LogLevel {
 /// subcommand and are readable from the root [`crate::cli::Cli`] before any
 /// command-specific config conversion runs. That ordering is what lets
 /// `main` install the subscriber before validation starts.
+// TODO: wire `log-output-path` (file output) and `log-format` (logfmt/json)
+// into the tracing layers. `pluto_tracing` supports console + Loki only, so
+// these flags are accepted but not yet applied.
 #[derive(clap::Args, Clone, Debug)]
 #[command(next_help_heading = "Logging")]
 pub struct TracingArgs {
-    // TODO: wire into the tracing layers; output is always console-formatted.
     #[arg(
         long = "log-format",
         env = "CHARON_LOG_FORMAT",
@@ -94,7 +96,6 @@ pub struct TracingArgs {
     )]
     pub log_color: ConsoleColor,
 
-    // TODO: write logs to this path; no file is written today.
     #[arg(
         long = "log-output-path",
         env = "CHARON_LOG_OUTPUT_PATH",
@@ -104,8 +105,6 @@ pub struct TracingArgs {
     )]
     pub log_output_path: Option<PathBuf>,
 
-    // TODO: fan out to every address like charon; `pluto_tracing` supports a
-    // single Loki layer, so only the first is used.
     #[arg(
         long = "loki-addresses",
         env = "CHARON_LOKI_ADDRESSES",
@@ -131,7 +130,8 @@ impl TracingArgs {
     /// Builds the subscriber configuration.
     ///
     /// Emits nothing: this runs before the subscriber exists, so any diagnostic
-    /// it produced would be dropped.
+    /// it produced would be dropped. Deferred warnings live in
+    /// [`TracingArgs::warn_unused`].
     pub fn tracing_config(&self) -> pluto_tracing::TracingConfig {
         let ansi = match self.log_color {
             ConsoleColor::Auto => std::env::var_os("NO_COLOR").is_none(),
@@ -144,6 +144,7 @@ impl TracingArgs {
             .console_with_ansi(ansi)
             .override_env_filter(self.log_level.as_directive());
 
+        // Only the first address is used; see `warn_unused`.
         if let Some(loki_url) = self.loki_addresses.first() {
             builder = builder.loki(pluto_tracing::LokiConfig {
                 loki_url: loki_url.clone(),
@@ -153,6 +154,21 @@ impl TracingArgs {
         }
 
         builder.build()
+    }
+
+    /// Reports flag values that were accepted but not applied.
+    ///
+    /// Call once the subscriber is installed.
+    pub fn warn_unused(&self) {
+        // Charon fans logs out to every entry in `loki-addresses`, but
+        // `pluto_tracing::TracingConfig` supports a single Loki layer today.
+        let ignored = self.loki_addresses.len().saturating_sub(1);
+        if ignored > 0 {
+            warn!(
+                ignored,
+                "Additional --loki-addresses ignored; only the first is used"
+            );
+        }
     }
 }
 
