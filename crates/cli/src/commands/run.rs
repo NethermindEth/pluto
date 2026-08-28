@@ -827,13 +827,6 @@ fn validate_vc_tls(cert: &str, key: &str) -> Result<()> {
 pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     info!("{LICENSE}");
 
-    run_workflow(config, ct).await
-}
-
-/// The long-running validator workflow: bridges the parsed [`RunConfig`] into
-/// [`pluto_app::node::AppConfig`] and drives the node until `ct` fires (signal
-/// handling lives in `main`).
-async fn run_workflow(config: RunConfig, ct: CancellationToken) -> Result<()> {
     let app_config = build_app_config(config)?;
     pluto_app::node::App::new(app_config).run(ct).await?;
     Ok(())
