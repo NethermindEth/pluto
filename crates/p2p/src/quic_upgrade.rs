@@ -429,3 +429,97 @@ impl NetworkBehaviour for QuicUpgradeBehaviour {
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn behaviour() -> QuicUpgradeBehaviour {
+        QuicUpgradeBehaviour::new(P2PContext::default(), PeerId::random(), true)
+    }
+
+    /// The reason carried by the queued `UpgradeFailed` event for `peer`.
+    fn failure_reason(behaviour: &QuicUpgradeBehaviour, peer: &PeerId) -> Option<String> {
+        behaviour
+            .pending_events
+            .iter()
+            .find_map(|event| match event {
+                ToSwarm::GenerateEvent(QuicUpgradeEvent::UpgradeFailed {
+                    peer: failed,
+                    reason,
+                }) if failed == peer => Some(reason.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn backoff_doubles_then_pins_at_the_cap() {
+        let mut backoff = QuicUpgradeBackoff::new();
+
+        assert_eq!(QuicUpgradeBackoff::INITIAL, 1);
+        assert_eq!(QuicUpgradeBackoff::MAX, 512);
+        assert_eq!(backoff.backoff_duration, 1);
+        assert_eq!(backoff.tickers_remaining, 1);
+
+        // Each failure doubles up to the cap and re-arms the countdown to the
+        // full new duration.
+        for want in [2, 4, 8, 16, 32, 64, 128, 256, 512, 512, 512] {
+            backoff.record_failure();
+
+            assert_eq!(backoff.backoff_duration, want);
+            assert_eq!(backoff.tickers_remaining, want);
+        }
+    }
+
+    #[tokio::test]
+    async fn should_skip_counts_the_backoff_down_then_retries() {
+        let mut behaviour = behaviour();
+        let peer = PeerId::random();
+
+        // One failure arms a two-ticker backoff, ...
+        behaviour.record_failure(peer, "dial failed");
+        assert_eq!(
+            failure_reason(&behaviour, &peer).as_deref(),
+            Some("dial failed")
+        );
+
+        // ... so the next two ticks are skipped, ...
+        assert!(behaviour.should_skip(&peer));
+        assert!(behaviour.should_skip(&peer));
+
+        // ... and every tick after that retries.
+        assert!(!behaviour.should_skip(&peer));
+        assert!(!behaviour.should_skip(&peer));
+    }
+
+    #[tokio::test]
+    async fn backoff_is_tracked_per_peer() {
+        let mut behaviour = behaviour();
+        let backing_off = PeerId::random();
+        let other = PeerId::random();
+
+        behaviour.record_failure(backing_off, "dial failed");
+
+        assert!(behaviour.should_skip(&backing_off));
+        assert!(
+            !behaviour.should_skip(&other),
+            "one peer's backoff must not delay another"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_backoff_restores_immediate_retries() {
+        let mut behaviour = behaviour();
+        let peer = PeerId::random();
+
+        behaviour.record_failure(peer, "dial failed");
+        behaviour.record_failure(peer, "dial failed");
+        assert!(behaviour.backoffs.contains_key(&peer));
+
+        // A successful upgrade drops the state entirely.
+        behaviour.clear_backoff(&peer);
+
+        assert!(!behaviour.backoffs.contains_key(&peer));
+        assert!(!behaviour.should_skip(&peer));
+    }
+}
