@@ -52,6 +52,18 @@ impl LogLevel {
     }
 }
 
+/// Log output encoding
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable, optionally colored.
+    #[default]
+    Console,
+    /// Flat `key=value` pairs.
+    Logfmt,
+    /// One JSON object per event.
+    Json,
+}
+
 /// Logging and Loki flags, accepted by every subcommand.
 ///
 /// These are `global`, so they parse identically before or after the
@@ -69,10 +81,11 @@ pub struct TracingArgs {
         env = "CHARON_LOG_FORMAT",
         default_value = "console",
         global = true,
+        ignore_case = true,
         display_order = 1000,
         help = "Log format; console, logfmt or json"
     )]
-    pub log_format: String,
+    pub log_format: LogFormat,
 
     #[arg(
         long = "log-level",
@@ -247,19 +260,29 @@ mod tests {
                     .with_ansi
             );
         }
+
+        for format in ["logfmt", "LOGFMT", "Logfmt"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-format={format}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-format={format} should parse: {err}"));
+
+            assert_eq!(cli.tracing.log_format, LogFormat::Logfmt);
+        }
     }
 
     #[test]
-    fn log_level_still_rejects_values_charon_does_not_accept() {
-        // A free-form level would parse as an `EnvFilter` target directive and
-        // silently disable all logging.
-        let err =
-            match <Cli as clap::Parser>::try_parse_from(["pluto", "enr", "--log-level=nonsense"]) {
-                Ok(_) => panic!("bogus level should be rejected"),
+    fn log_flags_reject_values_charon_does_not_accept() {
+        for flag in ["--log-level=nonsense", "--log-format=nonsense"] {
+            let err = match <Cli as clap::Parser>::try_parse_from(["pluto", "enr", flag]) {
+                Ok(_) => panic!("{flag} should be rejected"),
                 Err(err) => err,
             };
 
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+            assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        }
     }
 
     // Per-address parsing is covered by `RelayAddr`'s own tests; what is left

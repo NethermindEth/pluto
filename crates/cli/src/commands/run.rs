@@ -1041,7 +1041,7 @@ mod tests {
     use super::*;
     use crate::{
         cli::{Cli, Commands, UnsafeCommands},
-        commands::common::LogLevel,
+        commands::common::{LogFormat, LogLevel},
     };
     use clap::{CommandFactory, Parser};
     use std::{collections::BTreeSet, time::Duration as StdDuration};
@@ -1262,7 +1262,7 @@ mod tests {
 
         // Log and Loki flags are global, so they land on the root.
         assert_eq!(cli.tracing.log_level, LogLevel::Info);
-        assert_eq!(cli.tracing.log_format, "console");
+        assert_eq!(cli.tracing.log_format, LogFormat::Console);
         assert_eq!(cli.tracing.loki_service, "pluto");
         assert!(cli.tracing.loki_addresses.is_empty());
 

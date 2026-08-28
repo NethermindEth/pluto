@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     use crate::{
         cli::{Cli, Commands},
-        commands::common::LogLevel,
+        commands::common::{LogFormat, LogLevel},
     };
     use clap::Parser;
     use pluto_p2p::config::RelayAddr;
@@ -265,7 +265,7 @@ mod tests {
         let cli = Cli::try_parse_from(["pluto", "dkg"]).expect("dkg command should parse");
 
         assert_eq!(cli.tracing.log_level, LogLevel::Info);
-        assert_eq!(cli.tracing.log_format, "console");
+        assert_eq!(cli.tracing.log_format, LogFormat::Console);
 
         let Commands::Dkg(args) = cli.command else {
             panic!("expected dkg command");
@@ -370,7 +370,7 @@ mod tests {
 
         // Log flags are global, so they land on the root rather than on `dkg`.
         assert_eq!(cli.tracing.log_level, LogLevel::Debug);
-        assert_eq!(cli.tracing.log_format, "json");
+        assert_eq!(cli.tracing.log_format, LogFormat::Json);
         assert_eq!(
             cli.tracing.log_output_path.as_deref(),
             Some(Path::new("/tmp/pluto.log"))
