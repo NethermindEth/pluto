@@ -707,9 +707,9 @@ fn compare<T: QbftTypes>(
     let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<T::Compare>(1);
 
     // d.Compare has 2 roles:
-    // 1. Read from the `input_value_source_ch` (if `input_value_source` is empty).
-    //    If it read from the channel, it returns the value on `compare_value`
-    //    channel.
+    // 1. Read from the `input_value_source_ch` (if `input_value_source` is
+    //    empty). If it read from the channel, it returns the value on
+    //    `compare_value` channel.
     // 2. Compare the value read from `input_value_source_ch` (or
     //    `input_value_source` if it is not empty) to the value proposed by the
     //    leader.

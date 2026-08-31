@@ -323,8 +323,8 @@ impl Broadcaster {
         // be triggered only if:
         // - there is a charon node in the cluster at one of the above mentioned
         //   versions;
-        // - the current charon node has received partially signed attestations ONLY
-        //   from such nodes.
+        // - the current charon node has received partially signed attestations
+        //   ONLY from such nodes.
         //
         // As long as charon has received at least one partially signed
         // attestation in its threshold signatures from either:
@@ -420,10 +420,11 @@ impl Broadcaster {
     /// inline notes for the validate-first and surface-any-failure semantics.
     async fn broadcast_exits(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         // Two deliberate choices:
-        // 1. set_to_exits validates every item up front, so a wrong-typed set fails
-        //    before ANY exit is submitted (no partial submission on a bad set).
-        // 2. Submit every exit and return an error if ANY failed, so a partial failure
-        //    is always surfaced rather than masked by a later success.
+        // 1. set_to_exits validates every item up front, so a wrong-typed set
+        //    fails before ANY exit is submitted (no partial submission on a bad
+        //    set).
+        // 2. Submit every exit and return an error if ANY failed, so a partial
+        //    failure is always surfaced rather than masked by a later success.
         let mut last_error = None;
         for (pubkey, exit) in set_to_exits(set)? {
             match self.client.api().submit_voluntary_exit(exit).await {

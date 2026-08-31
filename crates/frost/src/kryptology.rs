@@ -431,8 +431,8 @@ pub fn round2(
 ) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), KryptologyError> {
     // Bounds mirror ObolNetwork/kryptology@v0.1.0 dkg_round2.go, where
     // `feldman.Limit == max_signers`:
-    // - bcast:   threshold-1 <= len <= max_signers      (may include this node's
-    //   own Round1Bcast)
+    // - bcast:   threshold-1 <= len <= max_signers      (may include this
+    //   node's own Round1Bcast)
     // - p2psend: threshold-1 <= len <= max_signers - 1  (never includes self)
     let min_received = (secret.threshold - 1) as usize;
     let bcast_max = secret.max_signers as usize;

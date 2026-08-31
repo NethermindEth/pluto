@@ -1590,7 +1590,8 @@ mod tests {
         // - Attester duties are only included in the first slot of an epoch
         //      - The paired Aggregator duties are not included either
         // - Proposer duties are only included in the first slot of an epoch
-        // - Sync-committee contribution duties are included in every slot of an epoch
+        // - Sync-committee contribution duties are included in every slot of an
+        //   epoch
         h.slot_tx
             .send(test_past_slot(slot_number, 16))
             .await
