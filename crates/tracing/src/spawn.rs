@@ -10,7 +10,7 @@
 //! into goroutines. To restore context-like propagation here, wrap the spawned
 //! future with [`tracing::Instrument`] and attach [`tracing::Span::current`].
 //!
-//! Prefer [`spawn`] over [`tokio::spawn`] in long-running components so that
+//! Prefer [`spawn()`] over [`tokio::spawn`] in long-running components so that
 //! the component's root `topic` span is inherited by its subtasks by default.
 
 use std::future::Future;
