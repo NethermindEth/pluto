@@ -1,25 +1,30 @@
 //! Failure types for the peerinfo protocol.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::sync::Arc;
 
 /// A peer info exchange failure.
 /// The difference between original `ping` implementation is that it's
 /// cloneable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Failure {
     /// The peer info request timed out, i.e., no response was received within
     /// the configured timeout.
+    #[error("PeerInfo request timeout")]
     Timeout,
     /// The peer does not support the peerinfo protocol.
+    #[error("PeerInfo protocol not supported")]
     Unsupported,
     /// The peer info response was invalid (e.g., missing required fields).
+    #[error("Invalid PeerInfo response: {reason}")]
     InvalidResponse {
         /// Description of the validation error.
         reason: String,
     },
     /// The peer info exchange failed for reasons other than a timeout.
+    #[error("PeerInfo error: {error}")]
     Other {
         /// The underlying error (wrapped in Arc for Clone).
+        #[source]
         error: Arc<dyn std::error::Error + Send + Sync + 'static>,
     },
 }
@@ -34,30 +39,6 @@ impl Failure {
     pub fn invalid_response(reason: impl Into<String>) -> Self {
         Self::InvalidResponse {
             reason: reason.into(),
-        }
-    }
-}
-
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Failure::Timeout => f.write_str("PeerInfo request timeout"),
-            Failure::Unsupported => f.write_str("PeerInfo protocol not supported"),
-            Failure::InvalidResponse { reason } => {
-                write!(f, "Invalid PeerInfo response: {reason}")
-            }
-            Failure::Other { error } => write!(f, "PeerInfo error: {error}"),
-        }
-    }
-}
-
-impl Error for Failure {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Failure::Timeout => None,
-            Failure::Unsupported => None,
-            Failure::InvalidResponse { .. } => None,
-            Failure::Other { error } => Some(&**error),
         }
     }
 }

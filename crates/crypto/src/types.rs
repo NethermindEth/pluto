@@ -84,15 +84,15 @@ pub enum Error {
     /// This error occurs when the provided bytes don't represent a valid
     /// BLS secret key (e.g., out of valid scalar field range).
     #[error("Failed to deserialize secret key: {0}")]
-    InvalidSecretKey(BlsError),
+    InvalidSecretKey(#[source] BlsError),
 
     /// Failed to deserialize a public key from bytes.
     #[error("Failed to deserialize public key: {0}")]
-    InvalidPublicKey(BlsError),
+    InvalidPublicKey(#[source] BlsError),
 
     /// Failed to deserialize a signature from bytes.
     #[error("Failed to deserialize signature: {0}")]
-    InvalidSignature(BlsError),
+    InvalidSignature(#[source] BlsError),
 
     /// The threshold value provided for threshold cryptography is invalid.
     ///
@@ -126,13 +126,13 @@ pub enum Error {
     /// an invalid signature or a mismatch between the signature, message, and
     /// public key.
     #[error("Signature verification failed: {0}")]
-    VerificationFailed(BlsError),
+    VerificationFailed(#[source] BlsError),
 
     /// Failed to aggregate signatures.
     ///
     /// This error can occur during the signature aggregation process.
     #[error("Signature aggregation failed: {0}")]
-    AggregationFailed(BlsError),
+    AggregationFailed(#[source] BlsError),
 
     /// The signature array is empty.
     ///

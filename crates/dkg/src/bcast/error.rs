@@ -47,22 +47,13 @@ impl Failure {
 }
 
 /// Peer IDs involved in an [`Error::InvalidSenderPeerIndex`] error.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("sender peer ID ({sender}) does not match claimed peer ID {expected}")]
 pub struct SenderPeerMismatch {
     /// The peer ID of the actual sender.
     pub sender: PeerId,
     /// The peer ID expected at the claimed index.
     pub expected: PeerId,
-}
-
-impl fmt::Display for SenderPeerMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "sender peer ID ({}) does not match claimed peer ID {}",
-            self.sender, self.expected
-        )
-    }
 }
 
 /// User-facing reliable-broadcast error.
