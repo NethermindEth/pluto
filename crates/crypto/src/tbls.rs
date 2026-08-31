@@ -835,4 +835,90 @@ mod tests {
         // Verify no 0-indexed key exists
         assert!(!shares.contains_key(&0), "Should not contain key 0");
     }
+
+    /// All size-`k` combinations of `items`, order-independent.
+    fn combinations<T: Copy>(items: &[T], k: usize) -> Vec<Vec<T>> {
+        if k == 0 {
+            return vec![vec![]];
+        }
+        // No combinations exist once `k` exceeds the remaining items.
+        let Some(max_start) = items.len().checked_sub(k) else {
+            return vec![];
+        };
+        let mut out = Vec::new();
+        for i in 0..=max_start {
+            let rest = &items[i.saturating_add(1)..];
+            for mut tail in combinations(rest, k.saturating_sub(1)) {
+                let mut combo = vec![items[i]];
+                combo.append(&mut tail);
+                out.push(combo);
+            }
+        }
+        out
+    }
+
+    /// Lagrange interpolation of the secret must recover the original from
+    /// *every* threshold-sized subset of shares, not just the first `threshold`
+    /// or the full set — exercising `lagrange_interpolate_secret` across many
+    /// distinct (and non-contiguous) index sets.
+    #[test]
+    fn recover_secret_from_every_threshold_subset() {
+        use rand::rngs::OsRng;
+
+        for (total, threshold) in [(4u64, 2u64), (5, 3), (6, 4), (7, 4)] {
+            let secret = generate_secret_key(OsRng).unwrap();
+            let shares = threshold_split(&secret, total, threshold).unwrap();
+            let indices: Vec<Index> = {
+                let mut ks: Vec<Index> = shares.keys().copied().collect();
+                ks.sort_unstable();
+                ks
+            };
+
+            for subset in combinations(&indices, usize::try_from(threshold).unwrap()) {
+                let picked: HashMap<Index, PrivateKey> =
+                    subset.iter().map(|idx| (*idx, shares[idx])).collect();
+                let recovered = recover_secret(&picked).unwrap();
+                assert_eq!(
+                    secret, recovered,
+                    "recovery from subset {subset:?} of (t={threshold}, n={total}) must match",
+                );
+            }
+        }
+    }
+
+    /// Lagrange interpolation of signatures (the Pippenger MSM path) must
+    /// reconstruct the group signature from *every* threshold-sized subset of
+    /// partial signatures, and it must equal the signature produced directly by
+    /// the master secret.
+    #[test]
+    fn threshold_aggregate_from_every_threshold_subset() {
+        use rand::rngs::OsRng;
+
+        let data = b"hello obol!";
+        for (total, threshold) in [(4u64, 2u64), (5, 3), (6, 4), (7, 4)] {
+            let secret = generate_secret_key(OsRng).unwrap();
+            let direct_sig = sign(&secret, data).unwrap();
+
+            let shares = threshold_split(&secret, total, threshold).unwrap();
+            let partials: HashMap<Index, Signature> = shares
+                .iter()
+                .map(|(idx, key)| (*idx, sign(key, data).unwrap()))
+                .collect();
+            let indices: Vec<Index> = {
+                let mut ks: Vec<Index> = partials.keys().copied().collect();
+                ks.sort_unstable();
+                ks
+            };
+
+            for subset in combinations(&indices, usize::try_from(threshold).unwrap()) {
+                let picked: HashMap<Index, Signature> =
+                    subset.iter().map(|idx| (*idx, partials[idx])).collect();
+                let aggregated = threshold_aggregate(&picked).unwrap();
+                assert_eq!(
+                    direct_sig, aggregated,
+                    "aggregate from subset {subset:?} of (t={threshold}, n={total}) must match direct sign",
+                );
+            }
+        }
+    }
 }
