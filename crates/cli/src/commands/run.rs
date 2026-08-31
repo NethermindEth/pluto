@@ -32,14 +32,13 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
 use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
     duration::Duration,
     error::{CliError, Result},
 };
@@ -138,7 +137,7 @@ pub struct RunGeneralArgs {
         long = "lock-file",
         env = "CHARON_LOCK_FILE",
         default_value = ".charon/cluster-lock.json",
-        help = "The path to the cluster lock file defining the distributed validator cluster. If both cluster manifest and cluster lock files are provided, the cluster manifest file takes precedence."
+        help = "The path to the cluster lock file defining the distributed validator cluster. The lock file is authoritative; the cluster manifest file is ignored (Charon #4130)."
     )]
     pub lock_file: String,
 
@@ -146,7 +145,7 @@ pub struct RunGeneralArgs {
         long = "manifest-file",
         env = "CHARON_MANIFEST_FILE",
         default_value = ".charon/cluster-manifest.pb",
-        help = "The path to the cluster manifest file. If both cluster manifest and cluster lock files are provided, the cluster manifest file takes precedence."
+        help = "The path to the cluster manifest file. This flag is retained for compatibility but is ignored: cluster manifest support was removed (Charon #4130) and the cluster lock file is authoritative."
     )]
     pub manifest_file: String,
 
@@ -648,15 +647,17 @@ pub struct RunConfig {
     pub beacon_node_timeout: StdDuration,
     /// Beacon node submission request timeout.
     pub beacon_node_submit_timeout: StdDuration,
-    /// [DISABLED] Jaeger tracing address.
-    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
-    // when set, and the field is never read again.
-    #[allow(dead_code)]
+    /// \[DISABLED\] Jaeger tracing address.
+    #[expect(
+        dead_code,
+        reason = "accepted for Charon flag parity; `RunConfig::try_from` already warns when set, and the field is never read again"
+    )]
     pub jaeger_addr: String,
-    /// [DISABLED] Jaeger tracing service name.
-    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
-    // when set, and the field is never read again.
-    #[allow(dead_code)]
+    /// \[DISABLED\] Jaeger tracing service name.
+    #[expect(
+        dead_code,
+        reason = "accepted for Charon flag parity; `RunConfig::try_from` already warns when set, and the field is never read again"
+    )]
     pub jaeger_service: String,
     /// OTLP gRPC tracing backend address.
     pub otlp_address: String,
@@ -726,23 +727,7 @@ impl TryFrom<RunArgs> for RunConfig {
         // --- p2p validation ---
         validate_hostname(p2p.external_host.as_deref())?;
 
-        let mut relays = Vec::with_capacity(p2p.relays.len());
-        for relay in &p2p.relays {
-            // Charon treats `--p2p-relays=""` as "no relays"; clap's comma parser
-            // yields a single empty string, so skip empties to match (also handles
-            // stray empties like `a,,b`).
-            if relay.is_empty() {
-                continue;
-            }
-
-            let multiaddr = parse_relay_addr(relay)?;
-
-            if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
-                warn!(address = %relay, "Insecure relay address provided, not HTTPS");
-            }
-
-            relays.push(multiaddr);
-        }
+        let relays = parse_relay_addrs(&p2p.relays)?;
 
         // --- run-level validation ---
         if general.beacon_node_endpoints.is_empty() && !general.simnet_beacon_mock {
@@ -1486,14 +1471,49 @@ mod tests {
 
     #[test]
     fn run_empty_relays_flag_yields_no_relays() {
-        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
-        // single empty string, which the bridge filters out (used by the simnet
-        // smoke test for isolated, relay-free nodes).
+        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields
+        // a single empty string, which the bridge filters out (used by
+        // the simnet smoke test for isolated, relay-free nodes).
         let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
         assert!(
             config.p2p.relays.is_empty(),
             "expected no relays, got {:?}",
             config.p2p.relays
+        );
+    }
+
+    #[test]
+    fn run_accepts_relay_urls_with_a_path() {
+        // `http://relay:3640/enr` is the form the docker-compose relay serves;
+        // the path must reach the config intact rather than being rejected or
+        // truncated by a multiaddr round-trip.
+        let cases = [
+            "http://relay:3640/enr",
+            "http://relay:3640",
+            "https://relay.example.org/enr",
+            "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs",
+        ];
+
+        for case in cases {
+            let config =
+                parse_run(&[&format!("--p2p-relays={case}")]).expect("relay should be accepted");
+
+            assert_eq!(
+                config.p2p.relays,
+                vec![case.parse().expect("relay addr")],
+                "unexpected relays for {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_rejects_invalid_relays() {
+        let err = parse_run(&["--p2p-relays=not-an-address"])
+            .expect_err("invalid relay should be rejected");
+
+        assert!(
+            err.to_string().contains("not-an-address"),
+            "unexpected error: {err}"
         );
     }
 
@@ -1820,8 +1840,8 @@ mod tests {
 
     #[test]
     fn build_app_config_resolves_hostname_validator_api_addr() {
-        // Charon accepts hostnames here, so the bridge must resolve them instead
-        // of requiring a literal IP.
+        // Charon accepts hostnames here, so the bridge must resolve them
+        // instead of requiring a literal IP.
         let config =
             app_config(&["--validator-api-address=localhost:3600"]).expect("hostname resolves");
         assert_eq!(config.validator_api_addr.port(), 3600);
@@ -1883,18 +1903,19 @@ mod tests {
 
     #[test]
     fn run_fuzz_beacon_mock_allowed_with_endpoint() {
-        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint is
-        // present; it must not additionally require `--simnet-beacon-mock`.
+        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint
+        // is present; it must not additionally require
+        // `--simnet-beacon-mock`.
         parse_run(&["--simnet-beacon-mock-fuzz"]).expect("fuzz + endpoint is valid");
     }
 
     #[test]
     fn build_app_config_registers_fully_specified_testnet() {
-        // A fully-specified `--testnet-*` config registers the custom network before
-        // the lock is loaded, so a cluster lock carrying this genesis fork
-        // version resolves during load (`verify_signatures` -> EIP-712 ->
-        // `fork_version_to_chain_id` looks it up in the supported-networks
-        // registry).
+        // A fully-specified `--testnet-*` config registers the custom network
+        // before the lock is loaded, so a cluster lock carrying this
+        // genesis fork version resolves during load
+        // (`verify_signatures` -> EIP-712 -> `fork_version_to_chain_id`
+        // looks it up in the supported-networks registry).
         let fork_version = [0x00, 0x00, 0x05, 0x31];
 
         // Not registered before the bridge runs.
@@ -1912,7 +1933,8 @@ mod tests {
         ])
         .expect("fully-specified testnet is now supported");
 
-        // Registered: the lock's fork version now resolves to the custom network.
+        // Registered: the lock's fork version now resolves to the custom
+        // network.
         assert_eq!(
             pluto_eth2util::network::fork_version_to_network(&fork_version)
                 .expect("custom fork version resolves after registration"),

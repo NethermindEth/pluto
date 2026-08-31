@@ -11,9 +11,9 @@
 //!
 //! Routing is push-based inside the individual behaviours (the QBFT p2p
 //! [`Handler`](pluto_consensus::qbft::p2p) holds an `Arc<Consensus>` and calls
-//! `consensus.handle()`; parsigex's [`Handle::subscribe`] dispatches inbound
+//! `consensus.handle()`; parsigex's `Handle::subscribe` dispatches inbound
 //! partial signatures), so the swarm drive loop body can be empty for
-//! correctness — see [`crate::node::drive_network`].
+//! correctness — see `crate::node::drive_network`.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -122,10 +122,9 @@ pub(crate) async fn wire_p2p(
 
     // TODO: also send the post-#4130 `Cluster-Uuid` header (relay-side load
     // balancing), pending in pluto-p2p's `new_relays`.
-    let relay_addrs = bootnode::relay_addrs_for_resolution(&p2p_config.relays);
     let relays = bootnode::new_relays(
         cancellation.clone(),
-        &relay_addrs,
+        &p2p_config.relays,
         &crate::utils::hex_7(&lock_hash),
     )
     .await?;
@@ -168,8 +167,9 @@ pub(crate) async fn wire_p2p(
     })?;
 
     // Peer metadata exchange. Use the Charon-compatible short git hash: Charon
-    // rejects a peer's whole peerinfo record if the git hash isn't `^[0-9a-f]{7}$`,
-    // so this always advertises a well-formed hash even in git-less builds.
+    // rejects a peer's whole peerinfo record if the git hash isn't
+    // `^[0-9a-f]{7}$`, so this always advertises a well-formed hash even in
+    // git-less builds.
     let git_hash = pluto_core::version::git_commit_hash_short();
     let peerinfo_config = peerinfo::Config::new(LocalPeerInfo::new(
         pluto_core::version::VERSION.to_string(),

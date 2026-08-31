@@ -74,7 +74,7 @@ const GIT_HASH_FALLBACK: &str = "0000000";
 /// metadata (e.g. Docker builds lacking a `.git` dir) yield `""` or `"unknown"`
 /// — both of which Charon rejects, hiding pluto peers from the cluster
 /// dashboard. This normalises whatever the build produced (lowercasing, keeping
-/// hex digits, and truncating to seven) and falls back to [`GIT_HASH_FALLBACK`]
+/// hex digits, and truncating to seven) and falls back to `GIT_HASH_FALLBACK`
 /// so pluto always advertises a well-formed hash and interoperates with Charon
 /// normally.
 pub fn git_commit_hash_short() -> String {
@@ -225,9 +225,9 @@ impl fmt::Display for SemVer {
 impl Eq for SemVer {}
 
 impl Ord for SemVer {
-    // Only major and minor versions are used for comparison, unless both self and
-    // other have patch versions, in which case the patch version is also used.
-    // Pre-release labels are ignored.
+    // Only major and minor versions are used for comparison, unless both self
+    // and other have patch versions, in which case the patch version is
+    // also used. Pre-release labels are ignored.
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         if self.major != other.major {
             if self.major < other.major {
@@ -337,7 +337,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::const_is_empty, reason = "SUPPORTED should never be empty")]
+    // SUPPORTED should never be empty; lint does not fire on all toolchains so
+    // `allow` (not `expect`) is used to avoid an unfulfilled-expectation error.
+    #[allow(clippy::const_is_empty)]
     fn multi_supported() {
         assert!(!SUPPORTED.is_empty());
     }

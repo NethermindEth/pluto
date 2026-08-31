@@ -21,7 +21,7 @@ use libp2p::{
 };
 use vise::Counter;
 
-/// Per-peer bandwidth counters injected into [`PeerBandwidthTransport`].
+/// Per-peer bandwidth counters injected into `PeerBandwidthTransport`.
 pub struct PeerConnectionMetrics {
     /// Bytes sent to the peer.
     pub sent: Counter,
@@ -242,8 +242,13 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "test code uses simple arithmetic on small known values"
+)]
 mod tests {
+    use std::task::Waker;
+
     use super::*;
 
     struct MockStream {
@@ -315,7 +320,7 @@ mod tests {
         let initial = received.get();
 
         let mut buf = [0u8; 3];
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf);
 
         assert_eq!(received.get(), initial + 3);
@@ -327,7 +332,7 @@ mod tests {
         let initial = sent.get();
 
         let data = b"hello";
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let _ = Pin::new(&mut stream).poll_write(&mut cx, data);
 
         assert_eq!(sent.get(), initial + 5);
@@ -345,7 +350,7 @@ mod tests {
         let initial_recv = received.get();
         let initial_sent = sent.get();
 
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
 
         let mut buf = [0u8; 3];
         let _ = Pin::new(&mut stream2).poll_read(&mut cx, &mut buf);

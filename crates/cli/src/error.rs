@@ -34,9 +34,15 @@ pub enum CliError {
     #[error("ENR generation failed: {0}")]
     EnrError(#[from] pluto_eth2util::enr::RecordError),
 
-    /// Invalid Multiaddr
-    #[error("Invalid multiaddr: {0}")]
-    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
+    /// Invalid relay URL or multiaddr.
+    #[error("parse relay address '{addr}': {source}")]
+    InvalidRelayAddr {
+        /// The offending relay address.
+        addr: String,
+        /// Why the address was rejected.
+        #[source]
+        source: pluto_p2p::config::RelayAddrError,
+    },
 
     /// IO error occurred.
     #[error("IO error: {0}")]

@@ -1,3 +1,4 @@
+// reason: example binary items need no doc comments
 #![allow(missing_docs)]
 //! Partial-signature exchange example.
 //!
@@ -75,7 +76,7 @@ use pluto_core::{
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode,
-    config::P2PConfig,
+    config::{P2PConfig, RelayAddr},
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -100,7 +101,9 @@ struct CombinedBehaviour {
 enum CombinedBehaviourEvent {
     ParSigEx(Event),
     Relay(relay::client::Event),
-    RelayManager(#[allow(dead_code)] RelayManagerEvent),
+    RelayManager(
+        #[expect(dead_code, reason = "variant payload unused in example")] RelayManagerEvent,
+    ),
 }
 
 impl From<Event> for CombinedBehaviourEvent {
@@ -133,7 +136,7 @@ impl From<std::convert::Infallible> for CombinedBehaviourEvent {
 struct Args {
     /// Relay URLs or multiaddrs.
     #[arg(long, value_delimiter = ',')]
-    relays: Vec<String>,
+    relays: Vec<RelayAddr>,
 
     /// Directory holding the p2p private key and cluster lock.
     #[arg(long)]

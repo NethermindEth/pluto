@@ -1,6 +1,7 @@
 //! # k1util benchmarks
 //!
 //! Benchmarks for the k1util module.
+// reason: benchmark harness items need no doc comments
 #![allow(missing_docs)]
 
 use std::hint::black_box;

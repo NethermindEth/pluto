@@ -380,9 +380,9 @@ mod tests {
     fn transaction_ssz_is_the_bare_byte_list() {
         use ssz::{Decode, Encode};
 
-        // A realistic type-3 (blob) transaction prefix: the first four bytes are
-        // not a valid container offset, which is exactly why container framing
-        // broke decoding.
+        // A realistic type-3 (blob) transaction prefix: the first four bytes
+        // are not a valid container offset, which is exactly why
+        // container framing broke decoding.
         let raw = vec![0x03, 0xf8, 0xb9, 0x83, 0xde, 0xad, 0xbe, 0xef];
         let tx = super::Transaction::from(raw.clone());
 

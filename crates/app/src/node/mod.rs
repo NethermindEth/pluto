@@ -5,14 +5,14 @@
 //!
 //! The work is split into a load phase and a wire phase:
 //!
-//! * [`run`] loads the cluster lock, P2P key, and beacon clients, constructs
-//!   the consensus component + P2P behaviours, then calls
-//!   [`wire::wire_core_workflow`].
-//! * [`wire::wire_core_workflow`] takes already-resolved inputs and produces
-//!   the wired component graph (so it is unit-testable against a `BeaconMock`).
+//! * `run` loads the cluster lock, P2P key, and beacon clients, constructs the
+//!   consensus component + P2P behaviours, then calls
+//!   `wire::wire_core_workflow`.
+//! * `wire::wire_core_workflow` takes already-resolved inputs and produces the
+//!   wired component graph (so it is unit-testable against a `BeaconMock`).
 //!
-//! Lifecycle is idiomatic tokio: long-lived tasks live in a [`JoinSet`], driven
-//! until the [`CancellationToken`] fires or the first task fails, after which
+//! Lifecycle is idiomatic tokio: long-lived tasks live in a `JoinSet`, driven
+//! until the `CancellationToken` fires or the first task fails, after which
 //! an explicit ordered shutdown runs.
 
 pub mod behaviour;
@@ -115,9 +115,9 @@ pub enum AppError {
     #[error("relays: {0}")]
     Relays(#[from] pluto_p2p::bootnode::BootnodeError),
 
-    /// QBFT consensus construction failed.
-    #[error("consensus: {0}")]
-    Consensus(#[from] qbft::Error),
+    /// Consensus controller construction failed.
+    #[error("consensus controller: {0}")]
+    ConsensusController(#[from] pluto_consensus::controller::Error),
 
     /// QBFT p2p adapter construction failed.
     #[error("consensus p2p: {0}")]
@@ -267,7 +267,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     pluto_p2p::peer::verify_p2p_key(&peers, &key)?;
 
     // Tracker view of the cluster, captured before `peers` moves into the P2P
-    // wiring. Share indices are 1-indexed, matching partial-signature share ids.
+    // wiring. Share indices are 1-indexed, matching partial-signature share
+    // ids.
     let tracker_peers: Vec<pluto_core::tracker::PeerInfo> = peers
         .iter()
         .map(|peer| pluto_core::tracker::PeerInfo {
@@ -335,13 +336,15 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     //
     // Simnet: the beacon clients target an in-process `BeaconMock` (seeded with
     // the cluster's validators) instead of a real endpoint. The mock is held
-    // for the node's lifetime; dropping it tears down its HTTP server and ticker.
+    // for the node's lifetime; dropping it tears down its HTTP server and
+    // ticker.
     //
     // TODO(#402 part B): multi-endpoint fallback over `beacon_node_addrs`;
     // `EthBeaconNodeApiClient` is single-endpoint, so only the first is used.
     let simnet_slot_duration = normalize_simnet_slot_duration(config.simnet_slot_duration);
     // Fuzz mode enables the beacon mock on its own (CLI validation still
-    // requires an endpoint or `--simnet-beacon-mock`, so fuzz alone is invalid).
+    // requires an endpoint or `--simnet-beacon-mock`, so fuzz alone is
+    // invalid).
     let simnet_beacon_mock = if config.simnet_beacon_mock || config.simnet_beacon_mock_fuzz {
         Some(
             build_simnet_beacon_mock(
@@ -355,7 +358,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     } else {
         None
     };
-    // Simnet uses the mock's URL for both the scheduling and submission clients.
+    // Simnet uses the mock's URL for both the scheduling and submission
+    // clients.
     let beacon_node_addr: String = match &simnet_beacon_mock {
         Some(mock) => mock.uri(),
         None => config
@@ -424,10 +428,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
-    // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
-    //
-    // TODO(#402 part B): wrap in ConsensusController for dynamic protocol
-    // switching (priority/infosync).
+    // ---- Consensus (controller-owned) ----
     //
     // Resolve the broadcaster<->behaviour construction cycle with the
     // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
@@ -437,7 +438,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         Arc::clone(&deadline_calc),
     );
 
-    // TODO: the `Arc<OnceLock<Handle>>` pattern is awkward; explore alternatives.
+    // TODO: the `Arc<OnceLock<Handle>>` pattern is awkward; explore
+    // alternatives.
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
     let broadcaster: qbft::Broadcaster = {
         let handle_slot = Arc::clone(&handle_slot);
@@ -453,21 +455,26 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
-    let consensus = Arc::new(qbft::Consensus::new(qbft::Config {
-        peers: qbft_peers,
-        local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
-        privkey: key.clone(),
-        deadliner: cons_deadliner,
-        expired_rx: cons_expired_rx,
-        duty_gater: Arc::clone(&duty_gater),
-        broadcaster,
-        sniffer: Arc::new(|_| {}),
-        // Charon gates duplicate-attestation comparison on the alpha
-        // `ChainSplitHalt` featureset flag (off by default).
-        compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
-        feature_set: Arc::clone(&feature_set),
-        timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
-    })?);
+    // The controller owns the default QBFT impl and the swappable wrapper the
+    // duty path runs through. QBFTv2 is the only protocol today, so no swap
+    // ever happens; the indirection is what a second protocol would hook into.
+    let consensus_controller = Arc::new(pluto_consensus::controller::ConsensusController::new(
+        pluto_consensus::controller::Config {
+            peers: qbft_peers,
+            local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
+            privkey: key.clone(),
+            deadliner: cons_deadliner,
+            expired_rx: cons_expired_rx,
+            duty_gater: Arc::clone(&duty_gater),
+            broadcaster,
+            sniffer: Arc::new(|_| {}),
+            // Charon gates duplicate-attestation comparison on the alpha
+            // `ChainSplitHalt` featureset flag (off by default).
+            compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
+            feature_set: Arc::clone(&feature_set),
+            timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
+        },
+    )?);
 
     // Full public-share map (DV root pubkey -> share index -> public share),
     // used by the parsigex verifier to check each peer's partial signature.
@@ -478,7 +485,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         key: key.clone(),
         p2p_config: config.p2p.clone(),
         peers,
-        consensus: Arc::clone(&consensus),
+        consensus: consensus_controller.default_qbft(),
         // Priority quorum = cluster signing threshold (Charon's
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
@@ -555,7 +562,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             eth2_cl,
             submission_client,
             validators,
-            consensus: Arc::clone(&consensus),
+            consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
             upstream_url,
             parsigex: parsigex_seam,
@@ -577,7 +584,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- Lifecycle: spawn long-lived tasks ----
     run_lifecycle(
         node,
-        consensus,
+        consensus_controller,
         handles,
         wired,
         priv_key_lock,
@@ -683,13 +690,13 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
 
 /// Spawns and supervises the node's long-lived tasks, then performs an ordered
 /// shutdown on cancellation or first-task failure.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "aggregates independent long-lived inputs (swarm, consensus, wired components, monitoring); a single config struct would just move the coupling"
 )]
 async fn run_lifecycle(
     node: pluto_p2p::p2p::Node<CoreBehaviour>,
-    consensus: Arc<qbft::Consensus>,
+    consensus_controller: Arc<pluto_consensus::controller::ConsensusController>,
     handles: CoreHandles,
     wired: WiredComponents,
     priv_key_lock: Option<Arc<privkeylock::Service>>,
@@ -709,8 +716,9 @@ async fn run_lifecycle(
         validator_api_router,
     } = wired;
 
-    // Self-spawning actor: consensus expired-duty pruner.
-    let _consensus_task = consensus.start(ct.clone());
+    // Self-spawning actor: consensus expired-duty pruner. Starts the default
+    // impl only; a swapped-in protocol would be started by the controller.
+    consensus_controller.start(ct.clone());
 
     // Priority state-cleanup loop; the per-epoch infosync trigger is registered
     // as a slot subscriber in `wire_core_workflow`.
@@ -720,8 +728,8 @@ async fn run_lifecycle(
 
     // TODO(#402 part B): consume the decided infosync result. Charon's
     // `wirePrioritise` swaps the duty-consensus implementation via
-    // `ConsensusController::set_current_consensus_for_protocol`; deferred because
-    // it is a no-op while QBFTv2 is the only consensus protocol.
+    // `ConsensusController::set_current_consensus_for_protocol`; deferred
+    // because it is a no-op while QBFTv2 is the only consensus protocol.
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 
@@ -867,7 +875,8 @@ async fn run_lifecycle(
 
     // ---- Ordered shutdown ----
     // Simnet validator mock: stop driving new duties and drain in-flight duty
-    // tasks first (its `Drop` only cancels best-effort, so shut down explicitly).
+    // tasks first (its `Drop` only cancels best-effort, so shut down
+    // explicitly).
     if let Some(vmock) = &vmock {
         vmock.shutdown().await;
     }
@@ -1230,8 +1239,8 @@ async fn build_simnet_validator_mock(
         })?;
     }
 
-    // Genesis fetched from the (mock) beacon client; slot config supplied by the
-    // caller (already fetched from the same client).
+    // Genesis fetched from the (mock) beacon client; slot config supplied by
+    // the caller (already fetched from the same client).
     let genesis_time = eth2_cl
         .fetch_genesis_time()
         .await
@@ -1242,9 +1251,10 @@ async fn build_simnet_validator_mock(
         slots_per_epoch,
     };
 
-    // The validator API may bind to an unspecified address (`0.0.0.0` / `[::]`);
-    // that is a bind target, not a routable dial target (connecting to it is
-    // unreliable). Dial loopback in that case, keeping the port.
+    // The validator API may bind to an unspecified address (`0.0.0.0` /
+    // `[::]`); that is a bind target, not a routable dial target
+    // (connecting to it is unreliable). Dial loopback in that case, keeping
+    // the port.
     let vapi_dial = if validator_api_addr.ip().is_unspecified() {
         let loopback = match validator_api_addr.ip() {
             std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
@@ -1275,7 +1285,8 @@ mod tests {
     #[test]
     fn simnet_slot_duration_normalizes_to_whole_seconds() {
         // Zero and sub-second both floor up to the 1s minimum (a
-        // `SECONDS_PER_SLOT` of 0 would break the consumers' slot-config parsing).
+        // `SECONDS_PER_SLOT` of 0 would break the consumers' slot-config
+        // parsing).
         assert_eq!(
             normalize_simnet_slot_duration(Duration::ZERO),
             Duration::from_secs(1)
@@ -1485,8 +1496,8 @@ mod tests {
         use pluto_eth2util::network::{CHIADO, GNOSIS};
         use pluto_featureset::{Config, Feature};
 
-        // Default config leaves GnosisBlockHotfix at alpha (off under the stable
-        // minimum), so the auto-enable is what flips it on.
+        // Default config leaves GnosisBlockHotfix at alpha (off under the
+        // stable minimum), so the auto-enable is what flips it on.
         for network in [GNOSIS, CHIADO] {
             let feature_set = resolve_feature_set(
                 &Config::default(),

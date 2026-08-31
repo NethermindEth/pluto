@@ -91,9 +91,9 @@ pub struct KeyFile {
 pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
     let mut read_dir = tokio::fs::read_dir(dir.as_ref()).await?;
     let mut set = tokio::task::JoinSet::new();
-    // Cap concurrency at LOAD_STORE_WORKERS (matching Charon's loadStoreWorkers).
-    // Acquire an owned permit *before* spawning so we never park thousands of
-    // tasks up front for a large directory.
+    // Cap concurrency at LOAD_STORE_WORKERS (matching Charon's
+    // loadStoreWorkers). Acquire an owned permit *before* spawning so we
+    // never park thousands of tasks up front for a large directory.
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(LOAD_STORE_WORKERS));
 
     while let Some(entry) = read_dir.next_entry().await? {
@@ -120,8 +120,9 @@ pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
             let password = super::store::load_password(&path).await?;
             let file_index = extract_file_index(path.to_string_lossy())?;
 
-            // `decrypt` runs scrypt/PBKDF2 (CPU- and memory-heavy); run it on the
-            // blocking pool so it never blocks an async reactor thread.
+            // `decrypt` runs scrypt/PBKDF2 (CPU- and memory-heavy); run it on
+            // the blocking pool so it never blocks an async reactor
+            // thread.
             let (private_key, path) = tokio::task::spawn_blocking(move || {
                 let key = super::store::decrypt(&store, &password)?;
                 Ok::<_, KeystoreError>((key, path))
@@ -160,9 +161,9 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         let mut json_files = Vec::new();
         let mut txt_files = Vec::new();
 
-        // Use `walkdir` for recursive directory traversal. `tokio::fs::read_dir` only
-        // reads a single directory level and does not support recursion, so we
-        // rely on this crate instead.
+        // Use `walkdir` for recursive directory traversal.
+        // `tokio::fs::read_dir` only reads a single directory level and
+        // does not support recursion, so we rely on this crate instead.
         for entry in walkdir::WalkDir::new(&dir) {
             let entry = entry
                 .map_err(|e| KeystoreError::WalkDir(format!("failed to walk directory: {e}")))?;
@@ -224,15 +225,16 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         let passwords = std::sync::Arc::clone(&passwords_map);
 
         // Acquire a permit before spawning so no more than LOAD_STORE_WORKERS
-        // blocking KDF tasks are in flight at once. `Semaphore` is never closed,
-        // so acquire cannot fail.
+        // blocking KDF tasks are in flight at once. `Semaphore` is never
+        // closed, so acquire cannot fail.
         let permit = std::sync::Arc::clone(&sem)
             .acquire_owned()
             .await
             .expect("semaphore not closed");
 
-        // `decrypt` is CPU-intensive (key derivation), so use `spawn_blocking` to avoid
-        // blocking the async runtime. The closure has no `.await` calls.
+        // `decrypt` is CPU-intensive (key derivation), so use `spawn_blocking`
+        // to avoid blocking the async runtime. The closure has no
+        // `.await` calls.
         set.spawn_blocking(move || {
             let _permit = permit; // released when this blocking task finishes
             // First try the password file that matches the keystore file.
@@ -281,6 +283,9 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
 
 /// Regex for matching keystore filenames like `keystore-0.json` or
 /// `keystore-insecure-42.json`.
+///
+/// The `.` is escaped deliberately: unescaped it is a wildcard, and
+/// `keystore-0Xjson` would count as a keystore.
 static KEYSTORE_FILE_INDEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"keystore-(?:insecure-)?([0-9]+)\.json").expect("invalid regex")
 });
@@ -312,7 +317,7 @@ pub fn extract_file_index(filename: impl AsRef<str>) -> Result<Option<usize>> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use pluto_crypto::{tbls, types::PrivateKey};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -321,8 +326,7 @@ mod tests {
 
     /// Generates a random BLS secret key for testing.
     fn generate_secret_key() -> PrivateKey {
-        let tbls = BlstImpl;
-        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+        tbls::generate_secret_key(rand::thread_rng()).unwrap()
     }
 
     /// Helper: generates a new key, stores it insecurely, then renames the
@@ -557,7 +561,8 @@ mod tests {
 
     #[tokio::test]
     async fn load_unordered_many_files_capped() {
-        // More files than LOAD_STORE_WORKERS exercises the semaphore-gated path.
+        // More files than LOAD_STORE_WORKERS exercises the semaphore-gated
+        // path.
         let dir = TempDir::new().unwrap();
         let mut expected = std::collections::HashSet::new();
         for i in 0..25usize {

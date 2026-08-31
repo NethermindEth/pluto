@@ -1,4 +1,7 @@
-#![allow(missing_docs)]
+#![expect(
+    missing_docs,
+    reason = "example binary; public items are self-explanatory"
+)]
 //! Bootnode example demonstrating relay-based P2P connectivity.
 //!
 //! This example shows how to:
@@ -39,7 +42,7 @@ use pluto_cluster::lock::Lock;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode,
-    config::P2PConfig,
+    config::{P2PConfig, RelayAddr},
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -62,7 +65,7 @@ pub struct ExampleBehaviour {
 pub struct Args {
     /// The relay URLs to use
     #[arg(long, value_delimiter = ',')]
-    relays: Vec<String>,
+    relays: Vec<RelayAddr>,
 
     /// The data directory to use
     #[arg(long)]

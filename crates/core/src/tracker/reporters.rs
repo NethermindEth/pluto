@@ -186,6 +186,7 @@ impl MetricsParticipationReporter {
             for peer in &peers {
                 let labels = (dt_str.clone(), peer.name.clone());
                 TRACKER_METRICS.participation_success_total[&labels].inc_by(0);
+                TRACKER_METRICS.participation_total[&labels].inc_by(0);
                 TRACKER_METRICS.participation_missed_total[&labels].inc_by(0);
                 TRACKER_METRICS.participation_expected_total[&labels].inc_by(0);
             }
@@ -225,6 +226,7 @@ impl MetricsParticipationReporter {
 
             let labels = (dt_str.clone(), peer.name.clone());
             TRACKER_METRICS.participation_success_total[&labels].inc_by(part as u64);
+            TRACKER_METRICS.participation_total[&labels].inc_by(part as u64);
             TRACKER_METRICS.participation_expected_total[&labels].inc_by(expected_per_peer as u64);
             TRACKER_METRICS.participation_missed_total[&labels]
                 .inc_by(expected_per_peer.saturating_sub(part) as u64);
@@ -289,10 +291,10 @@ pub fn report_par_sigs(duty: &Duty, parsigs: &ParSigsByMsg) {
     TRACKER_METRICS.inconsistent_parsigs_total[&duty.duty_type.to_string()].inc();
 
     for (pubkey, by_root) in parsigs {
-        // Intentional fix over Go: Go checks len(parsigMsgs) (the outer map, i.e.
-        // number of pubkeys) instead of the per-pubkey root count, so it
-        // silently skips logging when only one pubkey has inconsistent roots
-        // (tracker.go:851).
+        // Intentional fix over Go: Go checks len(parsigMsgs) (the outer map,
+        // i.e. number of pubkeys) instead of the per-pubkey root count,
+        // so it silently skips logging when only one pubkey has
+        // inconsistent roots (tracker.go:851).
         if by_root.len() <= 1 {
             continue;
         }
@@ -327,7 +329,10 @@ pub fn report_par_sigs(duty: &Duty, parsigs: &ParSigsByMsg) {
 mod tests {
     use super::*;
     use crate::{
-        tracker::reason::{REASON_BUG_AGGREGATION_ERROR, REASON_UNKNOWN},
+        tracker::{
+            metrics::TrackerMetrics,
+            reason::{REASON_BUG_AGGREGATION_ERROR, REASON_UNKNOWN},
+        },
         types::SlotNumber,
     };
 
@@ -347,7 +352,8 @@ mod tests {
             }),
         ));
 
-        // First Aggregator / Fetcher / ZeroAggregatorSelections failure is ignored.
+        // First Aggregator / Fetcher / ZeroAggregatorSelections failure is
+        // ignored.
         assert!(ignorer.check(
             &Duty::new_aggregator_duty(SlotNumber::new(123)),
             Some(&DutyFailure {
@@ -423,5 +429,55 @@ mod tests {
                 err: None
             }),
         ));
+    }
+
+    #[test]
+    fn participation_total_mirrors_participation_success_total() {
+        // The metric registry is process-global, so use a peer name no other
+        // test reports on.
+        let peer_name = "participation-legacy-peer".to_string();
+        let mut reporter = MetricsParticipationReporter::new(vec![PeerInfo {
+            name: peer_name.clone(),
+            share_idx: 1,
+        }]);
+
+        let duty = Duty::new_attester_duty(SlotNumber::new(1));
+        let labels = (duty.duty_type.to_string(), peer_name);
+        let legacy = || {
+            TRACKER_METRICS
+                .participation_total
+                .get(&labels)
+                .map(|c| c.get())
+        };
+        let success = || {
+            TRACKER_METRICS
+                .participation_success_total
+                .get(&labels)
+                .map(|c| c.get())
+        };
+
+        assert_eq!(legacy(), Some(0), "series must exist before the first duty");
+
+        reporter.report(&duty, false, &HashMap::from([(1, 3)]), &HashMap::new(), 4);
+
+        assert_eq!(success(), Some(3));
+        assert_eq!(legacy(), success());
+
+        // Registered standalone because `MetricsCollection::collect()` sees the
+        // globals of this crate twice in the test binary.
+        let metrics = TrackerMetrics::default();
+        metrics.participation_total[&labels].inc_by(3);
+        let mut registry = vise::Registry::empty();
+        registry.register_metrics(&metrics);
+        let mut buffer = String::new();
+        registry
+            .encode(&mut buffer, vise::Format::OpenMetricsForPrometheus)
+            .expect("encode registry");
+        assert!(
+            buffer.contains(
+                r#"core_tracker_participation_total{duty="attester",peer="participation-legacy-peer"} 3"#
+            ),
+            "exported metric name/labels changed:\n{buffer}"
+        );
     }
 }

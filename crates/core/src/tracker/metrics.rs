@@ -15,6 +15,10 @@ pub struct TrackerMetrics {
     #[metrics(labels = ["duty", "peer"])]
     pub participation_success_total: LabeledFamily<(String, String), Counter, 2>,
 
+    /// Total number of successful participations by peer and duty type.
+    #[metrics(labels = ["duty", "peer"])]
+    pub participation_total: LabeledFamily<(String, String), Counter, 2>,
+
     /// Total number of missed participations by peer and duty type.
     #[metrics(labels = ["duty", "peer"])]
     pub participation_missed_total: LabeledFamily<(String, String), Counter, 2>,

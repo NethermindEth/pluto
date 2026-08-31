@@ -1,19 +1,14 @@
 //! On-chain inclusion checking for broadcast duties.
 //!
-//! [`InclusionCore`] caches duties as they are submitted to the beacon node
+//! `InclusionCore` caches duties as they are submitted to the beacon node
 //! and, when fed observed blocks and attestations, determines whether each duty
 //! landed on-chain. For every resolved duty it invokes the tracker callback
-//! with either success or a [`InclusionError::NotIncludedOnChain`] error, and
+//! with either success or a `InclusionError::NotIncludedOnChain` error, and
 //! reports inclusion delay / missed-duty metrics.
 //!
 //! The core is deliberately free of any beacon-node I/O so it can be driven
 //! directly from tests. The networked driver that polls the beacon node and
-//! builds the [`Block`] inputs is layered on top separately.
-
-// TODO: The networked `InclusionChecker` that wires the default reporters and drives
-// this core is added in a follow-up; until then some core items (default
-// reporters, committee plumbing) have no in-crate caller.
-#![allow(dead_code)]
+//! builds the `Block` inputs is layered on top separately.
 
 use std::{
     any::Any,
@@ -182,8 +177,8 @@ pub struct InclusionCore {
 }
 
 impl InclusionCore {
-    /// Creates a core with the production reporters ([`report_missed`] and
-    /// [`report_att_inclusion`]) and the given tracker callback.
+    /// Creates a core with the production reporters (`report_missed` and
+    /// `report_att_inclusion`) and the given tracker callback.
     pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
@@ -905,7 +900,8 @@ mod tests {
         let att3 = Attestation::new(phase0_attestation(3));
         let block4 = proposal();
 
-        // Seeded into the block below; the rest are recomputed inside `submitted`.
+        // Seeded into the block below; the rest are recomputed inside
+        // `submitted`.
         let agg2_root = agg2.0.message.aggregate.data.tree_hash_root().0;
 
         core.submitted(
@@ -954,7 +950,8 @@ mod tests {
         // Attester (1, 3) and aggregator (2) report via att-included.
         assert_eq!(sorted_slots(&included), vec![1, 2, 3]);
         assert!(missed.lock().unwrap().is_empty());
-        // All four duties resolve via the tracker callback (incl. proposer 100).
+        // All four duties resolve via the tracker callback (incl. proposer
+        // 100).
         assert_eq!(sorted_slots(&resolved), vec![1, 2, 3, 100]);
     }
 

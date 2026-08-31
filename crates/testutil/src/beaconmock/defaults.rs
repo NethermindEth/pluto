@@ -43,10 +43,10 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     // `forkAtEpoch` (the last entry whose epoch <= the duty's epoch), not the
     // spec's fork keys — and they disagree on purpose. These are the Holesky
     // fork-schedule epochs: the fork is 0x03017000 (bellatrix) below epoch 256,
-    // 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from 29696 on —
-    // while the spec overrides above put electra live from epoch 2048. Both
-    // clients in a mixed cluster must resolve the same fork per slot, so keep
-    // these bytes fixed.
+    // 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from 29696 on
+    // — while the spec overrides above put electra live from epoch 2048.
+    // Both clients in a mixed cluster must resolve the same fork per slot,
+    // so keep these bytes fixed.
     mount_json(server, "GET", "/eth/v1/config/fork_schedule", |_| {
         json!({
             "data": [
@@ -86,6 +86,21 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
                 "is_syncing": false,
                 "is_optimistic": false,
                 "el_offline": false
+            }
+        })
+    })
+    .await;
+
+    // Polled once a minute by the readiness checker (`run_ready_checker`).
+    // `connected` must stay non-zero: zero peers is a readiness failure
+    // (`ReadinessError::BeaconNodeZeroPeers`). 80 matches charon's beaconmock.
+    mount_json(server, "GET", "/eth/v1/node/peer_count", |_| {
+        json!({
+            "data": {
+                "connected": "80",
+                "connecting": "0",
+                "disconnected": "0",
+                "disconnecting": "0"
             }
         })
     })
@@ -207,12 +222,12 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
-    // Block production for the fetcher's proposer-data fetch (`produce_block_v3`
-    // → GET /eth/v3/validator/blocks/{slot}). Returns a deterministic Deneb
-    // proposal (identical across nodes for a given slot, so QBFT can agree on
-    // the proposer duty). Distinct from the signed-block *retrieval* endpoint
-    // above; without it the fetcher gets `UnexpectedResponse` and the proposer
-    // duty never decides.
+    // Block production for the fetcher's proposer-data fetch
+    // (`produce_block_v3` → GET /eth/v3/validator/blocks/{slot}). Returns a
+    // deterministic Deneb proposal (identical across nodes for a given
+    // slot, so QBFT can agree on the proposer duty). Distinct from the
+    // signed-block *retrieval* endpoint above; without it the fetcher gets
+    // `UnexpectedResponse` and the proposer duty never decides.
     mount_json(
         server,
         "GET",
@@ -235,8 +250,9 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
 
     // Sync-committee submissions: the broadcaster POSTs sync-committee messages
-    // and (for aggregators) contribution-and-proofs after sync consensus. A real
-    // beacon node just acks; without these the broadcaster sees `Unknown`.
+    // and (for aggregators) contribution-and-proofs after sync consensus. A
+    // real beacon node just acks; without these the broadcaster sees
+    // `Unknown`.
     mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
     mount_status(
         server,
@@ -601,6 +617,8 @@ fn bellatrix_signed_block_response() -> Value {
 
     json!({
         "version": "bellatrix",
+        "execution_optimistic": false,
+        "finalized": false,
         "data": {
             "message": {
                 "slot": random_slot().to_string(),
@@ -778,6 +796,10 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
+    use pluto_eth2api::types::{
+        ConsensusVersion, GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest,
+        GetPeerCountResponse,
+    };
 
     #[test]
     fn default_spec_contains_load_bearing_keys() {
@@ -799,42 +821,61 @@ mod tests {
         }
     }
 
+    /// The inclusion checker consumes this endpoint through the generated
+    /// client, which requires `execution_optimistic` and `finalized` — the
+    /// beacon-API spec marks both required and non-nullable.
     #[tokio::test]
-    async fn bellatrix_signed_block_endpoint_returns_versioned_block() {
+    async fn block_endpoint_serves_a_decodable_bellatrix_block() {
         let mock = BeaconMock::builder()
             .build()
             .await
             .expect("build beacon mock");
 
-        let base = mock.uri();
-        let http = reqwest::Client::new();
+        let client = mock.client();
 
-        // The `block_id` segment is opaque to the mock; "head" exercises the
-        // path_regex match.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/head"))
-            .send()
+        // The `block_id` segment is opaque to the mock; "head" and a numeric
+        // id both exercise the path_regex match.
+        for block_id in ["head", "123"] {
+            let request = GetBlockV2Request::builder()
+                .block_id(block_id.to_string())
+                .build()
+                .expect("block request");
+
+            let response = client.get_block_v2(request).await.expect("get_block_v2");
+            let GetBlockV2Response::Ok(block) = response else {
+                panic!("expected a decoded 200 for {block_id}, got {response:?}");
+            };
+            assert_eq!(block.version, ConsensusVersion::Bellatrix);
+        }
+    }
+
+    /// The readiness checker polls this every minute and treats zero connected
+    /// peers as unready, so an unmounted route both warns and pins
+    /// `app_beacon_node_peers` to a misleading zero.
+    #[tokio::test]
+    async fn peer_count_reports_connected_peers() {
+        let mock = BeaconMock::builder()
+            .build()
             .await
-            .expect("blocks request");
-        assert_eq!(resp.status(), 200, "blocks endpoint should succeed");
+            .expect("build beacon mock");
 
-        let body: Value = resp.json().await.expect("blocks json");
-        assert_eq!(
-            body.get("version").and_then(Value::as_str),
-            Some("bellatrix"),
-            "version field should be bellatrix"
-        );
+        let client = mock.client();
+
+        let response = client
+            .get_peer_count(GetPeerCountRequest {})
+            .await
+            .expect("get_peer_count");
+        let GetPeerCountResponse::Ok(peers) = response else {
+            panic!("expected a decoded 200, got {response:?}");
+        };
+        let connected_peers: u64 = peers
+            .data
+            .connected
+            .parse()
+            .expect("connected parses as u64");
         assert!(
-            body.get("data").and_then(Value::as_object).is_some(),
-            "data field should be a JSON object"
+            connected_peers > 0,
+            "zero connected peers fails the readiness check"
         );
-
-        // Same endpoint should also match a numeric block_id.
-        let resp = http
-            .get(format!("{base}/eth/v2/beacon/blocks/123"))
-            .send()
-            .await
-            .expect("blocks request (numeric)");
-        assert_eq!(resp.status(), 200);
     }
 }

@@ -2,9 +2,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -39,24 +40,22 @@ pub enum PrivKeyLockError {
 
 type Result<T> = std::result::Result<T, PrivKeyLockError>;
 
-/// Returns the current unix timestamp in seconds.
-fn now_secs() -> u64 {
-    #[allow(clippy::unwrap_used, reason = "system clock must be after unix epoch")]
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time must be after unix epoch")
-        .as_secs()
-}
-
 /// Metadata stored in the lock file.
 #[derive(Debug, Serialize, Deserialize)]
 struct Metadata {
     command: String,
-    timestamp: u64,
+    timestamp: DateTime<Utc>,
+}
+
+/// Reports whether a lock file written at `timestamp` is stale at `now`.
+fn is_stale(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    now.signed_duration_since(timestamp)
+        .to_std()
+        .is_ok_and(|elapsed| elapsed > STALE_DURATION)
 }
 
 /// Creates or updates the lock file with the latest metadata.
-async fn write_file(path: &Path, command: &str, now: u64) -> Result<()> {
+async fn write_file(path: &Path, command: &str, now: DateTime<Utc>) -> Result<()> {
     let meta = Metadata {
         command: command.to_owned(),
         timestamp: now,
@@ -95,9 +94,7 @@ impl Service {
             Ok(content) => {
                 let meta: Metadata = serde_json::from_slice(&content)?;
 
-                let elapsed = now_secs().saturating_sub(meta.timestamp);
-
-                if elapsed <= STALE_DURATION.as_secs() {
+                if !is_stale(meta.timestamp, Utc::now()) {
                     return Err(PrivKeyLockError::ActiveLock {
                         path: path.clone(),
                         command: meta.command,
@@ -106,7 +103,7 @@ impl Service {
             }
         }
 
-        write_file(&path, &command, now_secs()).await?;
+        write_file(&path, &command, Utc::now()).await?;
 
         Ok(Self {
             command,
@@ -137,7 +134,7 @@ impl Service {
                     return Ok(());
                 }
                 _ = interval.tick() => {
-                    write_file(&self.path, &self.command, now_secs()).await?;
+                    write_file(&self.path, &self.command, Utc::now()).await?;
                 }
             }
         }
@@ -156,17 +153,91 @@ impl Service {
 mod tests {
     use super::*;
 
+    use chrono::{FixedOffset, SecondsFormat, TimeDelta};
     use std::path::PathBuf;
+
+    /// A lock file exactly as charon writes it.
+    const CHARON_LOCK_FILE: &str =
+        r#"{"command":"charon run","timestamp":"2026-08-12T10:15:30.123456789Z"}"#;
+
+    /// The charon lock file re-stamped with `now`, so it reads as a live lock.
+    ///
+    /// Stamped in a zone two hours behind UTC, as charon does outside UTC.
+    /// Ignoring the offset would backdate the lock past [`STALE_DURATION`].
+    fn charon_lock_file_at(now: DateTime<Utc>) -> String {
+        let zone = FixedOffset::west_opt(7_200).expect("valid offset");
+
+        format!(
+            r#"{{"command":"charon run","timestamp":"{}"}}"#,
+            now.with_timezone(&zone)
+                .to_rfc3339_opts(SecondsFormat::Nanos, false)
+        )
+    }
+
+    /// Returns a timestamp aged [`STALE_DURATION`] plus `offset_ms` at `now`.
+    fn aged_around_threshold(now: DateTime<Utc>, offset_ms: i64) -> DateTime<Utc> {
+        let stale_ms =
+            i64::try_from(STALE_DURATION.as_millis()).expect("stale duration in i64 range");
+        let age = TimeDelta::milliseconds(stale_ms.checked_add(offset_ms).expect("age in range"));
+
+        now.checked_sub_signed(age).expect("timestamp in range")
+    }
+
+    #[test]
+    fn round_trips_the_charon_wire_format() {
+        let meta: Metadata =
+            serde_json::from_str(CHARON_LOCK_FILE).expect("decode charon lock file");
+
+        let bytes = serde_json::to_vec(&meta).expect("encode metadata");
+
+        // Byte-identical to what charon wrote.
+        assert_eq!(
+            String::from_utf8(bytes).expect("metadata is utf8"),
+            CHARON_LOCK_FILE
+        );
+    }
+
+    #[tokio::test]
+    async fn charon_lock_file_reports_another_instance_running() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path: PathBuf = dir.path().join("privkeylocktest");
+
+        tokio::fs::write(&path, charon_lock_file_at(Utc::now()))
+            .await
+            .expect("write charon lock file");
+
+        let err = Service::new(&path, "test")
+            .await
+            .expect_err("charon lock file should be active");
+
+        match err {
+            PrivKeyLockError::ActiveLock { command, .. } => assert_eq!(command, "charon run"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn staleness_boundary_is_sub_second() {
+        let now = Utc::now();
+
+        assert!(!is_stale(aged_around_threshold(now, -1), now));
+        assert!(!is_stale(aged_around_threshold(now, 0), now));
+        assert!(is_stale(aged_around_threshold(now, 1), now));
+
+        let future = now
+            .checked_add_signed(TimeDelta::seconds(60))
+            .expect("timestamp in range");
+        assert!(!is_stale(future, now));
+    }
 
     #[tokio::test]
     async fn service() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path: PathBuf = dir.path().join("privkeylocktest");
 
-        // Create a stale file that is ignored (one extra second past the threshold).
-        let stale_time = now_secs()
-            .saturating_sub(STALE_DURATION.as_secs())
-            .saturating_sub(1);
+        // Create a stale file that is ignored (one extra second past the
+        // threshold).
+        let stale_time = aged_around_threshold(Utc::now(), 1_000);
         write_file(&path, "test", stale_time)
             .await
             .expect("write stale file");

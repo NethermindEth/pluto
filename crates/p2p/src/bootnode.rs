@@ -3,13 +3,15 @@
 use std::time::Duration;
 
 use backon::Retryable;
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use url::Url;
 
-use crate::peer::{
-    AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
+use crate::{
+    config::RelayAddr,
+    peer::{AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key},
 };
 
 /// Polling interval for relay address updates.
@@ -32,21 +34,21 @@ const RELAY_MAX_BODY: usize = 1024 * 1024;
 /// Bootnode error.
 #[derive(Debug, thiserror::Error)]
 pub enum BootnodeError {
-    /// Invalid relay multiaddr.
-    #[error("invalid relay multiaddr: {0}")]
-    InvalidRelayMultiaddr(String),
-
     /// Failed to get peer from multiaddr.
     #[error("peer from multiaddr: {0}")]
     PeerFromMultiaddr(String),
 
-    /// Failed to parse relay URL.
-    #[error("parse relay url")]
-    ParseRelayUrl(#[from] url::ParseError),
+    /// The relay responded with a non-success status.
+    #[error("relay address query failed with status {0}")]
+    RelayQueryStatus(u16),
 
-    /// Invalid relay URL (not http/https).
-    #[error("invalid relay url")]
-    InvalidRelayUrl,
+    /// The relay address response was not valid JSON.
+    #[error("parse relay addresses json: {0}")]
+    ParseRelayAddrsJson(#[source] serde_json::Error),
+
+    /// The relay URL scheme is neither `http` nor `https`.
+    #[error("invalid relay url: {0}")]
+    InvalidRelayUrl(String),
 
     /// HTTP request error.
     #[error("new request: {0}")]
@@ -99,39 +101,45 @@ pub type Result<T> = std::result::Result<T, BootnodeError>;
 /// Waits up to 1 minute for at least one ENR to resolve.
 pub async fn new_relays(
     cancel: CancellationToken,
-    relays: &[String],
+    relays: &[RelayAddr],
     lock_hash_hex: &str,
 ) -> Result<Vec<MutablePeer>> {
     let mut resp = Vec::new();
 
     for relay_addr in relays {
-        if relay_addr.starts_with("http") {
-            if !relay_addr.starts_with("https") {
-                warn!(addr = %relay_addr, "Relay URL does not use https protocol");
+        match relay_addr {
+            RelayAddr::Url(url) => {
+                // Reject a scheme the resolver cannot use before spawning it.
+                // The task would fail on its first request and exit, leaving
+                // the wait below to run its full timeout and report a
+                // resolution timeout instead of the real problem.
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(BootnodeError::InvalidRelayUrl(url.to_string()));
+                }
+
+                if url.scheme() != "https" {
+                    warn!(addr = %url, "Relay URL does not use https protocol");
+                }
+
+                let mutable = MutablePeer::default();
+                let url = url.clone();
+                let hash = lock_hash_hex.to_string();
+                let mutable_clone = mutable.clone();
+                let cancel_clone = cancel.child_token();
+
+                tokio::spawn(async move {
+                    resolve_relay(cancel_clone, url, hash, mutable_clone).await;
+                });
+
+                resp.push(mutable);
             }
+            RelayAddr::Multiaddr(addr) => {
+                let info = addr_info_from_p2p_addr(addr)
+                    .map_err(|_| BootnodeError::PeerFromMultiaddr(addr.to_string()))?;
 
-            let mutable = MutablePeer::default();
-            let url = relay_addr.clone();
-            let hash = lock_hash_hex.to_string();
-            let mutable_clone = mutable.clone();
-            let cancel_clone = cancel.child_token();
-
-            tokio::spawn(async move {
-                resolve_relay(cancel_clone, url, hash, mutable_clone).await;
-            });
-
-            resp.push(mutable);
-            continue;
+                resp.push(MutablePeer::new(Peer::new_relay_peer(&info)));
+            }
         }
-
-        let addr: Multiaddr = relay_addr
-            .parse()
-            .map_err(|_| BootnodeError::InvalidRelayMultiaddr(relay_addr.clone()))?;
-
-        let info = addr_info_from_p2p_addr(&addr)
-            .map_err(|_| BootnodeError::PeerFromMultiaddr(relay_addr.clone()))?;
-
-        resp.push(MutablePeer::new(Peer::new_relay_peer(&info)));
     }
 
     if resp.is_empty() {
@@ -165,7 +173,7 @@ pub async fn new_relays(
 /// Polls the URL every 2 minutes and calls the callback when peer info changes.
 async fn resolve_relay(
     cancel: CancellationToken,
-    raw_url: String,
+    relay_url: Url,
     lock_hash_hex: String,
     mutable: MutablePeer,
 ) {
@@ -180,11 +188,12 @@ async fn resolve_relay(
             return;
         }
 
-        let addrs = match query_relay_addrs(cancel.clone(), &client, &raw_url, &lock_hash_hex).await
+        let addrs = match query_relay_addrs(cancel.clone(), &client, &relay_url, &lock_hash_hex)
+            .await
         {
             Ok(addrs) => addrs,
             Err(e) => {
-                tracing::error!(err = %e, url = %raw_url, "Failed resolving relay addresses from URL");
+                tracing::error!(err = %e, url = %relay_url, "Failed resolving relay addresses from URL");
                 return;
             }
         };
@@ -208,7 +217,7 @@ async fn resolve_relay(
                     let peer = Peer::new_relay_peer(&infos[0]);
                     info!(
                         peer = %peer.name,
-                        url = %raw_url,
+                        url = %relay_url,
                         addrs = ?peer.addresses,
                         "Resolved new relay"
                     );
@@ -236,13 +245,15 @@ async fn resolve_relay(
 async fn query_relay_addrs(
     cancel: CancellationToken,
     client: &reqwest::Client,
-    relay_url: &str,
+    relay_url: &Url,
     lock_hash_hex: &str,
 ) -> Result<Vec<Multiaddr>> {
-    let parsed_url = url::Url::parse(relay_url)?;
-    let scheme = parsed_url.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err(BootnodeError::InvalidRelayUrl);
+    // `RelayAddr::from_str` already enforces this, but the variant is publicly
+    // constructible, so re-check at the point of use — and before the retry
+    // loop, since an unsupported scheme is not transient and would otherwise
+    // retry until cancellation instead of failing fast.
+    if !matches!(relay_url.scheme(), "http" | "https") {
+        return Err(BootnodeError::InvalidRelayUrl(relay_url.to_string()));
     }
 
     // Retry with exponential backoff until the cancel token fires, matching
@@ -255,7 +266,7 @@ async fn query_relay_addrs(
         }
 
         let resp = client
-            .get(relay_url)
+            .get(relay_url.clone())
             .header("Charon-Cluster", lock_hash_hex)
             .send()
             .await
@@ -269,7 +280,7 @@ async fn query_relay_addrs(
                 status_code = resp.status().as_u16(),
                 "Non-200 response querying relay addresses (will try again)"
             );
-            return Err(BootnodeError::InvalidRelayUrl);
+            return Err(BootnodeError::RelayQueryStatus(resp.status().as_u16()));
         }
 
         let body = read_relay_body_capped(resp, RELAY_MAX_BODY).await?;
@@ -286,7 +297,7 @@ async fn query_relay_addrs(
 
         let addrs: Vec<String> = serde_json::from_str(&body).map_err(|e| {
             tracing::warn!(err = %e, "Failure parsing relay addresses json (will try again)");
-            BootnodeError::InvalidRelayUrl
+            BootnodeError::ParseRelayAddrsJson(e)
         })?;
 
         let mut maddrs = Vec::new();
@@ -391,88 +402,234 @@ fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, Pe
     infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
 }
 
-/// Converts configured relay multiaddrs into the string form [`new_relays`]
-/// expects: HTTP(S) relay endpoints become `scheme://host[:port]` URLs (for
-/// background resolution), anything else falls back to the multiaddr string.
-pub fn relay_addrs_for_resolution(relays: &[Multiaddr]) -> Vec<String> {
-    relays.iter().map(relay_addr_for_resolution).collect()
-}
-
-/// Converts one relay multiaddr into the string form [`new_relays`] expects.
-///
-/// The default port for the scheme (80/443) is omitted from the URL.
-pub fn relay_addr_for_resolution(relay: &Multiaddr) -> String {
-    let mut scheme = None;
-    let mut host = None;
-    let mut port = None;
-
-    for protocol in relay.iter() {
-        match protocol {
-            Protocol::Http => scheme = Some("http"),
-            Protocol::Https => scheme = Some("https"),
-            Protocol::Dns(name)
-            | Protocol::Dns4(name)
-            | Protocol::Dns6(name)
-            | Protocol::Dnsaddr(name)
-                if host.is_none() =>
-            {
-                host = Some(name.to_string());
-            }
-            Protocol::Ip4(ip) if host.is_none() => {
-                host = Some(ip.to_string());
-            }
-            Protocol::Ip6(ip) if host.is_none() => {
-                host = Some(format!("[{ip}]"));
-            }
-            Protocol::Tcp(tcp_port) => port = Some(tcp_port),
-            _ => {}
-        }
-    }
-
-    if let (Some(scheme), Some(host)) = (scheme, host) {
-        let default_port = match scheme {
-            "https" => 443,
-            _ => 80,
-        };
-
-        return match port {
-            Some(port) if port != default_port => format!("{scheme}://{host}:{port}"),
-            _ => format!("{scheme}://{host}"),
-        };
-    }
-
-    relay.to_string()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
+    use k256::elliptic_curve::rand_core::OsRng;
+    use libp2p::PeerId;
+    use pluto_eth2util::enr::EnrEntry;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
+    };
+
     use super::*;
 
-    #[test]
-    fn relay_addr_resolution_forms() {
-        let cases = [
-            (
-                "/dns/relay.example.org/tcp/443/https",
-                "https://relay.example.org",
-            ),
-            (
-                "/dns/relay.example.org/tcp/8443/https",
-                "https://relay.example.org:8443",
-            ),
-            (
-                "/dns4/relay.example.org/tcp/80/http",
-                "http://relay.example.org",
-            ),
-            ("/ip4/10.0.0.1/tcp/3640/http", "http://10.0.0.1:3640"),
-            ("/ip6/::1/tcp/443/https", "https://[::1]"),
-        ];
-        for (addr, expected) in cases {
-            let addr: Multiaddr = addr.parse().expect("valid multiaddr");
-            assert_eq!(relay_addr_for_resolution(&addr), expected);
-        }
+    const LOCK_HASH: &str = "0badcafe";
 
-        // Non-HTTP multiaddrs fall back to the multiaddr string.
-        let plain: Multiaddr = "/ip4/10.0.0.1/tcp/3610".parse().expect("valid multiaddr");
-        assert_eq!(relay_addr_for_resolution(&plain), plain.to_string());
+    /// Returns a random relay peer ID together with the multiaddr JSON body a
+    /// relay serves for it.
+    fn relay_fixture() -> (PeerId, String) {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let body = serde_json::to_string(&[format!("/ip4/10.0.0.1/tcp/3610/p2p/{peer_id}")])
+            .expect("serialize relay addrs");
+
+        (peer_id, body)
+    }
+
+    /// Starts a relay stub serving `body` at `relay_path`. Any other path 404s,
+    /// so a request that loses the path fails the test rather than silently
+    /// resolving against the root.
+    async fn relay_server(relay_path: &str, body: String) -> MockServer {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path(relay_path))
+            .and(header("Charon-Cluster", LOCK_HASH))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    /// Resolves `relay` and returns the single relay peer ID it yields.
+    async fn resolve_one(relay: &str) -> PeerId {
+        let relay: RelayAddr = relay.parse().expect("relay addr should parse");
+        let cancel = CancellationToken::new();
+
+        let relays = new_relays(cancel.clone(), &[relay], LOCK_HASH)
+            .await
+            .expect("relays should resolve");
+        cancel.cancel();
+
+        assert_eq!(relays.len(), 1);
+
+        relays[0].peer().expect("relay should be resolved").id
+    }
+
+    #[tokio::test]
+    async fn new_relays_resolves_url_with_path() {
+        let (peer_id, body) = relay_fixture();
+        let server = relay_server("/enr", body).await;
+
+        assert_eq!(resolve_one(&format!("{}/enr", server.uri())).await, peer_id);
+    }
+
+    #[tokio::test]
+    async fn new_relays_resolves_url_without_path() {
+        let (peer_id, body) = relay_fixture();
+        let server = relay_server("/", body).await;
+
+        assert_eq!(resolve_one(&server.uri()).await, peer_id);
+    }
+
+    #[tokio::test]
+    async fn new_relays_resolves_raw_multiaddr() {
+        let (peer_id, _) = relay_fixture();
+
+        assert_eq!(
+            resolve_one(&format!("/ip4/10.0.0.1/tcp/3610/p2p/{peer_id}")).await,
+            peer_id
+        );
+    }
+
+    #[tokio::test]
+    async fn new_relays_rejects_multiaddr_without_peer_id() {
+        let relay: RelayAddr = "/ip4/10.0.0.1/tcp/3610".parse().expect("relay addr");
+
+        let err = new_relays(CancellationToken::new(), &[relay], LOCK_HASH)
+            .await
+            .expect_err("multiaddr without a peer ID should be rejected");
+
+        assert!(matches!(err, BootnodeError::PeerFromMultiaddr(_)));
+    }
+
+    #[tokio::test]
+    async fn new_relays_without_relays_is_empty() {
+        let relays = new_relays(CancellationToken::new(), &[], LOCK_HASH)
+            .await
+            .expect("no relays should resolve");
+
+        assert!(relays.is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_relays_rejects_unsupported_url_scheme() {
+        // A hand-built `RelayAddr::Url` can carry a scheme the resolver cannot
+        // use. It must be rejected up front, not spawned and then waited on
+        // until the resolve timeout reports a misleading failure.
+        let relay = RelayAddr::Url("ftp://relay.example.org".parse().expect("url"));
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            new_relays(
+                CancellationToken::new(),
+                std::slice::from_ref(&relay),
+                LOCK_HASH,
+            ),
+        )
+        .await
+        .expect("should fail fast, not wait out BOOTNODE_RESOLVE_TIMEOUT")
+        .expect_err("unsupported scheme should be rejected");
+
+        assert!(
+            matches!(err, BootnodeError::InvalidRelayUrl(_)),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_relay_addrs_rejects_unsupported_scheme() {
+        // `RelayAddr::Url` is publicly constructible, so a non-HTTP(S) URL can
+        // reach here; it must fail fast rather than retry until cancellation.
+        let err = query_relay_addrs(
+            CancellationToken::new(),
+            &reqwest::Client::new(),
+            &"ftp://relay.example.org".parse().expect("url"),
+            LOCK_HASH,
+        )
+        .await
+        .expect_err("unsupported scheme should not be queried");
+
+        assert!(
+            matches!(err, BootnodeError::InvalidRelayUrl(_)),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An ENR for `key` in the `enr:` string form a relay serves.
+    fn enr_str(key: &k256::SecretKey, entries: Vec<EnrEntry>) -> String {
+        Record::new(key, entries).expect("build enr").to_string()
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_maps_ports_to_transports() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let ip = EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4));
+
+        // The UDP port is advertised as QUIC, and comes first when both ports
+        // are set so a dialer prefers it over TCP.
+        let cases = [
+            (vec![ip, EnrEntry::Tcp(3610)], vec!["/ip4/1.2.3.4/tcp/3610"]),
+            (
+                vec![ip, EnrEntry::Udp(3630)],
+                vec!["/ip4/1.2.3.4/udp/3630/quic-v1"],
+            ),
+            (
+                vec![ip, EnrEntry::Tcp(3610), EnrEntry::Udp(3630)],
+                vec!["/ip4/1.2.3.4/udp/3630/quic-v1", "/ip4/1.2.3.4/tcp/3610"],
+            ),
+        ];
+
+        for (entries, want) in cases {
+            let addrs =
+                multi_addr_from_enr_str(&enr_str(&key, entries)).expect("enr should resolve");
+            let want: Vec<Multiaddr> = want
+                .iter()
+                .map(|addr| format!("{addr}/p2p/{peer_id}").parse().expect("multiaddr"))
+                .collect();
+
+            assert_eq!(addrs, want);
+        }
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_an_enr_without_an_ip() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let enr = enr_str(&key, vec![EnrEntry::Tcp(3610)]);
+
+        let err = multi_addr_from_enr_str(&enr).expect_err("an ip is required");
+
+        assert!(
+            matches!(err, BootnodeError::EnrNoIp),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_an_enr_without_a_port() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let enr = enr_str(&key, vec![EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4))]);
+
+        let err = multi_addr_from_enr_str(&enr).expect_err("a port is required");
+
+        assert!(
+            matches!(err, BootnodeError::EnrNoPort),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_garbage() {
+        for garbage in [
+            "",
+            "not-an-enr",
+            // Right prefix, unparsable body.
+            "enr:not-base64-@@@",
+            // Valid base64, but not an RLP-encoded record.
+            "enr:AAAAAAAA",
+        ] {
+            let err = multi_addr_from_enr_str(garbage)
+                .expect_err("garbage must not resolve to an address");
+
+            assert!(
+                matches!(err, BootnodeError::ParseEnr(_)),
+                "unexpected error for {garbage:?}: {err}"
+            );
+        }
     }
 }

@@ -236,12 +236,6 @@ func smokeScenarios() []smokeScenario {
 				}
 				// `pluto run` fails fast on --synthetic-block-proposals.
 				conf.SyntheticBlockProposals = false
-				// Charon triggers infosync (/charon/priority/2.0.0) every
-				// epoch; pluto does not serve the protocol yet (#402B), so
-				// charon nodes warn "P2P sending failing" under topic=sched
-				// twice per epoch. Exempt that topic in mixed clusters until
-				// the protocol lands; drop this with #402B.
-				conf.AlertWarnExcludeTopics = []string{"sched"}
 			},
 		},
 		{

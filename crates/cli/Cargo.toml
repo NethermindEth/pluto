@@ -49,8 +49,8 @@ sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 test-case.workspace = true
-backon.workspace = true
 wiremock.workspace = true
 pluto-cluster = { workspace = true, features = ["test-cluster"] }
 pluto-testutil.workspace = true

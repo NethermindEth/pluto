@@ -35,7 +35,7 @@ use pluto_app::node::{
         ParSigExReceived, ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, wire_core_workflow,
     },
 };
-use pluto_consensus::qbft;
+use pluto_consensus::{qbft, wrapper::ConsensusWrapper};
 use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
@@ -44,7 +44,7 @@ use pluto_core::{
         ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::tbls;
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum,
@@ -176,7 +176,7 @@ async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
 /// signed message is arbitrary — only the distinct share index and identical
 /// unsigned payload (so ParSigDB groups the partials) matter.
 fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> ParSignedData {
-    let sig = BlstImpl.sign(share, &[42u8; 32]).expect("sign share");
+    let sig = tbls::sign(share, &[42u8; 32]).expect("sign share");
     let attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {
@@ -210,12 +210,12 @@ fn wire_inputs(
     eth2_cl: EthBeaconNodeApiClient,
     beacon_client: BeaconNodeClient,
     pubkey: PubKey,
-    consensus: Arc<qbft::Consensus>,
+    consensus: Arc<ConsensusWrapper>,
     threshold: u64,
 ) -> WireInputs {
     // Permissive verifier: the partial sigs carry arbitrary payloads, so real
-    // eth2 verification is deliberately bypassed here. The bad-partial-signature
-    // test injects the real verifier.
+    // eth2 verification is deliberately bypassed here. The
+    // bad-partial-signature test injects the real verifier.
     let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
     wire_inputs_with(
         eth2_cl,
@@ -234,7 +234,7 @@ fn wire_inputs_with(
     eth2_cl: EthBeaconNodeApiClient,
     beacon_client: BeaconNodeClient,
     pubkey: PubKey,
-    consensus: Arc<qbft::Consensus>,
+    consensus: Arc<ConsensusWrapper>,
     threshold: u64,
     sigagg_verifier: VerifyFn,
 ) -> WireInputs {
@@ -289,7 +289,7 @@ fn pubkey_to_eth2(pk: PubKey) -> phase0::BLSPubKey {
 /// Builds a minimal single-node QBFT consensus component (not driven; only used
 /// to satisfy the wiring — its subscribe/propose are wired but not exercised in
 /// this test).
-fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
+fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
     let key = k256::SecretKey::random(&mut rand::thread_rng());
     let (deadliner, expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
@@ -302,7 +302,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
         public_key: key.public_key(),
     };
     let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
-    Arc::new(
+    let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
             local_peer_idx: 0,
@@ -317,7 +317,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
-    )
+    );
+    Arc::new(ConsensusWrapper::new(consensus))
 }
 
 /// (a) Fetcher → AggSigDB back-edge (proposer/RANDAO) and
@@ -365,15 +366,17 @@ async fn wiring_exercises_fetcher_back_edges() {
         tokio::spawn(async move { fetcher.fetch(duty, def).await })
     };
 
-    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending on
-    // the wired `agg_sig_db` back-edge (proving it awaits the wired AggSigDB).
+    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending
+    // on the wired `agg_sig_db` back-edge (proving it awaits the wired
+    // AggSigDB).
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !fetch_handle.is_finished(),
         "(a) proposer fetch should block on the empty wired AggSigDB back-edge"
     );
 
-    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must unblock.
+    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must
+    // unblock.
     let randao: phase0::BLSSignature = [7u8; 96];
     let randao_set: SignedDataSet =
         HashMap::from([(pubkey, Box::new(randao) as Box<dyn SignedData>)]);
@@ -385,10 +388,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     .expect("aggsigdb.store did not hang")
     .expect("aggsigdb.store ok");
 
-    // The fetch now progresses past the RANDAO back-edge. It may ultimately fail
-    // downstream (block production / proposer value encoding is out of scope),
-    // but it must no longer be blocked on `wait_for` — proving the back-edge is
-    // wired into the same AggSigDB.
+    // The fetch now progresses past the RANDAO back-edge. It may ultimately
+    // fail downstream (block production / proposer value encoding is out of
+    // scope), but it must no longer be blocked on `wait_for` — proving the
+    // back-edge is wired into the same AggSigDB.
     let fetch_result = tokio::time::timeout(GUARD, fetch_handle)
         .await
         .expect("(a) proposer fetch unblocked after RANDAO stored")
@@ -398,14 +401,16 @@ async fn wiring_exercises_fetcher_back_edges() {
     let _ = fetch_result;
 
     // ---- (b) Aggregator fetch reaches the wired DutyDB back-edge ----
-    // First prove the wired DutyDB handle the fetcher's `await_att_data` closure
-    // targets is the one we hold: an aggregator fetch must block until both its
-    // AggSigDB (prepare-aggregator) prerequisite and the DutyDB attestation are
-    // available. With neither present, the fetch blocks on the wired AggSigDB
-    // first; we satisfy that and confirm it then blocks on the wired DutyDB.
+    // First prove the wired DutyDB handle the fetcher's `await_att_data`
+    // closure targets is the one we hold: an aggregator fetch must block
+    // until both its AggSigDB (prepare-aggregator) prerequisite and the
+    // DutyDB attestation are available. With neither present, the fetch
+    // blocks on the wired AggSigDB first; we satisfy that and confirm it
+    // then blocks on the wired DutyDB.
     let dutydb = Arc::clone(&wired.dutydb);
-    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable on
-    // the same instance the fetcher back-edge uses (a direct connectivity proof).
+    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable
+    // on the same instance the fetcher back-edge uses (a direct
+    // connectivity proof).
     let await_handle = {
         let dutydb = Arc::clone(&dutydb);
         tokio::spawn(async move { dutydb.await_attestation(SLOT, 0).await })
@@ -443,12 +448,11 @@ async fn wiring_connects_sign_path() {
         .expect("wire succeeded");
 
     // Build two real BLS partial signatures (threshold 2 of 2) over the same
-    // attestation so SigAgg's `threshold_aggregate` succeeds and the broadcaster
-    // submits.
-    let tbls = BlstImpl;
+    // attestation so SigAgg's `threshold_aggregate` succeeds and the
+    // broadcaster submits.
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let mut share_iter = shares.into_iter();
@@ -456,8 +460,8 @@ async fn wiring_connects_sign_path() {
     let (idx1, share1) = share_iter.next().expect("share 1");
 
     // Submit the first partial signature through the internal path (this node's
-    // own VC): ParSigDB.store_internal -> store_external (threshold not yet met)
-    // and -> internal subscriber -> loopback parsigex.broadcast.
+    // own VC): ParSigDB.store_internal -> store_external (threshold not yet
+    // met) and -> internal subscriber -> loopback parsigex.broadcast.
     let mut internal_set = ParSignedDataSet::new();
     internal_set.insert(pubkey, attester_partial(idx0, &share0));
     tokio::time::timeout(
@@ -563,16 +567,15 @@ async fn wiring_connects_sign_path_proposer() {
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // Each partial signs an arbitrary message with its own share (permissive
     // verifier), swapping only the block signature onto an identical unsigned
     // block so ParSigDB's threshold-matching groups them.
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         pluto_core::signeddata::VersionedSignedProposal::new_partial(
             phase0_proposal(sig),
             share_idx,
@@ -637,14 +640,13 @@ async fn wiring_connects_sign_path_sync_contribution() {
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
-    // Identical unsigned contribution across shares; each partial swaps only the
-    // top-level signature (`set_signature`), preserving the payload so ParSigDB
-    // groups them.
+    // Identical unsigned contribution across shares; each partial swaps only
+    // the top-level signature (`set_signature`), preserving the payload so
+    // ParSigDB groups them.
     let base_contribution = altair::SignedContributionAndProof {
         message: altair::ContributionAndProof {
             aggregator_index: 1,
@@ -660,7 +662,7 @@ async fn wiring_connects_sign_path_sync_contribution() {
         signature: [0; 96],
     };
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let contribution = altair::SignedContributionAndProof {
             signature: sig,
             ..base_contribution.clone()
@@ -719,12 +721,11 @@ async fn wiring_rejects_bad_partial_signature() {
 
     // Real BLS group key: the verifier parses this pubkey and verifies the
     // reconstructed group signature against the beacon attester signing domain.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let group_pubkey_bytes = tbls.secret_to_public_key(&secret).expect("group pubkey");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let group_pubkey_bytes = tbls::secret_to_public_key(&secret).expect("group pubkey");
     let pubkey = PubKey::new(group_pubkey_bytes);
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
     // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
@@ -746,8 +747,8 @@ async fn wiring_rejects_bad_partial_signature() {
         .expect("wire succeeded");
 
     // Same shape as the happy-path attestation test, but the shares sign an
-    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root —
-    // so the reconstructed group signature will not verify.
+    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root
+    // — so the reconstructed group signature will not verify.
     let base_attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {
@@ -768,7 +769,7 @@ async fn wiring_rejects_bad_partial_signature() {
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let attestation = phase0::Attestation {
             signature: sig,
             ..base_attestation.clone()
@@ -995,12 +996,9 @@ async fn multinode_parsig_exchange_reaches_submission() {
     }
 
     // One real threshold-BLS keyset: N shares, any THRESHOLD reconstruct.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls
-        .threshold_split(&secret, N as u64, THRESHOLD)
-        .expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, N as u64, THRESHOLD).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     // Each node stores its own partial internally; the router fans it out to

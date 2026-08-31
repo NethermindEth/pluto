@@ -21,7 +21,8 @@ const PROTO: &str = pluto_priority::PROTOCOL_ID;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn negotiates_slashless_priority_protocol_over_tcp() {
-    // The id must carry NO leading slash, byte-identical to Charon's wire token.
+    // The id must carry NO leading slash, byte-identical to Charon's wire
+    // token.
     assert!(
         !PROTO.starts_with('/'),
         "priority protocol id must be slash-less, got {PROTO:?}"

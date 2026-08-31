@@ -432,9 +432,8 @@ var alertRuleNames = map[string]bool{
 // writeAlertRules writes the prometheus alert rules evaluated by the smoke
 // tests. Rules are generated (not static) because the expressions depend on
 // config: scenarios that deliberately degrade a node exempt its job via
-// conf.AlertExcludeJobs, mixed-impl scenarios extend the warn-topic
-// exclusions via conf.AlertWarnExcludeTopics, and cluster-wide degradations
-// drop whole rules via conf.AlertDisableRules.
+// conf.AlertExcludeJobs, and cluster-wide degradations drop whole rules via
+// conf.AlertDisableRules.
 //
 // Charon's "Outstanding Duty Rate" rule (core_bcast_broadcast_total -
 // core_scheduler_duty_total > 50) is deliberately not ported: a node cannot
@@ -477,9 +476,9 @@ func writeAlertRules(dir string, conf Config) error {
 	//    every successful proposal epoch warns "Broadcasted block/attestation
 	//    never included on-chain" (the better the cluster works, the more it
 	//    warns).
-	// Both are mock artifacts, not node behavior; all other warn topics stay
-	// gated unless a scenario opts out via AlertWarnExcludeTopics.
-	warnTopics := strings.Join(append([]string{"vmock", "tracker"}, conf.AlertWarnExcludeTopics...), "|")
+	// Both are mock artifacts, not node behavior; every other warn topic stays
+	// gated.
+	const warnTopics = "vmock|tracker"
 
 	// The broadcast-liveness expression must fail when a node exposes NO
 	// core_bcast_broadcast_total series at all: the counter is created on

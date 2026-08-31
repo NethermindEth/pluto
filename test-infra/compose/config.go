@@ -163,13 +163,6 @@ type Config struct {
 	// clean.
 	AlertExcludeJobs []string `json:"alert_exclude_jobs,omitempty"`
 
-	// AlertWarnExcludeTopics appends log topics to the Warn Log Rate
-	// exclusion list on top of the built-in charon mock noise (see
-	// writeAlertRules). Scenario-scoped escape hatch: e.g. mixed
-	// charon/pluto clusters exclude "sched" because charon's infosync warns
-	// each epoch until pluto serves /charon/priority/2.0.0 (#402B).
-	AlertWarnExcludeTopics []string `json:"alert_warn_exclude_topics,omitempty"`
-
 	// AlertDisableRules drops entire alert rules (by name, see
 	// alertRuleNames) from the generated rules. Last-resort scenario knob
 	// for cluster-wide degradation that per-job exclusion cannot express:

@@ -373,9 +373,10 @@ impl Consensus {
             return Err(Error::InvalidDuty);
         }
 
-        // Bound the number of justifications before any secp256k1 recovery runs:
-        // a 32MB message could otherwise pack a huge number of small entries,
-        // each forcing a recovery. Honest QBFT never exceeds O(node_count).
+        // Bound the number of justifications before any secp256k1 recovery
+        // runs: a 32MB message could otherwise pack a huge number of
+        // small entries, each forcing a recovery. Honest QBFT never
+        // exceeds O(node_count).
         let max_justifications = MAX_JUSTIFICATIONS_PER_NODE.saturating_mul(self.node_count());
         if pb_msg.justification.len() > max_justifications {
             return Err(Error::TooManyJustifications {
@@ -614,7 +615,7 @@ impl crate::wrapper::Consensus for Consensus {
         Box::pin(async move {
             Consensus::participate(self, duty, &ct)
                 .await
-                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+                .map_err(Into::into)
         })
     }
 
@@ -627,7 +628,7 @@ impl crate::wrapper::Consensus for Consensus {
         Box::pin(async move {
             Consensus::propose(self, duty, value, &ct)
                 .await
-                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+                .map_err(Into::into)
         })
     }
 
@@ -984,7 +985,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn handle_accepts_max_justifications() {
-        // Exactly `max` justifications must not trip the cap (guards `>` vs `>=`).
+        // Exactly `max` justifications must not trip the cap (guards `>` vs
+        // `>=`).
         let consensus = consensus(0, true);
         let inst = consensus.get_instance_io(duty());
         let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();

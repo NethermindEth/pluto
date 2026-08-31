@@ -399,7 +399,8 @@ pub fn run<T: QbftTypes>(
         }
 
         if *input_value.borrow() == Default::default() {
-            // Can't broadcast a pre-prepare yet, need to wait for an input value.
+            // Can't broadcast a pre-prepare yet, need to wait for an input
+            // value.
             ppj_cache.replace(Some(justification));
             return Ok(());
         }
@@ -706,14 +707,14 @@ fn compare<T: QbftTypes>(
     let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<T::Compare>(1);
 
     // d.Compare has 2 roles:
-    // 1. Read from the `input_value_source_ch` (if `input_value_source` is empty).
-    //    If it read from the channel, it returns the value on `compare_value`
-    //    channel.
+    // 1. Read from the `input_value_source_ch` (if `input_value_source` is
+    //    empty). If it read from the channel, it returns the value on
+    //    `compare_value` channel.
     // 2. Compare the value read from `input_value_source_ch` (or
     //    `input_value_source` if it is not empty) to the value proposed by the
     //    leader.
-    // If comparison or any other unexpected error occurs, the error is returned on
-    // `compare_err` channel.
+    // If comparison or any other unexpected error occurs, the error is returned
+    // on `compare_err` channel.
 
     let mut result = input_value_source.clone();
     let compare = d.compare.clone();
@@ -906,7 +907,8 @@ fn classify<T: QbftTypes>(
 /// Implements algorithm 3:6 and returns the next minimum round from received
 /// round change messages.
 fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64) -> i64 {
-    // Get all RoundChange messages with round (rj) higher than current round (ri)
+    // Get all RoundChange messages with round (rj) higher than current round
+    // (ri)
     if frc.len() < d.faulty_plus_one_count() {
         panic!("bug: Frc too short");
     }
@@ -953,14 +955,15 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
         panic!("bug: not a round change message");
     }
 
-    // ROUND-CHANGE justification contains quorum PREPARE messages that justifies Pr
-    // and Pv.
+    // ROUND-CHANGE justification contains quorum PREPARE messages that
+    // justifies Pr and Pv.
     let prepares = msg.justification();
     let pr = msg.prepared_round();
     let pv = msg.prepared_value();
 
-    // Accepted hardening over Go: reject prepared rounds outside `0 <= pr < round`.
-    // See `valid_round_change_prepared_round` for the full parity note.
+    // Accepted hardening over Go: reject prepared rounds outside `0 <= pr <
+    // round`. See `valid_round_change_prepared_round` for the full parity
+    // note.
     if !valid_round_change_prepared_round(msg) {
         return false;
     }
@@ -969,8 +972,8 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
         return pr == 0 && pv == Default::default();
     }
 
-    // No need to check for all possible combinations, since justified should only
-    // contain a one.
+    // No need to check for all possible combinations, since justified should
+    // only contain a one.
 
     if prepares.len() < d.quorum_count() {
         return false;
@@ -1053,8 +1056,8 @@ fn is_justified_pre_prepare<T: QbftTypes>(
         return false;
     }
 
-    // Justified if PrePrepare is the first round OR if comparison failed previous
-    // round.
+    // Justified if PrePrepare is the first round OR if comparison failed
+    // previous round.
     let next_compare_round = compare_failure_round
         .checked_add(1)
         .expect("compare failure round permits increment");

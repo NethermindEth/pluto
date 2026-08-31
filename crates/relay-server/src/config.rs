@@ -49,9 +49,6 @@ pub struct Config {
     /// Whether to filter private addresses.
     #[builder(default = false)]
     pub filter_private_addrs: bool,
-    /// LibP2PLogLevel.
-    #[builder(default = "Info".to_string())]
-    pub libp2p_log_level: String,
 }
 
 pub(crate) fn create_relay_config(config: &Config) -> relay::Config {
@@ -69,19 +66,20 @@ pub(crate) fn create_relay_config(config: &Config) -> relay::Config {
         reservation_duration: Duration::from_secs(ONE_HOUR_SECONDS),
         max_circuits: config.max_res_per_peer,
         max_circuits_per_peer: config.max_res_per_peer,
-        max_circuit_duration: Duration::from_secs(ONE_MINUTE_SECONDS),
+        max_circuit_duration: Duration::from_secs(ONE_HOUR_SECONDS),
         max_circuit_bytes: MB_32,
         // Restore the default rate limiters dropped by the previous
         // struct-literal construction.
         ..relay::Config::default()
     };
 
-    // Charon sets MaxReservationsPerIP = MaxResPerPeer. rust-libp2p has no per-IP
-    // reservation *count* cap, so we approximate it with an additional per-IP
-    // reservation *rate* limiter sized from `max_res_per_peer` (falling back to
-    // the default capacity when the operator leaves it at 0). This appends a
-    // second per-IP reservation limiter on top of the default one; both must
-    // pass, so the effective per-IP rate becomes min(60/min, max_res_per_peer/min).
+    // Charon sets MaxReservationsPerIP = MaxResPerPeer. rust-libp2p has no
+    // per-IP reservation *count* cap, so we approximate it with an
+    // additional per-IP reservation *rate* limiter sized from
+    // `max_res_per_peer` (falling back to the default capacity when the
+    // operator leaves it at 0). This appends a second per-IP reservation
+    // limiter on top of the default one; both must pass, so the effective
+    // per-IP rate becomes min(60/min, max_res_per_peer/min).
     let per_ip_limit = u32::try_from(config.max_res_per_peer)
         .ok()
         .and_then(NonZeroU32::new)
@@ -124,7 +122,7 @@ mod tests {
         );
         assert_eq!(
             relay_config.max_circuit_duration,
-            Duration::from_secs(ONE_MINUTE_SECONDS)
+            Duration::from_secs(ONE_HOUR_SECONDS)
         );
         assert_eq!(relay_config.max_circuit_bytes, MB_32);
     }

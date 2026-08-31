@@ -2,7 +2,7 @@
 //!
 //! # Design
 //!
-//! The [`Exchanger`] coordinates partial-signature exchange during the DKG
+//! The `Exchanger` coordinates partial-signature exchange during the DKG
 //! ceremony.  It wraps the [`pluto_parsigex`] network layer to broadcast and
 //! receive partial signatures, accumulates them in an in-memory store, and
 //! notifies callers when all peers have contributed their share for every
@@ -15,9 +15,9 @@
 //!
 //! | Constant                 | Slot  | Purpose                                      |
 //! |--------------------------|-------|----------------------------------------------|
-//! | [`SIG_LOCK`]             | 101   | Lock-hash partial signatures                 |
-//! | [`SIG_VALIDATOR_REG`]    | 102   | Validator-registration partial signatures    |
-//! | [`SIG_DEPOSIT_DATA`]     | 200+N | Deposit-data partial sigs (one per amount N) |
+//! | `SIG_LOCK`             | 101   | Lock-hash partial signatures                 |
+//! | `SIG_VALIDATOR_REG`    | 102   | Validator-registration partial signatures    |
+//! | `SIG_DEPOSIT_DATA`     | 200+N | Deposit-data partial sigs (one per amount N) |
 //!
 //! These slot values are part of the wire protocol and **must not change**.
 //!
@@ -146,8 +146,8 @@ impl Exchanger {
         peers: Vec<PeerId>,
         sig_types: Vec<SigType>,
     ) -> Self {
-        // Partial signature roots not known yet, so skip verification in parsigex,
-        // rather verify before we aggregate.
+        // Partial signature roots not known yet, so skip verification in
+        // parsigex, rather verify before we aggregate.
         let st: HashSet<SigType> = sig_types.iter().copied().collect();
 
         let duty_gater_fn: DutyGaterFn = {
@@ -165,8 +165,8 @@ impl Exchanger {
             })
         };
 
-        // threshold is len(peers) to wait until we get all the partial sigs from all
-        // the peers per DV
+        // threshold is len(peers) to wait until we get all the partial sigs
+        // from all the peers per DV
         let threshold = u64::try_from(peers.len()).expect("usize fits in u64");
         // DKG is one-shot and outside the slot timeline; we wire a real
         // deadliner with a never-expiring calculator just to satisfy the
@@ -266,7 +266,8 @@ impl Exchanger {
             {
                 let inner = self.sig_data.inner.lock().await;
                 if let Some(data) = inner.get(&sig_type) {
-                    // We are done when we have ParSignedData of all the DVs from each peer
+                    // We are done when we have ParSignedData of all the DVs
+                    // from each peer
                     if data.len() == expected_dvs {
                         return Ok(data.clone());
                     }
@@ -584,7 +585,8 @@ mod tests {
             exchangers.push(Arc::new(ex));
         }
 
-        // Run concurrent exchanges: for each (node, sig_type) pair, spawn a task
+        // Run concurrent exchanges: for each (node, sig_type) pair, spawn a
+        // task
         let mut join_set = tokio::task::JoinSet::new();
         for (node_idx, ex) in exchangers.iter().enumerate() {
             for &sig_type in &sig_types {
@@ -597,13 +599,14 @@ mod tests {
             }
         }
 
-        // Collect results into actual: one entry per sig_type (last writer wins,
-        // all nodes return equivalent data for each sig_type)
+        // Collect results into actual: one entry per sig_type (last writer
+        // wins, all nodes return equivalent data for each sig_type)
         let actual: SigTypeStore = join_set.join_all().await.into_iter().collect();
 
-        // Assert all expected sig types arrived (matches the Go test assertions).
-        // The Go reflect.DeepEqual is intentionally discarded there — we only
-        // verify presence, DV count, and share count per DV.
+        // Assert all expected sig types arrived (matches the Go test
+        // assertions). The Go reflect.DeepEqual is intentionally
+        // discarded there — we only verify presence, DV count, and
+        // share count per DV.
         for &sig_type in &sig_types {
             let data = actual
                 .get(&sig_type)

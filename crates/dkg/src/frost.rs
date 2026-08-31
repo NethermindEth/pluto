@@ -1,10 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
-use pluto_crypto::{
-    tblsconv::{privkey_from_bytes, pubkey_from_bytes},
-    types::PublicKey,
-};
+use pluto_crypto::types::{PublicKey, privkey_from_bytes, pubkey_from_bytes};
 use pluto_frost::{
     G1Affine, G1Projective, KeyPackage,
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
@@ -138,7 +135,7 @@ pub enum FrostError {
     ChannelClosed(&'static str),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
-    PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
+    PublicKey(#[from] pluto_crypto::types::ConvError),
     /// Failed to decode a compressed G1 public key point.
     #[error("invalid compressed G1 public key point")]
     InvalidPublicKeyPoint,
@@ -254,7 +251,8 @@ impl DkgParticipant {
             .take()
             .ok_or(FrostError::MissingRoundState)?;
         // get_round2_inputs keeps this node's broadcast. Strip it here to
-        // match Charon's participant behavior; kryptology::round2 rejects self IDs.
+        // match Charon's participant behavior; kryptology::round2 rejects self
+        // IDs.
         let bcasts = bcasts
             .iter()
             .filter(|(id, _)| **id != self.id)
@@ -484,7 +482,7 @@ fn dkg_context_byte(dkg_ctx: &str) -> u8 {
 mod tests {
     use std::sync::Arc;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Index};
+    use pluto_crypto::{tbls, types::Index};
     use tokio::sync::{Mutex, Notify};
 
     use super::*;
@@ -945,18 +943,14 @@ mod tests {
                         .expect("node index should not overflow"),
                 )
                 .expect("node index should fit in Index");
-                let sig = BlstImpl
-                    .sign(&shares[val_idx].secret_share, msg)
+                let sig = tbls::sign(&shares[val_idx].secret_share, msg)
                     .expect("partial signature should succeed");
                 partials.insert(share_id, sig);
             }
 
-            let sig = BlstImpl
-                .threshold_aggregate(&partials)
-                .expect("threshold aggregation should succeed");
-            BlstImpl
-                .verify(&pub_key, msg, &sig)
-                .expect("aggregated signature should verify");
+            let sig =
+                tbls::threshold_aggregate(&partials).expect("threshold aggregation should succeed");
+            tbls::verify(&pub_key, msg, &sig).expect("aggregated signature should verify");
         }
     }
 }

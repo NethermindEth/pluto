@@ -200,8 +200,8 @@ mod tests {
 
     #[tokio::test]
     async fn no_proposer_duties_returns_empty_list() {
-        // Set deterministic proposer duties first, then assert no_proposer_duties
-        // wins.
+        // Set deterministic proposer duties first, then assert
+        // no_proposer_duties wins.
         let mock = BeaconMock::builder()
             .validator_set(ValidatorSet::validator_set_a())
             .deterministic_proposer_duties(1)

@@ -1,8 +1,8 @@
 //! Eth2 signed-data verification.
 //!
-//! Extends [`SignedData`] types that carry beacon-chain signatures with the
-//! metadata needed to verify them: the signing [`DomainName`] and the signing
-//! [`Epoch`]. [`verify_eth2_signed_data`] ties the two together with the
+//! Extends `SignedData` types that carry beacon-chain signatures with the
+//! metadata needed to verify them: the signing `DomainName` and the signing
+//! `Epoch`. `verify_eth2_signed_data` ties the two together with the
 //! upstream beacon-node domain lookup and BLS verification.
 
 use std::any::Any;
@@ -282,7 +282,7 @@ impl Eth2SignedData for SyncCommitteeSelection {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
     use pluto_eth2api::spec::phase0;
     use pluto_testutil::BeaconMock;
     use serde::de::DeserializeOwned;
@@ -338,15 +338,14 @@ mod tests {
         let epoch = data.epoch(client).await.unwrap();
         let root = data.message_root().unwrap();
 
-        let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
-        let secret = tbls.generate_secret_key(&mut rng).unwrap();
-        let pubkey = tbls.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_secret_key(&mut rng).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
 
         let sig_data = signing::get_data_root(client, data.domain_name(), epoch, root)
             .await
             .unwrap();
-        let sig: Signature = tbls.sign(&secret, &sig_data).unwrap();
+        let sig: Signature = tbls::sign(&secret, &sig_data).unwrap();
 
         let signed = data.set_signature(sig).unwrap();
 
@@ -463,16 +462,15 @@ mod tests {
         let epoch = data.epoch(client).await.unwrap();
         let root = data.message_root().unwrap();
 
-        let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
-        let secret = tbls.generate_secret_key(&mut rng).unwrap();
-        let wrong_secret = tbls.generate_secret_key(&mut rng).unwrap();
-        let wrong_pubkey = tbls.secret_to_public_key(&wrong_secret).unwrap();
+        let secret = tbls::generate_secret_key(&mut rng).unwrap();
+        let wrong_secret = tbls::generate_secret_key(&mut rng).unwrap();
+        let wrong_pubkey = tbls::secret_to_public_key(&wrong_secret).unwrap();
 
         let sig_data = signing::get_data_root(client, data.domain_name(), epoch, root)
             .await
             .unwrap();
-        let sig: Signature = tbls.sign(&secret, &sig_data).unwrap();
+        let sig: Signature = tbls::sign(&secret, &sig_data).unwrap();
         let signed = data.set_signature(sig).unwrap();
 
         let err = verify_eth2_signed_data(client, &signed, &wrong_pubkey)

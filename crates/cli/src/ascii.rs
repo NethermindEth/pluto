@@ -1,6 +1,6 @@
 //! ASCII art helpers for CLI output.
 //!
-//! Generator used: https://patorjk.com/software/taag/#p=display&f=Big
+//! Generator used: <https://patorjk.com/software/taag/#p=display&f=Big>
 
 use crate::commands::test::{CategoryScore, TestCategory};
 
@@ -86,7 +86,7 @@ pub const SCORE_C_ASCII: &str = r#"   ____
 "#;
 
 /// Returns the ASCII art lines for a given category, ready to extend into a
-/// Vec<String>.
+/// `Vec<String>`.
 pub fn get_category_ascii(category: &Option<TestCategory>) -> Vec<String> {
     let ascii = match category {
         Some(TestCategory::Peers) => PEERS_ASCII,

@@ -1,7 +1,7 @@
 //! Force direct connection behaviour.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     task::{Context, Poll},
 };
@@ -34,8 +34,9 @@ pub struct ForceDirectBehaviour {
     /// Pending events to emit.
     pending_events: VecDeque<ToSwarm<ForceDirectEvent, Infallible>>,
 
-    /// Pending forcings to emit.
-    pending_forcings: HashSet<PeerId>,
+    /// Peers with a force-direct dial in flight, and the direct addresses it
+    /// was given.
+    pending_forcings: HashMap<PeerId, Vec<Multiaddr>>,
 
     /// Interval timer for running force direct logic periodically.
     ticker: Interval,
@@ -64,6 +65,8 @@ pub enum ForceDirectEvent {
     ForceDirectFailure {
         /// The peer to force direct connection to.
         peer: PeerId,
+        /// The direct addresses the failed dial was given.
+        addresses: Vec<Multiaddr>,
         /// The reason for the failure.
         reason: String,
     },
@@ -80,7 +83,7 @@ impl ForceDirectBehaviour {
             local_peer_id,
             pending_events: VecDeque::new(),
             ticker,
-            pending_forcings: HashSet::new(),
+            pending_forcings: HashMap::new(),
         }
     }
 
@@ -100,7 +103,7 @@ impl ForceDirectBehaviour {
                 continue;
             }
 
-            if self.pending_forcings.contains(peer) {
+            if self.pending_forcings.contains_key(peer) {
                 continue;
             }
 
@@ -170,7 +173,8 @@ impl ForceDirectBehaviour {
                 direct_addresses.len()
             );
 
-            self.pending_forcings.insert(*peer);
+            self.pending_forcings
+                .insert(*peer, direct_addresses.clone());
 
             self.pending_events.push_back(ToSwarm::Dial {
                 opts: DialOpts::peer_id(*peer)
@@ -187,7 +191,7 @@ impl ForceDirectBehaviour {
             libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
         };
 
-        if self.pending_forcings.contains(&event.peer_id) && utils::is_direct_addr(addr) {
+        if self.pending_forcings.contains_key(&event.peer_id) && utils::is_direct_addr(addr) {
             self.pending_forcings.remove(&event.peer_id);
             self.pending_events.push_back(ToSwarm::GenerateEvent(
                 ForceDirectEvent::ForceDirectSuccess {
@@ -202,10 +206,11 @@ impl ForceDirectBehaviour {
             return;
         };
 
-        if self.pending_forcings.remove(&peer_id) {
+        if let Some(addresses) = self.pending_forcings.remove(&peer_id) {
             self.pending_events.push_back(ToSwarm::GenerateEvent(
                 ForceDirectEvent::ForceDirectFailure {
                     peer: peer_id,
+                    addresses,
                     reason: "dial failed".to_string(),
                 },
             ));
@@ -276,5 +281,214 @@ impl NetworkBehaviour for ForceDirectBehaviour {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::swarm::ConnectionId;
+
+    use super::*;
+    use crate::p2p_context::Peer;
+
+    const RELAY_ID: &str = "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT";
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    fn relayed(transport: &str) -> Multiaddr {
+        addr(&format!("{transport}/p2p/{RELAY_ID}/p2p-circuit"))
+    }
+
+    fn conn(id: PeerId, n: usize, remote_addr: Multiaddr) -> Peer {
+        Peer {
+            id,
+            connection_id: ConnectionId::new_unchecked(n),
+            remote_addr,
+        }
+    }
+
+    fn behaviour(local: PeerId, peers: impl IntoIterator<Item = PeerId>) -> ForceDirectBehaviour {
+        let known: Vec<PeerId> = peers.into_iter().chain(std::iter::once(local)).collect();
+
+        ForceDirectBehaviour::new(P2PContext::new(known), local)
+    }
+
+    /// Seeds `conns` and, when `addresses` is `Some`, the identify-reported
+    /// addresses for `peer`.
+    fn seed_store(
+        behaviour: &ForceDirectBehaviour,
+        peer: PeerId,
+        conns: Vec<Peer>,
+        addresses: Option<Vec<Multiaddr>>,
+    ) {
+        // Scoped so the write lock is released before the logic under test
+        // takes its read lock.
+        let mut store = behaviour.p2p_context.peer_store_write_lock();
+        for conn in conns {
+            store.add_peer(conn);
+        }
+        if let Some(addresses) = addresses {
+            store.set_peer_addresses(peer, addresses);
+        }
+    }
+
+    /// The peers the queued events dial.
+    fn dialled(behaviour: &ForceDirectBehaviour) -> Vec<PeerId> {
+        behaviour
+            .pending_events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::Dial { opts } => opts.get_peer_id(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn forces_direct_when_every_connection_is_relayed() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        seed_store(
+            behaviour,
+            peer,
+            vec![conn(peer, 1, relayed("/ip4/1.2.3.4/tcp/3610"))],
+            // Of the two known addresses only the direct one is dialable.
+            Some(vec![
+                relayed("/ip4/1.2.3.4/tcp/3610"),
+                addr("/ip4/5.6.7.8/tcp/3610"),
+            ]),
+        );
+
+        behaviour.force_direct_connections();
+
+        assert_eq!(dialled(behaviour), vec![peer]);
+        // The relayed address is filtered out of the dial: forcing a direct
+        // connection through the relay would be a no-op.
+        assert_eq!(
+            behaviour.pending_forcings.get(&peer),
+            Some(&vec![addr("/ip4/5.6.7.8/tcp/3610")])
+        );
+    }
+
+    #[tokio::test]
+    async fn skips_the_local_peer() {
+        let local = PeerId::random();
+        let behaviour = &mut behaviour(local, []);
+        seed_store(
+            behaviour,
+            local,
+            vec![conn(local, 1, relayed("/ip4/1.2.3.4/tcp/3610"))],
+            Some(vec![addr("/ip4/5.6.7.8/tcp/3610")]),
+        );
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+        assert!(behaviour.pending_forcings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_a_peer_already_being_forced() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        seed_store(
+            behaviour,
+            peer,
+            vec![conn(peer, 1, relayed("/ip4/1.2.3.4/tcp/3610"))],
+            Some(vec![addr("/ip4/5.6.7.8/tcp/3610")]),
+        );
+
+        behaviour.pending_forcings.insert(peer, vec![]);
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_a_peer_without_connections() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        // Addresses are known, but there is no relayed connection to replace.
+        seed_store(
+            behaviour,
+            peer,
+            vec![],
+            Some(vec![addr("/ip4/5.6.7.8/tcp/3610")]),
+        );
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+        assert!(behaviour.pending_forcings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_a_peer_that_already_has_one_direct_connection() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        // The all-relay guard: one direct connection is enough to leave it
+        // alone.
+        seed_store(
+            behaviour,
+            peer,
+            vec![
+                conn(peer, 1, relayed("/ip4/1.2.3.4/tcp/3610")),
+                conn(peer, 2, addr("/ip4/5.6.7.8/tcp/3610")),
+            ],
+            Some(vec![addr("/ip4/5.6.7.8/tcp/3610")]),
+        );
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+        assert!(behaviour.pending_forcings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_a_peer_without_known_addresses() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        // Identify has not reported an address yet, so there is nothing to
+        // dial.
+        seed_store(
+            behaviour,
+            peer,
+            vec![conn(peer, 1, relayed("/ip4/1.2.3.4/tcp/3610"))],
+            None,
+        );
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+        assert!(behaviour.pending_forcings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_a_peer_whose_known_addresses_are_all_relayed() {
+        let local = PeerId::random();
+        let peer = PeerId::random();
+        let behaviour = &mut behaviour(local, [peer]);
+        seed_store(
+            behaviour,
+            peer,
+            vec![conn(peer, 1, relayed("/ip4/1.2.3.4/tcp/3610"))],
+            Some(vec![
+                relayed("/ip4/1.2.3.4/tcp/3610"),
+                relayed("/ip4/1.2.3.4/udp/3610/quic-v1"),
+            ]),
+        );
+
+        behaviour.force_direct_connections();
+
+        assert!(dialled(behaviour).is_empty());
+        assert!(behaviour.pending_forcings.is_empty());
     }
 }
