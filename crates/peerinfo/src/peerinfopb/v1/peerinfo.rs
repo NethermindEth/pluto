@@ -4,30 +4,31 @@
 #![allow(clippy::all)]
 #![allow(rustdoc::all)]
 
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::pluto_proto::prost::Message)]
+#[prost(prost_path = "::pluto_proto::prost")]
 pub struct PeerInfo {
     #[prost(string, tag = "1")]
-    pub pluto_version: ::prost::alloc::string::String,
+    pub pluto_version: ::pluto_proto::prost::alloc::string::String,
     #[prost(bytes = "bytes", tag = "2")]
-    pub lock_hash: ::prost::bytes::Bytes,
+    pub lock_hash: ::pluto_proto::prost::bytes::Bytes,
     #[prost(message, optional, tag = "3")]
     pub sent_at: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(string, tag = "4")]
-    pub git_hash: ::prost::alloc::string::String,
+    pub git_hash: ::pluto_proto::prost::alloc::string::String,
     #[prost(message, optional, tag = "5")]
     pub started_at: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(bool, tag = "6")]
     pub builder_api_enabled: bool,
     #[prost(string, tag = "7")]
-    pub nickname: ::prost::alloc::string::String,
+    pub nickname: ::pluto_proto::prost::alloc::string::String,
 }
-impl ::prost::Name for PeerInfo {
+impl ::pluto_proto::prost::Name for PeerInfo {
     const NAME: &'static str = "PeerInfo";
     const PACKAGE: &'static str = "peerinfo";
-    fn full_name() -> ::prost::alloc::string::String {
+    fn full_name() -> ::pluto_proto::prost::alloc::string::String {
         "peerinfo.PeerInfo".into()
     }
-    fn type_url() -> ::prost::alloc::string::String {
+    fn type_url() -> ::pluto_proto::prost::alloc::string::String {
         "type.googleapis.com/peerinfo.PeerInfo".into()
     }
 }

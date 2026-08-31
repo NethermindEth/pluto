@@ -22,6 +22,7 @@ vise.workspace = true
 pluto-crypto.workspace = true
 pluto-eth2api.workspace = true
 pluto-featureset.workspace = true
+pluto-proto.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 regex.workspace = true

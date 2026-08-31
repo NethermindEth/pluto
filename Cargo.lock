@@ -5122,9 +5122,9 @@ dependencies = [
  "pluto-parsigex",
  "pluto-peerinfo",
  "pluto-priority",
+ "pluto-proto",
  "pluto-ssz",
  "pluto-testutil",
- "prost 0.14.4",
  "prost-types 0.14.4",
  "rand 0.8.7",
  "regex",
@@ -5294,6 +5294,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-featureset",
+ "pluto-proto",
  "pluto-ssz",
  "pluto-testutil",
  "pluto-tracing",
@@ -5357,6 +5358,7 @@ dependencies = [
  "pluto-p2p",
  "pluto-parsigex",
  "pluto-peerinfo",
+ "pluto-proto",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
@@ -5604,6 +5606,7 @@ dependencies = [
  "pluto-core",
  "pluto-eth2util",
  "pluto-p2p",
+ "pluto-proto",
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
@@ -5643,6 +5646,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "pluto-proto"
+version = "1.7.1"
+dependencies = [
+ "prost 0.14.4",
 ]
 
 [[package]]
