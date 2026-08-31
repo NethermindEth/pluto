@@ -5125,7 +5125,6 @@ dependencies = [
  "pluto-proto",
  "pluto-ssz",
  "pluto-testutil",
- "prost 0.14.4",
  "prost-types 0.14.4",
  "rand 0.8.7",
  "regex",
