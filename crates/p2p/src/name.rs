@@ -373,13 +373,19 @@ pub fn peer_name(id: &PeerId) -> String {
         p_pow = (p_pow.wrapping_mul(P)) % M;
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping_rem never overflows and cannot divide by zero (NOUNS is non-empty)"
+    )]
     let noun_idx = usize::try_from(hash_value.wrapping_rem(
         u64::try_from(NOUNS.len()).expect("NOUNS.len() is always less than u64::MAX"),
     ))
     .expect("hash_value.wrapping_rem(u64::try_from(NOUNS.len())) is always less than usize::MAX");
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping_rem never overflows and cannot divide by zero (ADJECTIVES is non-empty)"
+    )]
     let adj_idx = usize::try_from(hash_value.wrapping_rem(
         u64::try_from(ADJECTIVES.len()).expect("ADJECTIVES.len() is always less than u64::MAX"),
     ))

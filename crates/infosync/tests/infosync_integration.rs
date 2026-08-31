@@ -139,7 +139,10 @@ struct Host {
 /// in-process [`MemoryTransport`], wrapped by an infosync [`InfoSync`]
 /// component. A capture subscriber is registered *after* infosync's own, so
 /// receiving a capture message guarantees infosync's store is already updated.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper wires the full infosync host setup"
+)]
 fn build_host(
     seed: u8,
     idx: usize,

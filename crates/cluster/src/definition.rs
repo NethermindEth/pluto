@@ -419,7 +419,10 @@ pub enum InvalidGasLimitError {
 
 impl Definition {
     /// Create a new cluster definition.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the full cluster definition field set"
+    )]
     pub fn new(
         name: String,
         num_validators: u64,

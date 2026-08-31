@@ -1,3 +1,4 @@
+// reason: example binary items need no doc comments
 #![allow(missing_docs)]
 //! Relay server example demonstrating a standalone libp2p relay node.
 //!

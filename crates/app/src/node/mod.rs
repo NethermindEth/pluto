@@ -690,7 +690,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
 
 /// Spawns and supervises the node's long-lived tasks, then performs an ordered
 /// shutdown on cancellation or first-task failure.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "aggregates independent long-lived inputs (swarm, consensus, wired components, monitoring); a single config struct would just move the coupling"
 )]
