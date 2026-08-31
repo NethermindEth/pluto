@@ -34,7 +34,8 @@
 /// Drop-in replacement for the `prost` crate.
 ///
 /// Generated code refers to items as `::pluto_proto::prost::…`; the glob
-/// re-export forwards everything to the real crate, and the nested [`encoding`]
+/// re-export forwards everything to the real crate, and the nested
+/// [`encoding`](crate::prost::encoding)
 /// module shadows only the map encoders.
 pub mod prost {
     pub use ::prost::*;
@@ -45,12 +46,12 @@ pub mod prost {
 
         // A map entry is a length-delimited submessage with the key at field 1
         // and the value at field 2. This generates `encode`/`encoded_len` (and
-        // their `_with_default` variants, used for proto2 enum-valued maps) that
-        // — unlike stock prost — never skip a field that equals its default, so
-        // the wire bytes match charon's Go marshaler exactly. `merge` /
-        // `merge_with_default` are re-exported from prost: decoding already
-        // accepts both the explicit-empty and omitted forms, so the read path
-        // needs no change.
+        // their `_with_default` variants, used for proto2 enum-valued maps)
+        // that — unlike stock prost — never skip a field that equals
+        // its default, so the wire bytes match charon's Go marshaler
+        // exactly. `merge` / `merge_with_default` are re-exported from
+        // prost: decoding already accepts both the explicit-empty and
+        // omitted forms, so the read path needs no change.
         //
         // The arithmetic and `usize as u64` casts mirror prost's own map
         // encoding verbatim; the workspace lints that would otherwise flag them
@@ -289,8 +290,8 @@ mod tests {
         );
 
         // Decode each map entry back through the re-exported merge. prost's map
-        // merge consumes the length-delimited entry itself, so we only strip the
-        // field tag that precedes each occurrence.
+        // merge consumes the length-delimited entry itself, so we only strip
+        // the field tag that precedes each occurrence.
         let mut decoded: BTreeMap<String, String> = BTreeMap::new();
         let mut slice: &[u8] = &buf;
         while slice.has_remaining() {
