@@ -244,7 +244,8 @@ pub fn threshold_aggregate(
         return Err(Error::EmptySignatureArray);
     }
 
-    // Signature indices are already 1-indexed (matching share evaluation points)
+    // Signature indices are already 1-indexed (matching share evaluation
+    // points)
     let indices: Vec<Index> = partial_signatures_by_idx.keys().copied().collect();
 
     let signatures: Vec<BlstSignature> = partial_signatures_by_idx
@@ -589,13 +590,15 @@ mod tests {
         let sk = generate_secret_key(OsRng).unwrap();
         let sig = sign(&sk, data).unwrap();
 
-        // Charon Herumi Aggregate deserializes+re-serializes even for one element,
-        // so the output is the canonical encoding of the parsed point (not the
-        // input bytes verbatim). For a signature produced by `sign` these coincide.
+        // Charon Herumi Aggregate deserializes+re-serializes even for one
+        // element, so the output is the canonical encoding of the
+        // parsed point (not the input bytes verbatim). For a signature
+        // produced by `sign` these coincide.
         let aggregated = aggregate(&[sig]).unwrap();
         assert_eq!(sig, aggregated);
 
-        // Canonical round-trip: re-serializing the parsed aggregate is idempotent.
+        // Canonical round-trip: re-serializing the parsed aggregate is
+        // idempotent.
         let reparsed = BlstSignature::from_bytes(&aggregated).unwrap();
         assert_eq!(aggregated, reparsed.to_bytes());
     }
@@ -760,8 +763,9 @@ mod tests {
     #[test]
     fn aggregate_empty_returns_identity_signature() {
         // Parity with Charon Herumi Aggregate: empty input is NOT an error; it
-        // returns the serialized G2 point at infinity. Fixture: `0xc0` followed by
-        // 95 zero bytes (Herumi `sig.Serialize()` of a zero `bls.Sign`).
+        // returns the serialized G2 point at infinity. Fixture: `0xc0` followed
+        // by 95 zero bytes (Herumi `sig.Serialize()` of a zero
+        // `bls.Sign`).
         let agg = aggregate(&[]).expect("empty aggregate must not error (Herumi parity)");
 
         let mut expected = [0u8; 96];
@@ -774,9 +778,9 @@ mod tests {
 
     #[test]
     fn identity_signature_matches_go_fixture() {
-        // Hex of Herumi `bls.Sign{}.Serialize()` for the BLS12-381 G2 compressed
-        // point at infinity (eth2/ZCash compressed encoding): `c0` followed by
-        // 190 hex zeros (96 bytes total).
+        // Hex of Herumi `bls.Sign{}.Serialize()` for the BLS12-381 G2
+        // compressed point at infinity (eth2/ZCash compressed
+        // encoding): `c0` followed by 190 hex zeros (96 bytes total).
         let go_fixture_hex = format!("c0{}", "0".repeat(190));
         let go_fixture = hex::decode(go_fixture_hex).unwrap();
         assert_eq!(go_fixture.len(), 96);

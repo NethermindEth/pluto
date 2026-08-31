@@ -64,10 +64,10 @@ pub mod fetcher;
 
 mod parsigex_codec;
 
-// SSZ codec operates on compile-time-constant byte sizes and offsets.
-// Arithmetic is bounded and casts from `usize` to `u32` are safe because all
-// sizes are well below `u32::MAX`.
-#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "SSZ codec arithmetic is bounded by compile-time-constant byte sizes and offsets"
+)]
 pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;

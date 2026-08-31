@@ -241,7 +241,6 @@ pub(crate) async fn sign_and_agg_deposit_data(
 }
 
 /// Signs, exchanges, and aggregates validator registrations.
-#[allow(dead_code, reason = "will be used in dkg later ")]
 pub(crate) async fn sign_and_agg_validator_registrations(
     exchanger: &Exchanger,
     shares: &[Share],
@@ -283,7 +282,7 @@ pub(crate) async fn sign_and_agg_validator_registrations(
 /// into the existing lock and the definition is re-hashed; signing happens over
 /// the union of `existing_shares` and `new_shares` unless the append is
 /// unverified, in which case signing is skipped.
-#[allow(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
+#[expect(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
 pub(crate) async fn sign_and_aggregate_lock_hash(
     existing_shares: &[Share],
     new_shares: &[Share],

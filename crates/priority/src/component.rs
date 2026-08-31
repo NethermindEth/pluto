@@ -15,10 +15,7 @@ use pluto_core::{
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::Duty,
 };
-use pluto_p2p::{
-    p2p_context::P2PContext,
-    peer::{peer_id_from_key, peer_id_to_public_key},
-};
+use pluto_p2p::{p2p_context::P2PContext, peer};
 use prost::Message;
 use prost_types::{Any, Value, value::Kind};
 use tokio_util::sync::CancellationToken;
@@ -118,7 +115,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
 pub(crate) fn new_msg_verifier(peers: &[PeerId]) -> Result<MsgVerifier> {
     let mut keys: HashMap<String, PublicKey> = HashMap::with_capacity(peers.len());
     for peer in peers {
-        let pk = peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
+        let pk = peer::peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
         keys.insert(peer.to_string(), pk);
     }
 
@@ -255,7 +252,10 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "constructor wires together the full priority component; each argument is a distinct collaborator"
+)]
 pub fn new_component(
     peers: Vec<PeerId>,
     min_required: i64,
@@ -275,7 +275,7 @@ pub fn new_component(
 
     // Derive the local peer id from the signing key so the message `peer_id`
     // and its signature always agree (peers verify the two against each other).
-    let local_id = peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
+    let local_id = peer::peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
 
     let verifier = new_msg_verifier(&peers)?;
     let calculator: Arc<dyn DeadlineCalculator> = Arc::new(calculator);
@@ -360,8 +360,8 @@ impl Component {
         let msg = sign_msg(&msg, &self.privkey)?;
 
         // Bound the instance by the duty deadline. The token is cancelled (not
-        // merely dropped) on elapse so the prioritiser's detached consensus task,
-        // which holds a clone of it, also tears down.
+        // merely dropped) on elapse so the prioritiser's detached consensus
+        // task, which holds a clone of it, also tears down.
         let instance_ct = ct.child_token();
         let remaining = deadline
             .signed_duration_since(Utc::now())
@@ -543,7 +543,8 @@ mod tests {
 
     #[test]
     fn topic_result_from_proto_wrong_type_url() {
-        // Valid StringValue bytes but an envelope naming the wrong message type.
+        // Valid StringValue bytes but an envelope naming the wrong message
+        // type.
         let value = Value {
             kind: Some(Kind::StringValue("v1".to_owned())),
         };

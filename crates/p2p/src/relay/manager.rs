@@ -292,8 +292,9 @@ impl RelayManager {
                 "Relay stuck in Established without reservation; force-closing for redial"
             );
             // Clear the timestamp so we don't re-fire CloseConnection on the
-            // next tick while ConnectionClosed is in flight; on_connection_closed
-            // will eventually transition us back to Dialing.
+            // next tick while ConnectionClosed is in flight;
+            // on_connection_closed will eventually transition us
+            // back to Dialing.
             self.established_at.remove(&relay_id);
             self.events.push_back(ToSwarm::CloseConnection {
                 peer_id: relay_id,

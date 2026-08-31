@@ -334,8 +334,8 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         });
     }
 
-    // Taking total number of operators, operator_enrs and operator_addresses are
-    // mutually exclusive so no if statement is needed.
+    // Taking total number of operators, operator_enrs and operator_addresses
+    // are mutually exclusive so no if statement is needed.
     let num_operators = operators.len() as u64;
     let safe_threshold = pluto_cluster::helpers::threshold(num_operators);
     let threshold = if args.threshold == 0 {

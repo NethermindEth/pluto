@@ -118,8 +118,8 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
     let label = truncate_label(&version);
 
     // Emulate Charon's `beaconNodeVersionGauge.Reset`: vise's `Family` cannot
-    // delete series, so clear any previously-reported version before setting the
-    // current one.
+    // delete series, so clear any previously-reported version before setting
+    // the current one.
     for (previous, gauge) in MONITORING_METRICS.beacon_node_version.to_entries() {
         if previous != label {
             gauge.set(0);

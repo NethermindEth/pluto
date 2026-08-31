@@ -96,14 +96,15 @@ impl Behaviour {
     }
 
     fn send_receive(&mut self, peer: PeerId, request: OutboundRequest) {
-        // The send path must share the gate used by `connection_handler_for_peer`:
-        // a non-cluster peer is served a `dummy` (`Either::Right`) handler, so
-        // delivering a `SendReceive` (`Either::Left`) event to it would mismatch
-        // the handler arm and abort the whole swarm task via libp2p's
+        // The send path must share the gate used by
+        // `connection_handler_for_peer`: a non-cluster peer is served a
+        // `dummy` (`Either::Right`) handler, so delivering a
+        // `SendReceive` (`Either::Left`) event to it would mismatch the
+        // handler arm and abort the whole swarm task via libp2p's
         // `unreachable!()`. Refuse here with the same outcome the remote side
         // produces when it gates us out (`Unsupported`). This keeps the engine
-        // panic-safe even if a caller wires a `peers` set that is not a subset of
-        // the context's known peers.
+        // panic-safe even if a caller wires a `peers` set that is not a subset
+        // of the context's known peers.
         if !self.p2p_context.is_known_peer(&peer) {
             let _ = request.response.send(Err(crate::Error::Unsupported));
             return;

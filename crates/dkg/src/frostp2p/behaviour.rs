@@ -280,9 +280,10 @@ impl FrostP2PBehaviour {
         });
 
         for peer_id in peers {
-            // This can only cancel handler-local queued opens. If the handler has
-            // already started writing, stale completion is ignored because all
-            // result waiters were removed above.
+            // This can only cancel handler-local queued opens. If the handler
+            // has already started writing, stale completion is
+            // ignored because all result waiters were removed
+            // above.
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
                 handler: NotifyHandler::Any,
@@ -353,9 +354,10 @@ impl NetworkBehaviour for FrostP2PBehaviour {
                 self.flush_pending_for_peer(event.peer_id);
             }
             FromSwarm::ConnectionClosed(event) if !self.is_connected(&event.peer_id) => {
-                // PlutoBehaviour runs conn_logger before inner behaviours, so the
-                // shared peer store already reflects this close. Multiple live
-                // connections per peer are valid; only fail sends when none remain.
+                // PlutoBehaviour runs conn_logger before inner behaviours, so
+                // the shared peer store already reflects this
+                // close. Multiple live connections per peer are
+                // valid; only fail sends when none remain.
                 self.fail_peer_sends(event.peer_id);
             }
             FromSwarm::DialFailure(event) => {

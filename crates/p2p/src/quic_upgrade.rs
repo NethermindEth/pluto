@@ -19,14 +19,7 @@ use libp2p::{
 use tokio::time::Interval;
 use tracing::{debug, info};
 
-use crate::{
-    name,
-    p2p_context::P2PContext,
-    utils::{
-        filter_direct_quic_addrs, has_direct_quic_conn, has_direct_tcp_conn, is_quic_addr,
-        is_relay_addr, is_tcp_addr,
-    },
-};
+use crate::{name, p2p_context::P2PContext, utils};
 
 /// Interval between QUIC upgrade attempts (1 minute).
 const UPGRADE_INTERVAL: Duration = Duration::from_secs(60);
@@ -230,7 +223,7 @@ impl QuicUpgradeBehaviour {
 
             let conn_refs: Vec<_> = conns.iter().collect();
 
-            if has_direct_quic_conn(&conn_refs) {
+            if utils::has_direct_quic_conn(&conn_refs) {
                 debug!(
                     peer = %name::peer_name(&peer_id),
                     "already has direct QUIC connection to peer"
@@ -238,7 +231,7 @@ impl QuicUpgradeBehaviour {
 
                 let tcp_conn_ids: Vec<_> = conns
                     .iter()
-                    .filter(|c| is_tcp_addr(&c.remote_addr) && !is_relay_addr(&c.remote_addr))
+                    .filter(|c| utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr))
                     .map(|c| c.connection_id)
                     .collect();
 
@@ -252,7 +245,7 @@ impl QuicUpgradeBehaviour {
                 continue;
             }
 
-            if !has_direct_tcp_conn(&conn_refs) {
+            if !utils::has_direct_tcp_conn(&conn_refs) {
                 debug!(
                     peer = %name::peer_name(&peer_id),
                     "no direct connection via TCP to peer"
@@ -264,7 +257,7 @@ impl QuicUpgradeBehaviour {
                 .p2p_context
                 .peer_store_lock()
                 .peer_addresses(&peer_id)
-                .map(|addrs| filter_direct_quic_addrs(addrs.iter().cloned()))
+                .map(|addrs| utils::filter_direct_quic_addrs(addrs.iter().cloned()))
                 .unwrap_or_default();
 
             if quic_addrs.is_empty() {
@@ -283,7 +276,7 @@ impl QuicUpgradeBehaviour {
 
             let tcp_conn_ids: Vec<_> = conns
                 .iter()
-                .filter(|c| is_tcp_addr(&c.remote_addr) && !is_relay_addr(&c.remote_addr))
+                .filter(|c| utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr))
                 .map(|c| c.connection_id)
                 .collect();
 
@@ -313,7 +306,7 @@ impl QuicUpgradeBehaviour {
         if let Some(UpgradeState::DialingQuic { tcp_conn_ids }) =
             self.pending_upgrades.remove(&peer_id)
         {
-            if is_quic_addr(addr) && !is_relay_addr(addr) {
+            if utils::is_quic_addr(addr) && !utils::is_relay_addr(addr) {
                 info!(
                     peer = %name::peer_name(&peer_id),
                     addr = %addr,
@@ -427,5 +420,99 @@ impl NetworkBehaviour for QuicUpgradeBehaviour {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn behaviour() -> QuicUpgradeBehaviour {
+        QuicUpgradeBehaviour::new(P2PContext::default(), PeerId::random(), true)
+    }
+
+    /// The reason carried by the queued `UpgradeFailed` event for `peer`.
+    fn failure_reason(behaviour: &QuicUpgradeBehaviour, peer: &PeerId) -> Option<String> {
+        behaviour
+            .pending_events
+            .iter()
+            .find_map(|event| match event {
+                ToSwarm::GenerateEvent(QuicUpgradeEvent::UpgradeFailed {
+                    peer: failed,
+                    reason,
+                }) if failed == peer => Some(reason.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn backoff_doubles_then_pins_at_the_cap() {
+        let mut backoff = QuicUpgradeBackoff::new();
+
+        assert_eq!(QuicUpgradeBackoff::INITIAL, 1);
+        assert_eq!(QuicUpgradeBackoff::MAX, 512);
+        assert_eq!(backoff.backoff_duration, 1);
+        assert_eq!(backoff.tickers_remaining, 1);
+
+        // Each failure doubles up to the cap and re-arms the countdown to the
+        // full new duration.
+        for want in [2, 4, 8, 16, 32, 64, 128, 256, 512, 512, 512] {
+            backoff.record_failure();
+
+            assert_eq!(backoff.backoff_duration, want);
+            assert_eq!(backoff.tickers_remaining, want);
+        }
+    }
+
+    #[tokio::test]
+    async fn should_skip_counts_the_backoff_down_then_retries() {
+        let mut behaviour = behaviour();
+        let peer = PeerId::random();
+
+        // One failure arms a two-ticker backoff, ...
+        behaviour.record_failure(peer, "dial failed");
+        assert_eq!(
+            failure_reason(&behaviour, &peer).as_deref(),
+            Some("dial failed")
+        );
+
+        // ... so the next two ticks are skipped, ...
+        assert!(behaviour.should_skip(&peer));
+        assert!(behaviour.should_skip(&peer));
+
+        // ... and every tick after that retries.
+        assert!(!behaviour.should_skip(&peer));
+        assert!(!behaviour.should_skip(&peer));
+    }
+
+    #[tokio::test]
+    async fn backoff_is_tracked_per_peer() {
+        let mut behaviour = behaviour();
+        let backing_off = PeerId::random();
+        let other = PeerId::random();
+
+        behaviour.record_failure(backing_off, "dial failed");
+
+        assert!(behaviour.should_skip(&backing_off));
+        assert!(
+            !behaviour.should_skip(&other),
+            "one peer's backoff must not delay another"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_backoff_restores_immediate_retries() {
+        let mut behaviour = behaviour();
+        let peer = PeerId::random();
+
+        behaviour.record_failure(peer, "dial failed");
+        behaviour.record_failure(peer, "dial failed");
+        assert!(behaviour.backoffs.contains_key(&peer));
+
+        // A successful upgrade drops the state entirely.
+        behaviour.clear_backoff(&peer);
+
+        assert!(!behaviour.backoffs.contains_key(&peer));
+        assert!(!behaviour.should_skip(&peer));
     }
 }

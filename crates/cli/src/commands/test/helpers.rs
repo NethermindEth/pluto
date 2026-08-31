@@ -1,7 +1,9 @@
 //! Shared types and helper functions for all test categories.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, io::Write, path::Path, time::Duration as StdDuration};
+use std::{
+    collections::HashMap, fmt, io::Write, path::Path, sync::LazyLock, time::Duration as StdDuration,
+};
 
 use crate::{
     ascii::{append_score, get_category_ascii, get_score_ascii},
@@ -357,7 +359,8 @@ pub(crate) async fn write_result_to_file(
 
     let file_content_json = serde_json::to_vec(&all_results)?;
 
-    // tempfile is a synchronous crate, but keep existing_file open during operation
+    // tempfile is a synchronous crate, but keep existing_file open during
+    // operation
     tokio::task::spawn_blocking(move || -> CliResult<()> {
         use std::io::Write as _;
 
@@ -580,6 +583,22 @@ pub(crate) fn hash_ssz(data: &[u8]) -> CliResult<HashRoot> {
     Ok(hasher.hash_root()?)
 }
 
+/// Per-request timeout for diagnostic HTTP calls, so a hostile or slow endpoint
+/// cannot stall a diagnostic indefinitely.
+const DIAG_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+
+/// Returns the shared diagnostic HTTP client. One client means one connection
+/// pool, so probes keep alive instead of handshaking inside their own RTT.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(DIAG_HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_default()
+    });
+    &CLIENT
+}
+
 /// Measures the round-trip time (RTT) for an HTTP request and logs a warning if
 /// the response status code doesn't match the expected status.
 pub(crate) async fn request_rtt(
@@ -588,9 +607,7 @@ pub(crate) async fn request_rtt(
     body: Option<Vec<u8>>,
     expected_status: StatusCode,
 ) -> CliResult<StdDuration> {
-    let client = reqwest::Client::new();
-
-    let mut request_builder = client.request(method, url.as_ref());
+    let mut request_builder = http_client().request(method, url.as_ref());
 
     if let Some(body_bytes) = body {
         request_builder = request_builder
@@ -680,7 +697,8 @@ mod tests {
         assert!(must_output_to_file_on_quiet(true, "").is_err());
     }
 
-    // Ground truth from Go fastssz (with Duration as string format matching Rust)
+    // Ground truth from Go fastssz (with Duration as string format matching
+    // Rust)
     const GO_HASH_EMPTY: &str = "7b7d000000000000000000000000000000000000000000000000000000000000";
     const GO_HASH_ALL_CATEGORIES: &str =
         "64469d918903e272849172b3b36e812f602411b664a89b59c04393332b69f63b";

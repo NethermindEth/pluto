@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::{
     config::RelayAddr,
-    peer::{AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key},
+    peer::{self, AddrInfo, MutablePeer, Peer, PeerError},
 };
 
 /// Polling interval for relay address updates.
@@ -206,7 +206,7 @@ async fn resolve_relay(
         if prev_addrs != new_addrs {
             prev_addrs = new_addrs;
 
-            match addr_infos_from_p2p_addrs(&addrs) {
+            match peer::addr_infos_from_p2p_addrs(&addrs) {
                 Ok(infos) if infos.len() != 1 => {
                     tracing::error!(
                         n = infos.len(),
@@ -365,7 +365,7 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
         PeerError::MissingPublicKeyInEnr,
     ))?;
 
-    let peer_id = peer_id_from_key(public_key)?;
+    let peer_id = peer::peer_id_from_key(public_key)?;
 
     let mut addrs = Vec::new();
 
@@ -397,15 +397,18 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
 /// This is a convenience wrapper around `addr_infos_from_p2p_addrs` for a
 /// single address.
 fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, PeerError> {
-    let mut infos = addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
+    let mut infos = peer::addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
 
     infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use k256::elliptic_curve::rand_core::OsRng;
     use libp2p::PeerId;
+    use pluto_eth2util::enr::EnrEntry;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
@@ -419,7 +422,7 @@ mod tests {
     /// relay serves for it.
     fn relay_fixture() -> (PeerId, String) {
         let key = k256::SecretKey::random(&mut OsRng);
-        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
         let body = serde_json::to_string(&[format!("/ip4/10.0.0.1/tcp/3610/p2p/{peer_id}")])
             .expect("serialize relay addrs");
 
@@ -545,5 +548,88 @@ mod tests {
             matches!(err, BootnodeError::InvalidRelayUrl(_)),
             "unexpected error: {err}"
         );
+    }
+
+    /// An ENR for `key` in the `enr:` string form a relay serves.
+    fn enr_str(key: &k256::SecretKey, entries: Vec<EnrEntry>) -> String {
+        Record::new(key, entries).expect("build enr").to_string()
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_maps_ports_to_transports() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
+        let ip = EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4));
+
+        // The UDP port is advertised as QUIC, and comes first when both ports
+        // are set so a dialer prefers it over TCP.
+        let cases = [
+            (vec![ip, EnrEntry::Tcp(3610)], vec!["/ip4/1.2.3.4/tcp/3610"]),
+            (
+                vec![ip, EnrEntry::Udp(3630)],
+                vec!["/ip4/1.2.3.4/udp/3630/quic-v1"],
+            ),
+            (
+                vec![ip, EnrEntry::Tcp(3610), EnrEntry::Udp(3630)],
+                vec!["/ip4/1.2.3.4/udp/3630/quic-v1", "/ip4/1.2.3.4/tcp/3610"],
+            ),
+        ];
+
+        for (entries, want) in cases {
+            let addrs =
+                multi_addr_from_enr_str(&enr_str(&key, entries)).expect("enr should resolve");
+            let want: Vec<Multiaddr> = want
+                .iter()
+                .map(|addr| format!("{addr}/p2p/{peer_id}").parse().expect("multiaddr"))
+                .collect();
+
+            assert_eq!(addrs, want);
+        }
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_an_enr_without_an_ip() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let enr = enr_str(&key, vec![EnrEntry::Tcp(3610)]);
+
+        let err = multi_addr_from_enr_str(&enr).expect_err("an ip is required");
+
+        assert!(
+            matches!(err, BootnodeError::EnrNoIp),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_an_enr_without_a_port() {
+        let key = k256::SecretKey::random(&mut OsRng);
+        let enr = enr_str(&key, vec![EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4))]);
+
+        let err = multi_addr_from_enr_str(&enr).expect_err("a port is required");
+
+        assert!(
+            matches!(err, BootnodeError::EnrNoPort),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_addr_from_enr_str_rejects_garbage() {
+        for garbage in [
+            "",
+            "not-an-enr",
+            // Right prefix, unparsable body.
+            "enr:not-base64-@@@",
+            // Valid base64, but not an RLP-encoded record.
+            "enr:AAAAAAAA",
+        ] {
+            let err = multi_addr_from_enr_str(garbage)
+                .expect_err("garbage must not resolve to an address");
+
+            assert!(
+                matches!(err, BootnodeError::ParseEnr(_)),
+                "unexpected error for {garbage:?}: {err}"
+            );
+        }
     }
 }

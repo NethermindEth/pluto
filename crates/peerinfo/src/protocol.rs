@@ -149,8 +149,7 @@ impl ProtocolState {
             return;
         }
 
-        #[allow(
-            clippy::cast_precision_loss,
+        #[expect(
             clippy::arithmetic_side_effects,
             reason = "RTT/2 subtraction from current time cannot underflow"
         )]
@@ -212,7 +211,10 @@ impl ProtocolState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "metrics submission needs all peer-info fields as distinct arguments"
+    )]
     fn metrics_submitter(
         &self,
         clock_offset: chrono::Duration,
@@ -225,9 +227,10 @@ impl ProtocolState {
     ) {
         let peer_name = pluto_p2p::name::peer_name(&self.peer_id);
 
-        // nickname/version are peer-supplied and unbounded in length; truncate at
-        // the metric boundary so a pathological value cannot blow up label memory.
-        // Reset the previous series under the SAME truncated form it was stored.
+        // nickname/version are peer-supplied and unbounded in length; truncate
+        // at the metric boundary so a pathological value cannot blow up
+        // label memory. Reset the previous series under the SAME
+        // truncated form it was stored.
         let nickname = truncate_label(nickname);
 
         // Reset previous peer nickname if it changed
@@ -239,7 +242,10 @@ impl ProtocolState {
 
         // Clamp clock offset to [-1 hour, 1 hour]
         let one_hour = chrono::Duration::hours(1);
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "negating a fixed one-hour Duration cannot overflow"
+        )]
         let clamped_offset = if clock_offset < -one_hour {
             -one_hour
         } else if clock_offset > one_hour {
@@ -575,7 +581,8 @@ mod tests {
             .unwrap();
 
         // The wire format should be: [varint length][protobuf bytes]
-        // Minimal message is 14 bytes, so length prefix is just 1 byte (14 < 128)
+        // Minimal message is 14 bytes, so length prefix is just 1 byte (14 <
+        // 128)
         assert_eq!(buf[0] as usize, PEERINFO_MINIMAL.len());
         assert_eq!(&buf[1..], PEERINFO_MINIMAL);
 

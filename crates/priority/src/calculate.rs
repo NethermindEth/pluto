@@ -20,7 +20,14 @@ const MAX_PRIORITIES: usize = 1000;
 /// Equals [`MAX_PRIORITIES`] so that one extra supporting peer always outweighs
 /// any relative-priority difference (which is bounded by `MAX_PRIORITIES`).
 /// `MAX_PRIORITIES` is a small compile-time constant that fits an `i64`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+// `cast_possible_truncation` does not fire on this usize->i64 cast, so it stays
+// `#[allow]` (an `#[expect]` would be unfulfilled): MAX_PRIORITIES is a small
+// compile-time constant that fits an i64.
+#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "MAX_PRIORITIES is a small compile-time constant that fits an i64"
+)]
 const COUNT_WEIGHT: i64 = MAX_PRIORITIES as i64;
 
 /// Returns the SSZ hash root of an `Any` envelope's deterministic protobuf

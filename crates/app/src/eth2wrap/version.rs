@@ -21,7 +21,7 @@ enum BeaconNodeVersionError {
 
 static MINIMUM_BEACON_NODE_VERSIONS: LazyLock<std::collections::HashMap<&str, version::SemVer>> =
     LazyLock::new(|| {
-        #[allow(clippy::unwrap_used, reason = "literals should be valid semver")]
+        #[expect(clippy::unwrap_used, reason = "literals should be valid semver")]
         std::collections::HashMap::from([
             ("lighthouse", version::SemVer::parse("v8.0.0-rc.0").unwrap()),
             ("teku", version::SemVer::parse("v25.9.3").unwrap()),

@@ -1,4 +1,7 @@
-#![allow(clippy::arithmetic_side_effects)]
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test-only fake clock over Instant/Duration with bounded, non-overflowing arithmetic"
+)]
 
 use crossbeam::channel as mpmc;
 use std::{
@@ -130,8 +133,8 @@ impl FakeClock {
         duration: Duration,
         pending_timer_actions: Option<&AtomicIsize>,
     ) -> usize {
-        // Advance time and collect expired senders under lock, but perform sends
-        // without holding lock.
+        // Advance time and collect expired senders under lock, but perform
+        // sends without holding lock.
         let mut expired = vec![];
 
         let now = {
