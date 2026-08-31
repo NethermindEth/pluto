@@ -212,7 +212,8 @@ pub struct TrackerHandle {
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
         // Shutdown is signalled by the receiver being dropped, which causes
-        // send() to return Err immediately — no explicit cancellation select needed.
+        // send() to return Err immediately — no explicit cancellation select
+        // needed.
         if let Err(e) = self.input_tx.send(event).await {
             tracing::warn!(
                 duty = %e.0.duty,
@@ -1125,8 +1126,9 @@ mod tests {
 
         let recs = part_records.lock().unwrap();
         assert_eq!(recs.len(), 1);
-        // analyse_participation counts distinct pubkeys across all stored events;
-        // expected_per_peer==3 proves each key produced its own event entry.
+        // analyse_participation counts distinct pubkeys across all stored
+        // events; expected_per_peer==3 proves each key produced its own
+        // event entry.
         assert_eq!(recs[0].expected_per_peer, 3);
     }
 }

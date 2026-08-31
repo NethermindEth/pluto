@@ -37,13 +37,17 @@ use crate::{
     handler::{FromHandler, ToHandler},
 };
 
-/// Future returned by verifier callbacks.
-pub type VerifyFuture =
-    Pin<Box<dyn Future<Output = std::result::Result<(), VerifyError>> + Send + 'static>>;
+/// Future returned by verifier callbacks. May borrow the data it verifies.
+pub type VerifyFuture<'a> =
+    Pin<Box<dyn Future<Output = std::result::Result<(), VerifyError>> + Send + 'a>>;
 
 /// Verifier callback type.
-pub type Verifier =
-    Arc<dyn Fn(Duty, PubKey, ParSignedData) -> VerifyFuture + Send + Sync + 'static>;
+///
+/// The partial signature is borrowed: cloning it deep-copies a boxed
+/// `SignedData`, up to a whole beacon block, once per entry per message.
+pub type Verifier = Arc<
+    dyn for<'a> Fn(Duty, PubKey, &'a ParSignedData) -> VerifyFuture<'a> + Send + Sync + 'static,
+>;
 
 /// Returns a [`Verifier`] that verifies each inbound partial signature against
 /// the sending peer's public share, looked up by the partial signature's share
@@ -64,7 +68,7 @@ pub fn new_eth2_verifier(
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
 ) -> Verifier {
     let pub_shares_by_key = Arc::new(pub_shares_by_key);
-    Arc::new(move |duty, pubkey, par_signed_data| {
+    Arc::new(move |duty, pubkey, par_signed_data: &ParSignedData| {
         let eth2_cl = eth2_cl.clone();
         let pub_shares_by_key = pub_shares_by_key.clone();
         Box::pin(async move {
@@ -694,7 +698,7 @@ mod eth2_verifier_tests {
         pub_shares_by_key.insert(group_pubkey, pub_shares);
 
         let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
-        verifier(attester_duty(), group_pubkey, par)
+        verifier(attester_duty(), group_pubkey, &par)
             .await
             .expect("partial signature against the correct public share verifies");
     }
@@ -718,7 +722,7 @@ mod eth2_verifier_tests {
         pub_shares_by_key.insert(group_pubkey, pub_shares);
 
         let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
-        let err = verifier(attester_duty(), group_pubkey, par)
+        let err = verifier(attester_duty(), group_pubkey, &par)
             .await
             .expect_err("partial signature against the wrong public share is rejected");
 
@@ -742,7 +746,7 @@ mod eth2_verifier_tests {
         let pub_shares_by_key = HashMap::new();
 
         let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
-        let err = verifier(attester_duty(), group_pubkey, par)
+        let err = verifier(attester_duty(), group_pubkey, &par)
             .await
             .expect_err("partial signature for an unknown pubkey is rejected");
 
@@ -767,7 +771,7 @@ mod eth2_verifier_tests {
         pub_shares_by_key.insert(group_pubkey, pub_shares);
 
         let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
-        let err = verifier(attester_duty(), group_pubkey, par)
+        let err = verifier(attester_duty(), group_pubkey, &par)
             .await
             .expect_err("partial signature with an unknown share index is rejected");
 

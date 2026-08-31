@@ -321,7 +321,8 @@ impl Prioritiser {
                     },
                 }
             }
-            // Cancelling `quit` on exit unblocks any in-flight `handle_request`.
+            // Cancelling `quit` on exit unblocks any in-flight
+            // `handle_request`.
             shared.quit.cancel();
         });
     }
@@ -350,9 +351,10 @@ impl Prioritiser {
         match self.inner.shared.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
             AddOutcome::FailedToCompute => {
-                // The deadliner shares the engine/instance cancellation token, so
-                // a failure while shutting down is a cancellation, not a genuine
-                // compute error — report it like the run-loop cancel path.
+                // The deadliner shares the engine/instance cancellation token,
+                // so a failure while shutting down is a
+                // cancellation, not a genuine compute error —
+                // report it like the run-loop cancel path.
                 if ct.is_cancelled() || self.inner.shared.quit.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -898,7 +900,8 @@ mod tests {
 
         let ct = CancellationToken::new();
         // The cleanup loop consumes whatever the deadliner emits; drive it with
-        // a hand-built expired-duty channel to assert deletion deterministically.
+        // a hand-built expired-duty channel to assert deletion
+        // deterministically.
         let (expired_tx, expired_rx) = mpsc::channel(1);
         let (deadliner, _real_expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
         let (prio, _behaviour) = Prioritiser::new_internal(

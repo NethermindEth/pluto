@@ -368,11 +368,12 @@ impl HashWalker for Hasher {
     }
 
     fn merkleize(&mut self, index: usize) -> Result<(), Self::Error> {
-        // merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
-        // hits an odd chunk length. But if we're at the end of `h.buf` already,
-        // appending to `input` will allocate a new buffer, *not* expand `h.buf`,
-        // so the next invocation will realloc, over and over and over. We can pre-
-        // emptively cater for that by ensuring that an extra 32 bytes is always
+        // merkleizeImpl will expand the `input` by 32 bytes if some hashing
+        // depth hits an odd chunk length. But if we're at the end of
+        // `h.buf` already, appending to `input` will allocate a new
+        // buffer, *not* expand `h.buf`, so the next invocation will
+        // realloc, over and over and over. We can pre- emptively cater
+        // for that by ensuring that an extra 32 bytes is always
         // available.
         if self.buf.len() == self.buf.capacity() {
             self.buf.reserve(32); // Just ensure capacity
@@ -445,14 +446,16 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
 
     let last_byte = buf[buf.len().wrapping_sub(1)];
     if last_byte == 0 {
-        // A valid SSZ bitlist's final byte carries the length-delimiter (sentinel)
-        // bit and is therefore always non-zero. A zero final byte would underflow
-        // `msb` to 255 and trigger `1u8 << 255` (debug panic / masked-shift in
-        // release), so reject it as malformed input.
+        // A valid SSZ bitlist's final byte carries the length-delimiter
+        // (sentinel) bit and is therefore always non-zero. A zero final
+        // byte would underflow `msb` to 255 and trigger `1u8 << 255`
+        // (debug panic / masked-shift in release), so reject it as
+        // malformed input.
         return Err(HasherError::InvalidBitlistDelimiter);
     }
 
-    // `last_byte != 0` => leading_zeros() in 0..=7 => msb in 0..=7, no overflow.
+    // `last_byte != 0` => leading_zeros() in 0..=7 => msb in 0..=7, no
+    // overflow.
     let msb = 8u8
         .wrapping_sub(last_byte.leading_zeros() as u8)
         .wrapping_sub(1);

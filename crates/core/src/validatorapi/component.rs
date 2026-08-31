@@ -1098,9 +1098,9 @@ impl Handler for Component {
                 crate::signeddata::VersionedAttestation::new_partial(att.0.clone(), self.share_idx)
                     .map_err(map_attestation_signed_data_error)?;
 
-            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER and
-            // the epoch comes from the attestation's own target checkpoint
-            // (not derived from the slot).
+            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER
+            // and the epoch comes from the attestation's own target
+            // checkpoint (not derived from the slot).
             verify_par_signed_attestation(self, &pubkey, att_data.target.epoch, &par_sig_data)
                 .await?;
 
@@ -1321,8 +1321,8 @@ impl Handler for Component {
                 .with_boxed_source(err)
             })?;
 
-        // The await hook yields an unsigned aggregated attestation; the response
-        // type is the same versioned-attestation wrapper.
+        // The await hook yields an unsigned aggregated attestation; the
+        // response type is the same versioned-attestation wrapper.
         let data = crate::signeddata::VersionedAttestation::new(agg_att.0)
             .map_err(map_attestation_signed_data_error)?;
 
@@ -1560,7 +1560,8 @@ impl Handler for Component {
             }
         }
 
-        // A missing hook is a wiring bug, not a runtime condition, so fail fast.
+        // A missing hook is a wiring bug, not a runtime condition, so fail
+        // fast.
         let await_fn = self
             .await_agg_sig_db_fn
             .as_ref()
@@ -1615,10 +1616,10 @@ impl Handler for Component {
                     "unknown validator public key in request",
                 )
             })?;
-            // Mark the validator seen as soon as its share resolves to a cluster
-            // root — before the upstream call — so a validator the beacon node
-            // has no row for yet (e.g. not activated) still counts toward
-            // readiness.
+            // Mark the validator seen as soon as its share resolves to a
+            // cluster root — before the upstream call — so a
+            // validator the beacon node has no row for yet (e.g.
+            // not activated) still counts toward readiness.
             self.observe_root_pubkey(root);
             root_pubkeys.push(format_bls_pubkey(root));
         }

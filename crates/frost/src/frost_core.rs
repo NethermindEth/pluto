@@ -578,7 +578,8 @@ mod tests {
         let rendered = format!("{share:?}");
 
         assert!(rendered.contains("<redacted>"));
-        // The unredacted form would render the inner `Scalar(...)`; it must not.
+        // The unredacted form would render the inner `Scalar(...)`; it must
+        // not.
         assert!(!rendered.contains("Scalar"));
     }
 

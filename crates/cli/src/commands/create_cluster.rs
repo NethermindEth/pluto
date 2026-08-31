@@ -463,11 +463,13 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         );
 
         // Needed if --split-existing-keys is called without a definition file.
-        // It's safe to unwrap here because we know the length is less than u64::MAX.
+        // It's safe to unwrap here because we know the length is less than
+        // u64::MAX.
         args.num_validators = u64::try_from(secrets.len()).expect("secrets length is too large");
     }
 
-    // Get a cluster definition, either from a definition file or from the config.
+    // Get a cluster definition, either from a definition file or from the
+    // config.
     let (mut def, mut deposit_amounts) = if let Some((def, eth1cl)) = definition_input {
         validate_definition(&def, args.insecure_keys, &args.keymanager_addrs, &eth1cl).await?;
 
@@ -488,8 +490,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     }
 
     if secrets.is_empty() {
-        // This is the case in which split-keys is undefined and user passed validator
-        // amount on CLI
+        // This is the case in which split-keys is undefined and user passed
+        // validator amount on CLI
         secrets = generate_keys(def.num_validators)?;
     }
 
@@ -785,7 +787,8 @@ async fn write_keys_to_keymanager(
         for shares in share_sets {
             let password = random_hex64()?;
             let pbkdf2_c = if args.insecure_keys {
-                // Match Charon's `keystorev4.WithCost(..., 4)` => 2^4 iterations.
+                // Match Charon's `keystorev4.WithCost(..., 4)` => 2^4
+                // iterations.
                 Some(16u32)
             } else {
                 None
@@ -995,8 +998,8 @@ fn get_tss_shares(
     for secret in secrets {
         let shares = tbls::threshold_split(secret, num_nodes, threshold)?;
 
-        // Preserve order when transforming from map of private shares to array of
-        // private keys
+        // Preserve order when transforming from map of private shares to array
+        // of private keys
         let mut entries: Vec<_> = shares.into_iter().collect();
         entries.sort_by_key(|(idx, _)| *idx);
         let secret_set = entries.into_iter().map(|(_, share)| share).collect();
@@ -1654,8 +1657,9 @@ mod tests {
             }
         }
 
-        // If a definition file was loaded from disk, config hash and creator must be
-        // preserved, and operators must have their ENRs populated.
+        // If a definition file was loaded from disk, config hash and creator
+        // must be preserved, and operators must have their ENRs
+        // populated.
         if config.def_file_path.is_some() {
             assert_eq!(lock.definition.config_hash, ref_def.config_hash);
             assert_eq!(lock.definition.creator, ref_def.creator);
@@ -1666,7 +1670,8 @@ mod tests {
 
         const PREV_VERSIONS: &[&str] = &[V1_0, V1_1, V1_2, V1_3, V1_4, V1_5];
 
-        // Builder registrations must be populated (v1.7+, always true for v1.10).
+        // Builder registrations must be populated (v1.7+, always true for
+        // v1.10).
         for val in &lock.distributed_validators {
             if PREV_VERSIONS.contains(&lock.definition.version.as_str()) {
                 continue;
@@ -1681,7 +1686,8 @@ mod tests {
             }
 
             if config.split_keys {
-                // For SplitKeys mode the timestamp must be close to now, not a genesis time.
+                // For SplitKeys mode the timestamp must be close to now, not a
+                // genesis time.
                 let reg_ts = val.builder_registration.message.timestamp;
                 let diff = chrono::Utc::now().signed_duration_since(reg_ts);
                 assert!(
@@ -2124,7 +2130,8 @@ mod tests {
         let mut output = Vec::new();
         run(&mut output, args).await.unwrap();
 
-        // Since `cluster-lock.json` is copied into each node directory, use node0.
+        // Since `cluster-lock.json` is copied into each node directory, use
+        // node0.
         let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
             .await
             .unwrap();
@@ -2195,7 +2202,8 @@ mod tests {
         let eth1 = test_eth1_client().await;
         let keymanager_addrs: Vec<String> = vec![];
 
-        // "zero address": gnosis fork version with zero withdrawal addrs -> error
+        // "zero address": gnosis fork version with zero withdrawal addrs ->
+        // error
         {
             let mut def = definition.clone();
             def.fork_version = vec![0x00, 0x00, 0x00, 0x64]; // gnosis
@@ -2206,7 +2214,8 @@ mod tests {
             );
         }
 
-        // "fork versions": goerli -> ok; mainnet with zero withdrawal addrs -> error
+        // "fork versions": goerli -> ok; mainnet with zero withdrawal addrs ->
+        // error
         {
             let def = definition.clone();
             super::validate_definition(&def, false, &keymanager_addrs, &eth1)
@@ -2222,7 +2231,8 @@ mod tests {
             );
         }
 
-        // "insufficient keymanager addresses": 1 addr for 4-operator cluster -> error
+        // "insufficient keymanager addresses": 1 addr for 4-operator cluster ->
+        // error
         {
             let def = definition.clone();
             let km_addrs = vec!["127.0.0.1:1234".to_string()];
@@ -2283,8 +2293,8 @@ mod tests {
             );
         }
 
-        // "invalid hash": remote def with modified num_validators -> "Invalid config
-        // hash"
+        // "invalid hash": remote def with modified num_validators -> "Invalid
+        // config hash"
         {
             let mut def = remote_def.clone();
             def.num_validators = 3;
@@ -2298,8 +2308,8 @@ mod tests {
             );
         }
 
-        // "invalid config signatures": remote def with modified num_validators + rehash
-        // -> "invalid creator config signature"
+        // "invalid config signatures": remote def with modified num_validators
+        // + rehash -> "invalid creator config signature"
         {
             let mut def = remote_def.clone();
             def.num_validators = 3;
@@ -2329,7 +2339,8 @@ mod tests {
     /// Port of Go's TestMultipleAddresses.
     #[tokio::test]
     async fn multiple_addresses() {
-        // "insufficient fee recipient addresses": 0 addrs for 4 validators → error
+        // "insufficient fee recipient addresses": 0 addrs for 4 validators →
+        // error
         {
             let err = super::validate_addresses(4, &[], &[]).unwrap_err();
             let err_str = format!("{err}");
@@ -2339,8 +2350,8 @@ mod tests {
             );
         }
 
-        // "insufficient withdrawal addresses": 0 withdrawal addrs for 1 validator →
-        // error
+        // "insufficient withdrawal addresses": 0 withdrawal addrs for 1
+        // validator → error
         {
             let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
             let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
@@ -2354,12 +2365,14 @@ mod tests {
         // "insufficient addresses from remote URL": deserializing a definition
         // with num_validators=2 but empty validators list must fail with the
         // Go-compatible error message.  Testing at the JSON-parse level mirrors
-        // what Go's runCreateCluster triggers when it calls unmarshalDefinitionV1x10.
+        // what Go's runCreateCluster triggers when it calls
+        // unmarshalDefinitionV1x10.
         {
             let def_json = tokio::fs::read(DEF_PATH).await.unwrap();
             let mut def_value: serde_json::Value = serde_json::from_slice(&def_json).unwrap();
-            // Clear the validators list while keeping num_validators=2 to create a
-            // mismatch that mirrors the Go test (d.ValidatorAddresses = []).
+            // Clear the validators list while keeping num_validators=2 to
+            // create a mismatch that mirrors the Go test
+            // (d.ValidatorAddresses = []).
             def_value["validators"] = serde_json::json!([]);
             let modified_json = serde_json::to_vec(&def_value).unwrap();
 

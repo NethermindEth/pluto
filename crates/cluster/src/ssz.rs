@@ -212,7 +212,8 @@ pub(crate) fn hash_definition_legacy<H: HashWalker>(
             hh.put_bytes(o.enr.as_bytes())
                 .map_err(SSZError::<H>::HashWalkerError)?;
 
-            // Note: This depends on the version: add zero nonce for v1.0/v1.1 ("legacy")
+            // Note: This depends on the version: add zero nonce for v1.0/v1.1
+            // ("legacy")
             if matches!(definition.version.as_str(), V1_0 | V1_1) {
                 // Field (2) 'Nonce'
                 hh.put_uint64(ZERO_NONCE)

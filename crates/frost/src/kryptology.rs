@@ -431,8 +431,8 @@ pub fn round2(
 ) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), KryptologyError> {
     // Bounds mirror ObolNetwork/kryptology@v0.1.0 dkg_round2.go, where
     // `feldman.Limit == max_signers`:
-    // - bcast:   threshold-1 <= len <= max_signers      (may include this node's
-    //   own Round1Bcast)
+    // - bcast:   threshold-1 <= len <= max_signers      (may include this
+    //   node's own Round1Bcast)
     // - p2psend: threshold-1 <= len <= max_signers - 1  (never includes self)
     let min_received = (secret.threshold - 1) as usize;
     let bcast_max = secret.max_signers as usize;
@@ -454,11 +454,12 @@ pub fn round2(
     let mut share_sum = Scalar::ZERO;
 
     for (&sender_id, bcast) in received_bcasts {
-        // Charon's getRound2Inputs may include this node's own Round1Bcast in the
-        // broadcast map. Go's Round2 skips it (`if id == dp.Id { continue }`) rather
-        // than erroring. Self's commitment is added to peer_commitments separately
-        // below, and self's share contribution is the own_share_scalar term — so the
-        // self entry must be skipped here for both verification and share summation.
+        // Charon's getRound2Inputs may include this node's own Round1Bcast in
+        // the broadcast map. Go's Round2 skips it (`if id == dp.Id {
+        // continue }`) rather than erroring. Self's commitment is added
+        // to peer_commitments separately below, and self's share
+        // contribution is the own_share_scalar term — so the self entry
+        // must be skipped here for both verification and share summation.
         if sender_id == secret.id {
             continue;
         }
@@ -494,7 +495,8 @@ pub fn round2(
             .ok_or(KryptologyError::InvalidShare { culprit: sender_id })?;
         // Step (1): identifier must be non-zero and addressed to us. kryptology
         // only checks `id == 0`; we additionally require the share is addressed
-        // to this participant. Both map to InvalidShare with the sender culprit.
+        // to this participant. Both map to InvalidShare with the sender
+        // culprit.
         if share.id == 0 || share.id != secret.id {
             return Err(KryptologyError::InvalidShare { culprit: sender_id });
         }
@@ -1187,7 +1189,8 @@ mod tests {
         let (bcast2, _shares2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
         let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
-        // Broadcast map includes self (id 2), exactly like Charon's getRound2Inputs.
+        // Broadcast map includes self (id 2), exactly like Charon's
+        // getRound2Inputs.
         let received_bcasts: BTreeMap<u32, Round1Bcast> =
             [(1, bcast1), (2, bcast2), (3, bcast3)].into();
         // Shares map never includes self.

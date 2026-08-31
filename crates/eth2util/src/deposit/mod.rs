@@ -106,7 +106,8 @@ pub(crate) fn withdrawal_creds_from_addr(
 /// Verifies various conditions about partial deposit amounts.
 pub fn verify_deposit_amounts(amounts: &[Gwei], compounding: bool) -> Result<()> {
     if amounts.is_empty() {
-        // If no partial amounts specified, the implementation shall default to 32ETH
+        // If no partial amounts specified, the implementation shall default to
+        // 32ETH
         return Ok(());
     }
 
@@ -210,8 +211,8 @@ pub async fn write_deposit_data_file(
 
     tokio::fs::write(&file_path, bytes).await?;
 
-    // TODO: The write and set permissions may not atomic, which the file has write
-    // permission between write and set perm actions.
+    // TODO: The write and set permissions may not atomic, which the file has
+    // write permission between write and set perm actions.
     let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
     perms.set_readonly(true);
     tokio::fs::set_permissions(&file_path, perms).await?;
