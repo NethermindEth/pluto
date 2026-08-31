@@ -182,8 +182,8 @@ pub struct InclusionCore {
 }
 
 impl InclusionCore {
-    /// Creates a core with the production reporters ([`report_missed`] and
-    /// [`report_att_inclusion`]) and the given tracker callback.
+    /// Creates a core with the production reporters (`report_missed` and
+    /// `report_att_inclusion`) and the given tracker callback.
     pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: &'static FeatureSet) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
