@@ -502,9 +502,8 @@ async fn run_relay_http_tests(
 
 async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingRelay");
-    let client = reqwest::Client::new();
     tokio::select! {
-        res = client.get(url).send() => match res {
+        res = super::http_client().get(url).send() => match res {
             Ok(resp) if resp.status().is_success() => result.ok(),
             Ok(resp) => result.fail(TestResultError::from_string(format!("HTTP status {}", resp.status()))),
             Err(e) => result.fail(e),

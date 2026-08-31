@@ -12,8 +12,9 @@ use super::{
     helpers::{
         AllCategoriesResult, CategoryScore, TestCaseName, TestCategory, TestCategoryResult,
         TestResult, TestResultError, TestVerdict, calculate_score, evaluate_highest_rtt,
-        evaluate_rtt, filter_tests, must_output_to_file_on_quiet, publish_result_to_obol_api,
-        request_rtt, sort_tests, write_result_to_file, write_result_to_writer,
+        evaluate_rtt, filter_tests, http_client, must_output_to_file_on_quiet,
+        publish_result_to_obol_api, request_rtt, sort_tests, write_result_to_file,
+        write_result_to_writer,
     },
 };
 use crate::{duration::Duration, error::Result as CliResult};
@@ -28,18 +29,6 @@ use tokio::{
     time::{Instant, interval, interval_at, sleep},
 };
 use tokio_util::sync::CancellationToken;
-
-/// Per-request timeout for beacon-node diagnostic HTTP calls, so a hostile or
-/// slow endpoint cannot stall a diagnostic indefinitely.
-const BEACON_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-
-/// Builds a diagnostic HTTP client with a request timeout.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(BEACON_HTTP_TIMEOUT)
-        .build()
-        .unwrap_or_default()
-}
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
