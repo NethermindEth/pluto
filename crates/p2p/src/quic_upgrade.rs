@@ -231,7 +231,9 @@ impl QuicUpgradeBehaviour {
 
                 let tcp_conn_ids: Vec<_> = conns
                     .iter()
-                    .filter(|c| utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr))
+                    .filter(|c| {
+                        utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr)
+                    })
                     .map(|c| c.connection_id)
                     .collect();
 
@@ -276,7 +278,9 @@ impl QuicUpgradeBehaviour {
 
             let tcp_conn_ids: Vec<_> = conns
                 .iter()
-                .filter(|c| utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr))
+                .filter(|c| {
+                    utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr)
+                })
                 .map(|c| c.connection_id)
                 .collect();
 

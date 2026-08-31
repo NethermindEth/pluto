@@ -550,7 +550,8 @@ mod tests {
         let count = behaviour.metrics().inner().relay_connection_types[&labels].get();
         assert_eq!(count, 1);
 
-        // peer_connection_total should not have been incremented for unknown peer
+        // peer_connection_total should not have been incremented for unknown
+        // peer
         let total = behaviour.metrics().inner().peer_connection_total
             [&name::peer_name(&unknown_peer)]
             .get();
