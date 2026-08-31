@@ -875,9 +875,9 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_rejects_message_exceeding_max_consensus_size() -> TestResult<()> {
-        // Frame declaring one byte over the cap; read_length_delimited rejects on
-        // the varint length prefix before allocating or reading the body, so no
-        // oversized payload is needed.
+        // Frame declaring one byte over the cap; read_length_delimited rejects
+        // on the varint length prefix before allocating or reading the
+        // body, so no oversized payload is needed.
         let mut varint = Vec::new();
         let mut remaining = MAX_CONSENSUS_MSG_SIZE + 1;
         loop {

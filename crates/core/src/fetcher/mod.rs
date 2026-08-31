@@ -312,7 +312,8 @@ impl Fetcher {
                 continue;
             }
 
-            // Query DutyDB for attestation data to get the attestation data root.
+            // Query DutyDB for attestation data to get the attestation data
+            // root.
             let att_data = self.query_att_data(slot, comm_idx).await?;
             let data_root = att_data.tree_hash_root().0;
 
@@ -369,8 +370,9 @@ impl Fetcher {
 
             let proposal = VersionedProposal::try_from(&response)?;
 
-            // Builders set the fee recipient to themselves, so it always differs
-            // from the validator's; only verify when the builder is disabled.
+            // Builders set the fee recipient to themselves, so it always
+            // differs from the validator's; only verify when the
+            // builder is disabled.
             if !self.builder_enabled {
                 let fee_recipient = (self.fee_recipient)(pubkey);
                 verify_fee_recipient(&proposal, &fee_recipient);
@@ -1342,8 +1344,8 @@ mod tests {
         let pk_a = PubKey::new([2u8; PK_LEN]);
         let pk_b = PubKey::new([3u8; PK_LEN]);
 
-        // Both validators belong to the same committee; the aggregate is fetched
-        // once and reused for the second validator.
+        // Both validators belong to the same committee; the aggregate is
+        // fetched once and reused for the second validator.
         let att = build_attestation(2);
         let def_set = DutyDefinitionSet::from([
             (pk_a, attester_def(att.data.index, 0)),

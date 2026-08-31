@@ -214,8 +214,8 @@ fn wire_inputs(
     threshold: u64,
 ) -> WireInputs {
     // Permissive verifier: the partial sigs carry arbitrary payloads, so real
-    // eth2 verification is deliberately bypassed here. The bad-partial-signature
-    // test injects the real verifier.
+    // eth2 verification is deliberately bypassed here. The
+    // bad-partial-signature test injects the real verifier.
     let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
     wire_inputs_with(
         eth2_cl,
@@ -366,15 +366,17 @@ async fn wiring_exercises_fetcher_back_edges() {
         tokio::spawn(async move { fetcher.fetch(duty, def).await })
     };
 
-    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending on
-    // the wired `agg_sig_db` back-edge (proving it awaits the wired AggSigDB).
+    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending
+    // on the wired `agg_sig_db` back-edge (proving it awaits the wired
+    // AggSigDB).
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !fetch_handle.is_finished(),
         "(a) proposer fetch should block on the empty wired AggSigDB back-edge"
     );
 
-    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must unblock.
+    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must
+    // unblock.
     let randao: phase0::BLSSignature = [7u8; 96];
     let randao_set: SignedDataSet =
         HashMap::from([(pubkey, Box::new(randao) as Box<dyn SignedData>)]);
@@ -386,10 +388,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     .expect("aggsigdb.store did not hang")
     .expect("aggsigdb.store ok");
 
-    // The fetch now progresses past the RANDAO back-edge. It may ultimately fail
-    // downstream (block production / proposer value encoding is out of scope),
-    // but it must no longer be blocked on `wait_for` — proving the back-edge is
-    // wired into the same AggSigDB.
+    // The fetch now progresses past the RANDAO back-edge. It may ultimately
+    // fail downstream (block production / proposer value encoding is out of
+    // scope), but it must no longer be blocked on `wait_for` — proving the
+    // back-edge is wired into the same AggSigDB.
     let fetch_result = tokio::time::timeout(GUARD, fetch_handle)
         .await
         .expect("(a) proposer fetch unblocked after RANDAO stored")
@@ -399,14 +401,16 @@ async fn wiring_exercises_fetcher_back_edges() {
     let _ = fetch_result;
 
     // ---- (b) Aggregator fetch reaches the wired DutyDB back-edge ----
-    // First prove the wired DutyDB handle the fetcher's `await_att_data` closure
-    // targets is the one we hold: an aggregator fetch must block until both its
-    // AggSigDB (prepare-aggregator) prerequisite and the DutyDB attestation are
-    // available. With neither present, the fetch blocks on the wired AggSigDB
-    // first; we satisfy that and confirm it then blocks on the wired DutyDB.
+    // First prove the wired DutyDB handle the fetcher's `await_att_data`
+    // closure targets is the one we hold: an aggregator fetch must block
+    // until both its AggSigDB (prepare-aggregator) prerequisite and the
+    // DutyDB attestation are available. With neither present, the fetch
+    // blocks on the wired AggSigDB first; we satisfy that and confirm it
+    // then blocks on the wired DutyDB.
     let dutydb = Arc::clone(&wired.dutydb);
-    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable on
-    // the same instance the fetcher back-edge uses (a direct connectivity proof).
+    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable
+    // on the same instance the fetcher back-edge uses (a direct
+    // connectivity proof).
     let await_handle = {
         let dutydb = Arc::clone(&dutydb);
         tokio::spawn(async move { dutydb.await_attestation(SLOT, 0).await })
@@ -444,8 +448,8 @@ async fn wiring_connects_sign_path() {
         .expect("wire succeeded");
 
     // Build two real BLS partial signatures (threshold 2 of 2) over the same
-    // attestation so SigAgg's `threshold_aggregate` succeeds and the broadcaster
-    // submits.
+    // attestation so SigAgg's `threshold_aggregate` succeeds and the
+    // broadcaster submits.
     let mut rng = rand::thread_rng();
     let secret = tbls::generate_secret_key(&mut rng).expect("secret");
     let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
@@ -456,8 +460,8 @@ async fn wiring_connects_sign_path() {
     let (idx1, share1) = share_iter.next().expect("share 1");
 
     // Submit the first partial signature through the internal path (this node's
-    // own VC): ParSigDB.store_internal -> store_external (threshold not yet met)
-    // and -> internal subscriber -> loopback parsigex.broadcast.
+    // own VC): ParSigDB.store_internal -> store_external (threshold not yet
+    // met) and -> internal subscriber -> loopback parsigex.broadcast.
     let mut internal_set = ParSignedDataSet::new();
     internal_set.insert(pubkey, attester_partial(idx0, &share0));
     tokio::time::timeout(
@@ -640,9 +644,9 @@ async fn wiring_connects_sign_path_sync_contribution() {
     let secret = tbls::generate_secret_key(&mut rng).expect("secret");
     let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
-    // Identical unsigned contribution across shares; each partial swaps only the
-    // top-level signature (`set_signature`), preserving the payload so ParSigDB
-    // groups them.
+    // Identical unsigned contribution across shares; each partial swaps only
+    // the top-level signature (`set_signature`), preserving the payload so
+    // ParSigDB groups them.
     let base_contribution = altair::SignedContributionAndProof {
         message: altair::ContributionAndProof {
             aggregator_index: 1,
@@ -743,8 +747,8 @@ async fn wiring_rejects_bad_partial_signature() {
         .expect("wire succeeded");
 
     // Same shape as the happy-path attestation test, but the shares sign an
-    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root —
-    // so the reconstructed group signature will not verify.
+    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root
+    // — so the reconstructed group signature will not verify.
     let base_attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {

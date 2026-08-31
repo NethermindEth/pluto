@@ -430,7 +430,8 @@ mod tests {
         })
         .expect("alpha config should work");
 
-        // MockAlpha is Alpha status, min_status is now Alpha, so it should be enabled
+        // MockAlpha is Alpha status, min_status is now Alpha, so it should be
+        // enabled
         assert!(featureset.enabled(Feature::MockAlpha));
     }
 
@@ -454,7 +455,8 @@ mod tests {
 
     #[test]
     fn disable_feature() {
-        // First create with a stable feature (EagerDoubleLinear is Stable by default)
+        // First create with a stable feature (EagerDoubleLinear is Stable by
+        // default)
         let featureset = FeatureSet::from_config(Config {
             min_status: Status::Stable,
             enabled: vec![],

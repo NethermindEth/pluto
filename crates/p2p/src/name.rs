@@ -353,9 +353,10 @@ const ADJECTIVES: &[&str] = &[
 /// The name is generated using a polynomial rolling hash of the base58-encoded
 /// peer ID, then selecting an adjective and noun from predefined lists.
 pub fn peer_name(id: &PeerId) -> String {
-    // p is chosen to be 59 because it's prime and roughly equal to the number of
-    // different characters you can have in base58 encoded strings. Base58
-    // encoded strings can consist of 58 different alphanumeric characters
+    // p is chosen to be 59 because it's prime and roughly equal to the number
+    // of different characters you can have in base58 encoded strings.
+    // Base58 encoded strings can consist of 58 different alphanumeric
+    // characters
     // (123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz)
     const P: u64 = 59;
     const M: u64 = 1_000_000_007; // 1e9 + 7

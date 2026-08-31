@@ -160,11 +160,11 @@ impl NetworkBehaviour for ConnGater {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Charon's `InterceptSecured` ignores the connection direction and gates
-        // both inbound and outbound secured connections, so mirror the inbound
-        // gating logic here. Legitimate outbound dials (relay dials,
-        // force-direct, QUIC-upgrade) target relays and cluster peers, which are
-        // both in the allow-list.
+        // Charon's `InterceptSecured` ignores the connection direction and
+        // gates both inbound and outbound secured connections, so
+        // mirror the inbound gating logic here. Legitimate outbound
+        // dials (relay dials, force-direct, QUIC-upgrade) target relays
+        // and cluster peers, which are both in the allow-list.
         if self.is_peer_allowed(&peer) {
             Ok(dummy::ConnectionHandler)
         } else {

@@ -304,7 +304,8 @@ impl SseListenerActor {
         };
         let slot = gossip.slot;
 
-        // A block should be received via gossip between 0/3 and 1/3 of the slot.
+        // A block should be received via gossip between 0/3 and 1/3 of the
+        // slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
         let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
         let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
@@ -329,8 +330,8 @@ impl SseListenerActor {
         };
         let slot = block.slot;
 
-        // A block should be imported into fork choice between 0/3 and 1/3 of the
-        // slot.
+        // A block should be imported into fork choice between 0/3 and 1/3 of
+        // the slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
         let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
         let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
@@ -434,9 +435,10 @@ async fn run_pump(
         match stream_once(&client, &addr, &events_tx, &ct).await {
             StreamOutcome::Cancelled | StreamOutcome::ChannelClosed => break,
             StreamOutcome::Ended { productive } | StreamOutcome::Error { productive } => {
-                // Reset the backoff only after a productive connection (one that
-                // forwarded at least one event). Otherwise a server that accepts
-                // and immediately closes the connection — or fails to connect —
+                // Reset the backoff only after a productive connection (one
+                // that forwarded at least one event). Otherwise
+                // a server that accepts and immediately closes
+                // the connection — or fails to connect —
                 // would drive a tight reconnect loop with no rate limiting.
                 if productive {
                     backoff = reconnect_backoff().build();
@@ -607,8 +609,8 @@ mod tests {
 
     #[test]
     fn chain_reorg_epoch_zero_first_event_is_deduped() {
-        // Parity with Charon: `last_reorg_epoch` starts at 0, so a first reorg at
-        // epoch 0 is treated as a duplicate and not notified.
+        // Parity with Charon: `last_reorg_epoch` starts at 0, so a first reorg
+        // at epoch 0 is treated as a duplicate and not notified.
         let (tx, mut rx) = sync::mpsc::channel(8);
         let mut actor = test_actor(vec![tx]);
 
@@ -737,7 +739,8 @@ mod tests {
     #[tokio::test]
     async fn run_loop_stops_when_event_channel_closes() {
         // The pump dropping its sender must stop the actor, not leave it parked
-        // forever with no events and no reconnection (the token is never fired).
+        // forever with no events and no reconnection (the token is never
+        // fired).
         let ct = CancellationToken::new();
         let (events_tx, events_rx) = sync::mpsc::channel(8);
         let (_msg_tx, msg_rx) = sync::mpsc::channel(8);
