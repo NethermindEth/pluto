@@ -92,7 +92,7 @@ fn deserialize_signature(bytes: &[u8]) -> Result<Box<dyn SignedData>, ParSigExCo
     let raw = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|e| ParSigExCodecError::SignedData(format!("invalid base64: {e}")))?;
-    let sig: Signature = pluto_crypto::tblsconv::signature_from_bytes(&raw)
+    let sig: Signature = pluto_crypto::types::signature_from_bytes(&raw)
         .map_err(|e| ParSigExCodecError::InvalidSignature(e.to_string()))?;
     Ok(Box::new(sig))
 }

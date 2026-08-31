@@ -1469,9 +1469,9 @@ mod tests {
 
     #[test]
     fn run_empty_relays_flag_yields_no_relays() {
-        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
-        // single empty string, which the bridge filters out (used by the simnet
-        // smoke test for isolated, relay-free nodes).
+        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields
+        // a single empty string, which the bridge filters out (used by
+        // the simnet smoke test for isolated, relay-free nodes).
         let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
         assert!(
             config.p2p.relays.is_empty(),
@@ -1838,8 +1838,8 @@ mod tests {
 
     #[test]
     fn build_app_config_resolves_hostname_validator_api_addr() {
-        // Charon accepts hostnames here, so the bridge must resolve them instead
-        // of requiring a literal IP.
+        // Charon accepts hostnames here, so the bridge must resolve them
+        // instead of requiring a literal IP.
         let config =
             app_config(&["--validator-api-address=localhost:3600"]).expect("hostname resolves");
         assert_eq!(config.validator_api_addr.port(), 3600);
@@ -1901,18 +1901,19 @@ mod tests {
 
     #[test]
     fn run_fuzz_beacon_mock_allowed_with_endpoint() {
-        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint is
-        // present; it must not additionally require `--simnet-beacon-mock`.
+        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint
+        // is present; it must not additionally require
+        // `--simnet-beacon-mock`.
         parse_run(&["--simnet-beacon-mock-fuzz"]).expect("fuzz + endpoint is valid");
     }
 
     #[test]
     fn build_app_config_registers_fully_specified_testnet() {
-        // A fully-specified `--testnet-*` config registers the custom network before
-        // the lock is loaded, so a cluster lock carrying this genesis fork
-        // version resolves during load (`verify_signatures` -> EIP-712 ->
-        // `fork_version_to_chain_id` looks it up in the supported-networks
-        // registry).
+        // A fully-specified `--testnet-*` config registers the custom network
+        // before the lock is loaded, so a cluster lock carrying this
+        // genesis fork version resolves during load
+        // (`verify_signatures` -> EIP-712 -> `fork_version_to_chain_id`
+        // looks it up in the supported-networks registry).
         let fork_version = [0x00, 0x00, 0x05, 0x31];
 
         // Not registered before the bridge runs.
@@ -1930,7 +1931,8 @@ mod tests {
         ])
         .expect("fully-specified testnet is now supported");
 
-        // Registered: the lock's fork version now resolves to the custom network.
+        // Registered: the lock's fork version now resolves to the custom
+        // network.
         assert_eq!(
             pluto_eth2util::network::fork_version_to_network(&fork_version)
                 .expect("custom fork version resolves after registration"),

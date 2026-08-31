@@ -1,5 +1,7 @@
 //! Shared helpers for CLI commands.
 
+use std::fmt;
+
 use pluto_p2p::config::RelayAddr;
 use tracing::warn;
 
@@ -22,6 +24,33 @@ pub enum ConsoleColor {
     Force,
     /// Never use ANSI colors.
     Disable,
+}
+
+/// The log levels `tracing_subscriber`'s `EnvFilter` understands.
+///
+/// `Display` renders the directive spelling, so these compose into a filter
+/// string that always parses.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        })
+    }
 }
 
 /// Builds a tracing configuration for CLI commands, optionally enabling Loki.

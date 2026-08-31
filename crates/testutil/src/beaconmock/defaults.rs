@@ -43,10 +43,10 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     // `forkAtEpoch` (the last entry whose epoch <= the duty's epoch), not the
     // spec's fork keys — and they disagree on purpose. These are the Holesky
     // fork-schedule epochs: the fork is 0x03017000 (bellatrix) below epoch 256,
-    // 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from 29696 on —
-    // while the spec overrides above put electra live from epoch 2048. Both
-    // clients in a mixed cluster must resolve the same fork per slot, so keep
-    // these bytes fixed.
+    // 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from 29696 on
+    // — while the spec overrides above put electra live from epoch 2048.
+    // Both clients in a mixed cluster must resolve the same fork per slot,
+    // so keep these bytes fixed.
     mount_json(server, "GET", "/eth/v1/config/fork_schedule", |_| {
         json!({
             "data": [
@@ -222,12 +222,12 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
-    // Block production for the fetcher's proposer-data fetch (`produce_block_v3`
-    // → GET /eth/v3/validator/blocks/{slot}). Returns a deterministic Deneb
-    // proposal (identical across nodes for a given slot, so QBFT can agree on
-    // the proposer duty). Distinct from the signed-block *retrieval* endpoint
-    // above; without it the fetcher gets `UnexpectedResponse` and the proposer
-    // duty never decides.
+    // Block production for the fetcher's proposer-data fetch
+    // (`produce_block_v3` → GET /eth/v3/validator/blocks/{slot}). Returns a
+    // deterministic Deneb proposal (identical across nodes for a given
+    // slot, so QBFT can agree on the proposer duty). Distinct from the
+    // signed-block *retrieval* endpoint above; without it the fetcher gets
+    // `UnexpectedResponse` and the proposer duty never decides.
     mount_json(
         server,
         "GET",
@@ -250,8 +250,9 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
 
     // Sync-committee submissions: the broadcaster POSTs sync-committee messages
-    // and (for aggregators) contribution-and-proofs after sync consensus. A real
-    // beacon node just acks; without these the broadcaster sees `Unknown`.
+    // and (for aggregators) contribution-and-proofs after sync consensus. A
+    // real beacon node just acks; without these the broadcaster sees
+    // `Unknown`.
     mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
     mount_status(
         server,

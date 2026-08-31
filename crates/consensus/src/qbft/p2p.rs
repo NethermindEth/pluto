@@ -761,10 +761,10 @@ mod tests {
         collections::{BTreeMap, HashSet},
         error::Error as StdError,
         sync::OnceLock,
-        task::{Context, Poll},
+        task::{Context, Poll, Waker},
     };
 
-    use futures::{StreamExt as _, io::Cursor, task::noop_waker};
+    use futures::{StreamExt as _, io::Cursor};
     use k256::SecretKey;
     use libp2p::{
         Multiaddr, PeerId,
@@ -875,9 +875,9 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_rejects_message_exceeding_max_consensus_size() -> TestResult<()> {
-        // Frame declaring one byte over the cap; read_length_delimited rejects on
-        // the varint length prefix before allocating or reading the body, so no
-        // oversized payload is needed.
+        // Frame declaring one byte over the cap; read_length_delimited rejects
+        // on the varint length prefix before allocating or reading the
+        // body, so no oversized payload is needed.
         let mut varint = Vec::new();
         let mut remaining = MAX_CONSENSUS_MSG_SIZE + 1;
         loop {
@@ -1506,8 +1506,7 @@ mod tests {
     fn drain_behaviour_events(
         behaviour: &mut Behaviour,
     ) -> Vec<ToSwarm<Event, THandlerInEvent<Behaviour>>> {
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let mut events = Vec::new();
 
         while let Poll::Ready(event) = NetworkBehaviour::poll(behaviour, &mut cx) {

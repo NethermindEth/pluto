@@ -543,10 +543,11 @@ impl Definition {
     /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
     pub async fn verify_signatures(&self, eth1: &EthClient) -> Result<(), DefinitionError> {
-        // Skip signature verification for definition versions earlier than v1.3 since
-        // there are no EIP712 signatures before v1.3.0. For definition versions
-        // earlier than v1.3.0, error if either config signature or enr signature for
-        // any operator is present.
+        // Skip signature verification for definition versions earlier than v1.3
+        // since there are no EIP712 signatures before v1.3.0. For
+        // definition versions earlier than v1.3.0, error if either
+        // config signature or enr signature for any operator is
+        // present.
         if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
@@ -564,8 +565,8 @@ impl Definition {
         let mut no_op_sigs = 0usize;
 
         for operator in &self.operators {
-            // Completely unsigned operators are also fine, assuming a single cluster-wide
-            // operator.
+            // Completely unsigned operators are also fine, assuming a single
+            // cluster-wide operator.
             if operator.address.is_empty()
                 && operator.enr_signature.is_empty()
                 && operator.config_signature.is_empty()
@@ -857,9 +858,12 @@ pub struct ValidatorAddresses {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x0or1 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X1>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -868,6 +872,7 @@ pub struct DefinitionV1x0or1 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -877,9 +882,11 @@ pub struct DefinitionV1x0or1 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -970,9 +977,12 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x2or3 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -981,6 +991,7 @@ pub struct DefinitionV1x2or3 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -990,9 +1001,11 @@ pub struct DefinitionV1x2or3 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1083,12 +1096,15 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x4 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Operators define the charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1097,6 +1113,7 @@ pub struct DefinitionV1x4 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1202,12 +1219,15 @@ impl TryFrom<DefinitionV1x4> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x5to7 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1216,6 +1236,7 @@ pub struct DefinitionV1x5to7 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1224,7 +1245,8 @@ pub struct DefinitionV1x5to7 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// Addresses of each validator.
-    #[serde(rename = "validators")]
+    #[serde(rename = "validators", default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1301,12 +1323,18 @@ impl From<DefinitionV1x5to7> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x8 {
     /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    // charon marshals `name` with `omitempty`, so it is absent when empty.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Operators define the charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    // charon marshals a nil `operators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1315,6 +1343,8 @@ pub struct DefinitionV1x8 {
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // charon marshals `timestamp` with `omitempty`, so it is absent when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
@@ -1323,7 +1353,10 @@ pub struct DefinitionV1x8 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// ValidatorAddresses define addresses of each validator.
-    #[serde(rename = "validators")]
+    // charon marshals a nil `validators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1405,12 +1438,18 @@ impl From<DefinitionV1x8> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x9 {
     /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    // charon marshals `name` with `omitempty`, so it is absent when empty.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
     /// Operators define the charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    // charon marshals a nil `operators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1419,6 +1458,8 @@ pub struct DefinitionV1x9 {
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // charon marshals `timestamp` with `omitempty`, so it is absent when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
@@ -1427,7 +1468,10 @@ pub struct DefinitionV1x9 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// ValidatorAddresses define addresses of each validator.
-    #[serde(rename = "validators")]
+    // charon marshals a nil `validators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1520,6 +1564,10 @@ pub struct DefinitionV1x10 {
     pub creator: Creator,
     /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
+    // charon marshals a nil `operators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1528,6 +1576,8 @@ pub struct DefinitionV1x10 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // charon marshals `timestamp` with `omitempty`, so it is absent when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1536,7 +1586,10 @@ pub struct DefinitionV1x10 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// Addresses of each validator.
-    #[serde(rename = "validators")]
+    // charon marshals a nil `validators` slice as JSON `null`, and older tools
+    // may omit the key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1629,12 +1682,13 @@ fn repeat_v_addresses(
     addr: ValidatorAddresses,
     num_validators: u64,
 ) -> Result<Vec<ValidatorAddresses>, DefinitionError> {
-    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it at
-    // SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already enforced on the
-    // validator-addresses field) *before* the clone loop, so a value up to
-    // u64::MAX cannot drive an unbounded allocation / OOM. This is defensive
-    // hardening consistent with the SSZ bound Charon enforces; it cannot reject
-    // any definition that could round-trip through SSZ hashing.
+    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it
+    // at SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already
+    // enforced on the validator-addresses field) *before* the clone loop,
+    // so a value up to u64::MAX cannot drive an unbounded allocation / OOM.
+    // This is defensive hardening consistent with the SSZ bound Charon
+    // enforces; it cannot reject any definition that could round-trip
+    // through SSZ hashing.
     if num_validators > SSZ_MAX_VALIDATORS as u64 {
         return Err(DefinitionError::NumValidatorsTooLarge {
             num_validators,
@@ -1717,8 +1771,9 @@ mod tests {
             "u64::MAX num_validators must be rejected, not allocated"
         );
         // The deserialize dispatch renders the TryFrom error via Debug
-        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on the
-        // variant name and the enforced max, both of which appear in the Debug repr.
+        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on
+        // the variant name and the enforced max, both of which appear
+        // in the Debug repr.
         let msg = format!("{}", result.unwrap_err());
         assert!(
             msg.contains("NumValidatorsTooLarge") && msg.contains("65536"),
@@ -1995,6 +2050,41 @@ mod tests {
         let definition = serde_json::from_str::<Definition>(json_str).unwrap();
 
         assert!(definition.verify_hashes().is_ok());
+    }
+
+    /// charon marshals nil `operators`/`validators` slices as JSON `null` and
+    /// omits `name`/`timestamp` (both `omitempty`). Every supported definition
+    /// version must accept those shapes rather than fail deserialization.
+    #[test]
+    fn definition_accepts_null_slices_and_absent_omitempty_fields() {
+        for fixture in [
+            include_str!("testdata/cluster_definition_v1_8_0.json"),
+            include_str!("testdata/cluster_definition_v1_9_0.json"),
+            include_str!("testdata/cluster_definition_v1_10_0.json"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let obj = value.as_object_mut().unwrap();
+            obj.insert("operators".to_owned(), serde_json::Value::Null);
+            // charon only marshals `validators: null` when there are no
+            // validators, so keep the count consistent with the deserializer's
+            // num_validators/validators cross-check.
+            obj.insert("validators".to_owned(), serde_json::Value::Null);
+            obj.insert("num_validators".to_owned(), serde_json::json!(0));
+            obj.remove("name");
+            obj.remove("timestamp");
+
+            let version = value["version"].as_str().unwrap().to_owned();
+            let definition = serde_json::from_value::<Definition>(value)
+                .unwrap_or_else(|e| panic!("version {version} must parse: {e}"));
+
+            assert!(definition.operators.is_empty(), "version {version}");
+            assert!(
+                definition.validator_addresses.is_empty(),
+                "version {version}"
+            );
+            assert_eq!(definition.name, "", "version {version}");
+            assert_eq!(definition.timestamp, "", "version {version}");
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
+use pluto_crypto::{tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
 use pluto_cluster::{
@@ -328,7 +328,8 @@ impl Client {
 
         for (sig_idx, sig_str) in exit_response.signatures.iter().enumerate() {
             if sig_str.is_empty() {
-                // Ignore, the associated share index didn't push a partial signature yet
+                // Ignore, the associated share index didn't push a partial
+                // signature yet
                 continue;
             }
 
@@ -343,8 +344,9 @@ impl Client {
             let mut sig = [0u8; 96];
             sig.copy_from_slice(&sig_bytes);
 
-            // Convert 0-indexed array position to 1-indexed share ID (API stores signatures
-            // at array position share_id-1, e.g., share 1 at position 0)
+            // Convert 0-indexed array position to 1-indexed share ID (API
+            // stores signatures at array position share_id-1, e.g.,
+            // share 1 at position 0)
             let share_idx = u64::try_from(sig_idx)
                 .map_err(Error::FailedToConvertShareIndex)?
                 .checked_add(1)
@@ -353,7 +355,7 @@ impl Client {
         }
 
         // Perform threshold aggregation
-        let full_sig = BlstImpl.threshold_aggregate(&raw_signatures)?;
+        let full_sig = tbls::threshold_aggregate(&raw_signatures)?;
 
         let epoch_u64: u64 = exit_response.epoch.parse()?;
 

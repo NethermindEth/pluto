@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use pluto_crypto::tbls::Tbls;
+use pluto_crypto::tbls;
 use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
 use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serializer};
@@ -84,7 +84,7 @@ async fn read_body_capped(
     response: reqwest::Response,
     max: usize,
 ) -> std::result::Result<Vec<u8>, FetchError> {
-    use futures::StreamExt;
+    use tokio_stream::StreamExt;
 
     // Reject early if the server advertised an oversized body.
     if let Some(len) = response.content_length()
@@ -203,8 +203,8 @@ pub fn sign_operator(
 /// conversions.
 pub fn threshold(nodes: u64) -> u64 {
     // Integer ceiling division: ceil(a/b) = (a + b - 1) / b
-    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes + 2) /
-    // 3
+    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes +
+    // 2) / 3
     let numerator = nodes.checked_mul(2).expect("threshold: nodes * 2 overflow");
     let adjusted = numerator
         .checked_add(2)
@@ -217,15 +217,13 @@ pub fn agg_sign(
     secrets: &[Vec<pluto_crypto::types::PrivateKey>],
     message: &[u8],
 ) -> Result<pluto_crypto::types::Signature, pluto_crypto::types::Error> {
-    let blst = pluto_crypto::blst_impl::BlstImpl;
-
     let sigs = secrets
         .iter()
         .flat_map(|shares| shares.iter())
-        .map(|share| blst.sign(share, message))
+        .map(|share| tbls::sign(share, message))
         .collect::<Result<Vec<_>, _>>()?;
 
-    blst.aggregate(&sigs)
+    tbls::aggregate(&sigs)
 }
 
 #[cfg(test)]

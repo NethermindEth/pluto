@@ -346,7 +346,8 @@ fn run_self_tests_in_new_task(
     self_tests: Vec<TestCaseName>,
     only_self_tests: bool,
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
-    // Self tests run concurrently with peer tests; give the node a moment to bind.
+    // Self tests run concurrently with peer tests; give the node a moment to
+    // bind.
     tokio::spawn(async move {
         tokio::time::sleep(SELF_TEST_NODE_BIND_DELAY).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
@@ -424,17 +425,23 @@ fn parse_peers(enr_strings: &[String]) -> Result<Vec<Peer>> {
         .collect()
 }
 
-// enr must be ASCII-only
+/// Shortens an ENR to `<first 13 bytes>...<last 4 bytes>` for display.
+///
+/// ENRs are base64 so in practice ASCII, but the string comes from `--enrs`
+/// config input: `str::get` returns `None` mid-code-point, so walk inwards to
+/// the nearest boundary rather than slicing bytes and panicking.
 fn format_enr(enr: &str) -> String {
     if enr.len() <= 17 {
         return enr.to_string();
     }
-    let bytes = enr.as_bytes();
-    format!(
-        "{}...{}",
-        std::str::from_utf8(&bytes[..13]).expect("ENR must be ASCII"),
-        std::str::from_utf8(&bytes[enr.len().saturating_sub(4)..]).expect("ENR must be ASCII"),
-    )
+    let head = (0..=13)
+        .rev()
+        .find_map(|i| enr.get(..i))
+        .unwrap_or_default();
+    let tail = (enr.len().saturating_sub(4)..=enr.len())
+        .find_map(|i| enr.get(i..))
+        .unwrap_or_default();
+    format!("{head}...{tail}")
 }
 
 fn peer_target_name(peer: &Peer, enr_str: &str) -> String {
@@ -496,9 +503,8 @@ async fn run_relay_http_tests(
 
 async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingRelay");
-    let client = reqwest::Client::new();
     tokio::select! {
-        res = client.get(url).send() => match res {
+        res = super::http_client().get(url).send() => match res {
             Ok(resp) if resp.status().is_success() => result.ok(),
             Ok(resp) => result.fail(TestResultError::from_string(format!("HTTP status {}", resp.status()))),
             Err(e) => result.fail(e),
@@ -938,9 +944,10 @@ fn build_peer_results(
             }
             "PingMeasure" => {
                 let r = TestResult::new("PingMeasure");
-                // Use the most recent ping rather than the first: we cannot issue
-                // an on-demand ping (pings are driven by the libp2p keepalive schedule),
-                // so .last() is the closest approximation to a fresh measurement.
+                // Use the most recent ping rather than the first: we cannot
+                // issue an on-demand ping (pings are driven by
+                // the libp2p keepalive schedule), so .last() is
+                // the closest approximation to a fresh measurement.
                 if let Some(&(_, rtt)) = state.ping_rtts.last() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
@@ -948,8 +955,9 @@ fn build_peer_results(
                 }
             }
             "PingLoad" => {
-                // Gap vs charon: charon issues on-demand pings during load; libp2p drives
-                // pings on its own keepalive schedule so we can only filter existing RTTs.
+                // Gap vs charon: charon issues on-demand pings during load;
+                // libp2p drives pings on its own keepalive
+                // schedule so we can only filter existing RTTs.
                 let r = TestResult::new("PingLoad");
                 let load_rtts: Vec<Duration> = if let Some(ct) = state.connect_time {
                     state
@@ -1428,5 +1436,30 @@ mod tests {
             "unexpected targets: {:?}",
             results.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn format_enr_pins_ascii_output() {
+        assert_eq!(format_enr("enr:short"), "enr:short");
+        // 17 bytes is still returned verbatim.
+        assert_eq!(format_enr("enr:-abcdefghijkl"), "enr:-abcdefghijkl");
+        assert_eq!(
+            format_enr("enr:-Ku4QHqVeJ8PPzcvW1234567890"),
+            "enr:-Ku4QHqVe...7890"
+        );
+    }
+
+    #[test]
+    fn format_enr_truncates_on_char_boundaries() {
+        // A 2-byte code point straddles byte 13 (the head cut).
+        let head = format!("{}{}", "a".repeat(12), "é".repeat(6));
+        assert_eq!(format_enr(&head), format!("{}...éé", "a".repeat(12)));
+
+        // A 2-byte code point straddles the tail cut (len - 4).
+        let tail = format!("{}{}", "a".repeat(17), "é".repeat(3));
+        assert_eq!(format_enr(&tail), format!("{}...éé", "a".repeat(13)));
+
+        // All multi-byte, both cuts land mid-code-point.
+        assert_eq!(format_enr(&"€".repeat(10)), "€€€€...€");
     }
 }

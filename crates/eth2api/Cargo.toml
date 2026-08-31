@@ -16,7 +16,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 bon.workspace = true
 eventsource-stream.workspace = true
-futures.workspace = true
 http.workspace = true
 oas3-gen-support.workspace = true
 regex.workspace = true
@@ -35,6 +34,7 @@ tree_hash_derive.workspace = true
 alloy.workspace = true
 pluto-ssz.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 vise.workspace = true
 
 [dev-dependencies]

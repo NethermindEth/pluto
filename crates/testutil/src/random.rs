@@ -6,7 +6,7 @@ use k256::{
     SecretKey,
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use pluto_crypto::{tbls, types::PrivateKey};
 use pluto_eth2api::{
     spec::phase0,
     types::{
@@ -68,12 +68,10 @@ pub fn random_bytes32_seed(seed: u8) -> Vec<u8> {
 
 /// Generates a deterministic BLS private key for testing.
 pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
-    let tbls = BlstImpl;
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let rng = StdRng::from_seed(seed_bytes);
-    tbls.generate_secret_key(rng)
-        .expect("deterministic key generation should not fail")
+    tbls::generate_secret_key(rng).expect("deterministic key generation should not fail")
 }
 
 /// Generates a random BLS signature as a hex string for testing.
@@ -345,7 +343,8 @@ mod tests {
             // Decode to bytes and verify bit count
             let bytes = hex::decode(&bitlist[2..]).unwrap();
             let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
-            // Bit count must be <= length (collisions possible for large lengths)
+            // Bit count must be <= length (collisions possible for large
+            // lengths)
             assert!(bit_count <= u32::try_from(length).unwrap());
         }
 

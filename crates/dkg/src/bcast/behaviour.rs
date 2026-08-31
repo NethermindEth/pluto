@@ -426,9 +426,9 @@ impl NetworkBehaviour for Behaviour {
                 return;
             }
 
-            // PlutoBehaviour runs conn_logger before inner behaviours, so the shared peer
-            // store already reflects the closed connection when bcast sees this
-            // event.
+            // PlutoBehaviour runs conn_logger before inner behaviours, so the
+            // shared peer store already reflects the closed
+            // connection when bcast sees this event.
             if self.is_connected(&event.peer_id) {
                 return;
             }

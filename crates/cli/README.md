@@ -69,7 +69,7 @@ Starts a libp2p circuit relay that charon clients can use to discover and connec
   - `--data-dir <PATH>`: The directory where pluto will store all its internal data. (default: `.charon`)
   - `--http-address <ADDR>`: Listening address (ip and port) for the relay http server serving runtime ENR. (default: `127.0.0.1:3640`)
   - `--auto-p2pkey`: Automatically generate and persist a p2p key if one does not exist. Always on: it defaults to true and cannot be switched off on the command line (`--auto-p2pkey=false` is rejected); set `CHARON_AUTO_P2PKEY=false` to require an existing key.
-  - `--p2p-relay-loglevel <LEVEL>`: **[IGNORED]** Parsed but never applied.
+  - `--p2p-relay-loglevel <LEVEL>`: Log level for the upstream `libp2p_relay` crate, letting its logs be quieted (`--p2p-relay-loglevel=error`) without lowering pluto's own verbosity. Takes the same values as `--log-level`; when unset the relay crate follows `--log-level`.
   - `--p2p-max-reservations <N>`: Updates max circuit reservations per peer (each valid for 1 hour). (default: `512`)
   - `--p2p-max-connections <N>`: Currently applied as the relay's total reservation limit; it does not cap inbound connections. (default: `16384`)
   - `--p2p-advertise-private-addresses`: Enable advertising of libp2p auto-detected private addresses.
@@ -269,7 +269,7 @@ Shared by `run`, `relay`, `dkg` and `alpha test peers`.
 Shared by `run`, `relay` and `dkg`.
 
 - `--log-format <FORMAT>`: **[IGNORED]** Accepted but not yet applied — output is always console-formatted. (default: `console`)
-- `--log-level <LEVEL>`: Log level; `debug`, `info`, `warn` or `error`. (default: `info`)
+- `--log-level <LEVEL>`: Log level; `off`, `trace`, `debug`, `info`, `warn` or `error`. (default: `info`)
 - `--log-color <COLOR>`: Log color; `auto`, `force` or `disable`. (default: `auto`)
 - `--log-output-path <PATH>`: **[IGNORED]** Accepted but not yet applied — no log file is written.
 
