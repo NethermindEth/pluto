@@ -15,11 +15,15 @@ rand_core.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
+# Cargo cannot inherit the workspace lint set (`[lints] workspace = true`) while
+# overriding a single lint, and this crate must relax `unsafe_code` for the blst
+# C bindings. The lints are therefore listed explicitly and MUST be kept in sync
+# with `[workspace.lints]` in the root `Cargo.toml`.
 [lints.rust]
+missing_docs = "deny"
 # `deny` rather than the workspace `forbid` so `tbls::math` — the sole module
 # wrapping the blst C bindings — can opt back in with `#![allow(unsafe_code)]`.
 unsafe_code = "deny"
-missing_docs = "deny"
 
 [lints.clippy]
 arithmetic_side_effects = "deny"
@@ -30,6 +34,7 @@ cast_precision_loss = "deny"
 cast_sign_loss = "deny"
 needless_return = "deny"
 panicking_overflow_checks = "deny"
+redundant_test_prefix = "deny"
 unwrap_used = "deny"
 
 [dev-dependencies]

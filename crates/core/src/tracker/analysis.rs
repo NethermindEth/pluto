@@ -731,7 +731,8 @@ mod tests {
         assert_eq!(r.step, Step::Consensus);
         assert_eq!(r.reason, REASON_NO_CONSENSUS);
 
-        // dutyDB step with no error → reported as validatorAPI / NoLocalVCSignature.
+        // dutyDB step with no error → reported as validatorAPI /
+        // NoLocalVCSignature.
         events
             .entry(att.clone())
             .or_default()

@@ -530,7 +530,8 @@ mod tests {
 
     #[tokio::test]
     async fn insufficient_distinct_signatures() {
-        // 4 parSigs all with the same share_idx → deduplicates to 1, below threshold 3.
+        // 4 parSigs all with the same share_idx → deduplicates to 1, below
+        // threshold 3.
         let agg = Aggregator::new(3, noop_verify()).unwrap();
         let mut set = HashMap::new();
         set.insert(PubKey::new([0u8; 48]), mock_par_sigs(4, 0));
@@ -606,8 +607,8 @@ mod tests {
 
     #[tokio::test]
     async fn deduplication_succeeds() {
-        // 5 parSigs with 4 distinct share indices (one duplicate) at threshold 3 →
-        // success.
+        // 5 parSigs with 4 distinct share indices (one duplicate) at threshold
+        // 3 → success.
         let ctx = make_bls_context();
         let mut par_sigs: Vec<ParSignedData> = ctx
             .sigs
@@ -615,8 +616,8 @@ mod tests {
             .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
 
-        // Add a duplicate of the first share — last writer wins, same sig so result
-        // identical.
+        // Add a duplicate of the first share — last writer wins, same sig so
+        // result identical.
         let (first_idx, first_sig) = ctx.sigs[0];
         par_sigs.push(ParSignedData::new(
             MockSignedData { sig: first_sig },
@@ -840,8 +841,8 @@ mod tests {
         let without_idx = VersionedAttestation::new(inner_no_idx).unwrap();
 
         let ctx = make_bls_context();
-        // First par_sig has no validator_index; second has it — template must prefer
-        // the latter.
+        // First par_sig has no validator_index; second has it — template must
+        // prefer the latter.
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()

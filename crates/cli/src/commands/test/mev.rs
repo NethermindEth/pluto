@@ -11,8 +11,8 @@ use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
     calculate_score,
     constants::{SLOT_TIME, SLOTS_IN_EPOCH},
-    evaluate_rtt, must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt,
-    write_result_to_file, write_result_to_writer,
+    evaluate_rtt, http_client, must_output_to_file_on_quiet, publish_result_to_obol_api,
+    request_rtt, write_result_to_file, write_result_to_writer,
 };
 use crate::{
     commands::test::TestCaseName,
@@ -21,19 +21,8 @@ use crate::{
 };
 use clap::Args;
 
-/// Per-request timeout for MEV/beacon diagnostic HTTP calls.
-const MEV_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum diagnostic response body read from a beacon/relay endpoint (16 MB).
 const BN_MAX_BODY: usize = 16 * 1024 * 1024;
-
-/// Builds a diagnostic HTTP client with a request timeout so a hostile/slow
-/// endpoint cannot stall a diagnostic indefinitely.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(MEV_HTTP_TIMEOUT)
-        .build()
-        .unwrap_or_default()
-}
 
 /// Reads a response body, rejecting bodies that exceed [`BN_MAX_BODY`]. Uses
 /// the advertised `Content-Length` for the fast-path reject; the client timeout

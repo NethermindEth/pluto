@@ -80,11 +80,11 @@ pub fn new_for_test(
 
     for i in 0..n {
         // Generate ENR
-        #[allow(
+        #[expect(
             clippy::arithmetic_side_effects,
             reason = "matches the original implementation, test code only"
         )]
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "intentional truncation for testing purposes"
         )]

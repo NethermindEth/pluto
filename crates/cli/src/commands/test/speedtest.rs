@@ -113,7 +113,8 @@ impl SpeedtestServer {
         let response = client.get(&latency_url).send().await?;
         // Read and discard the body so the connection is left in a clean state
         // for the connection pool; dropping Response without reading closes the
-        // underlying TCP socket and corrupts pool state for subsequent requests.
+        // underlying TCP socket and corrupts pool state for subsequent
+        // requests.
         let _ = response.bytes().await?;
         self.latency = start.elapsed();
         Ok(())
@@ -144,9 +145,9 @@ impl SpeedtestServer {
             .checked_add(SPEED_TEST_DURATION)
             .expect("deadline does not overflow");
 
-        // Go measures throughput via a Welford EWMA sampled every 50ms. Here we use
-        // total_bytes/elapsed, which is simpler but equally valid for a single
-        // measurement.
+        // Go measures throughput via a Welford EWMA sampled every 50ms. Here we
+        // use total_bytes/elapsed, which is simpler but equally valid
+        // for a single measurement.
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..speed_test_concurrency() {
             let client = client.clone();
@@ -275,9 +276,10 @@ pub(super) async fn fetch_best_server(
 
     // Go bug parity: the original Go implementation (testinfra.go) appends both
     // servers_only and servers_exclude filter results independently (union), so
-    // excluded servers can still appear if they also match servers_only. The Rust
-    // implementation correctly chains the filters as intersection, which is the
-    // intended behaviour. This intentional divergence from Go is kept.
+    // excluded servers can still appear if they also match servers_only. The
+    // Rust implementation correctly chains the filters as intersection,
+    // which is the intended behaviour. This intentional divergence from Go
+    // is kept.
     let candidates: Vec<_> = servers
         .into_iter()
         .filter(|s| servers_only.is_empty() || servers_only.contains(&s.name))
@@ -325,10 +327,14 @@ pub(super) fn bytes_to_mbps(bytes: usize, elapsed: Duration) -> f64 {
         return 0.0;
     }
 
-    #[allow(
+    // `arithmetic_side_effects` cannot be an `expect`: the arithmetic below is
+    // all floating-point, which the lint never fires on, so it would be an
+    // unfulfilled expectation. Kept as `allow`. Reason: arithmetic overflow is
+    // impossible for realistic network speeds.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
         clippy::cast_precision_loss,
-        clippy::arithmetic_side_effects,
-        reason = "precision loss requires >8PB transferred; arithmetic overflow is impossible for realistic network speeds"
+        reason = "precision loss requires >8PB transferred"
     )]
     let bytes: f64 = bytes as f64;
     bytes * 8.0 / secs / 1_000_000.0
