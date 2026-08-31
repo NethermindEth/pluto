@@ -169,8 +169,8 @@ mod tests {
 
     #[tokio::test]
     async fn non_2xx_response_records_error() {
-        // The client surfaces beacon-node HTTP errors as an `Ok(non-2xx variant)`,
-        // which must still be counted as an error.
+        // The client surfaces beacon-node HTTP errors as an `Ok(non-2xx
+        // variant)`, which must still be counted as an error.
         let _: Result<crate::GetAttesterDutiesResponse, std::convert::Infallible> =
             instrument("test_http_err", async {
                 Ok(crate::GetAttesterDutiesResponse::Unknown)
@@ -184,8 +184,8 @@ mod tests {
 
     #[tokio::test]
     async fn additional_2xx_variant_records_no_error() {
-        // A non-`Ok` but still 2xx variant (e.g. `202 Accepted`) is a success and
-        // must not increment the error counter.
+        // A non-`Ok` but still 2xx variant (e.g. `202 Accepted`) is a success
+        // and must not increment the error counter.
         let _: Result<crate::PublishBlockV2Response, std::convert::Infallible> =
             instrument("test_http_accepted", async {
                 Ok(crate::PublishBlockV2Response::Accepted)

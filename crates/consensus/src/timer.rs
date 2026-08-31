@@ -539,9 +539,10 @@ mod tests {
     #[test_case(4, Duration::from_nanos(800) ; "round_4")]
     #[test_case(11, Duration::from_nanos(2_200) ; "round_11")]
     fn linear_subsequent_round_timeout_is_nanoseconds(round: i64, want: Duration) {
-        // Mirrors Charon v1.7.1 roundtimer.go:243 `time.Duration(200*(round-1)+200)`,
-        // which is nanoseconds (no `* time.Millisecond`). Flip to `from_millis`
-        // expectations only when the Charon pin moves past charon#4537.
+        // Mirrors Charon v1.7.1 roundtimer.go:243
+        // `time.Duration(200*(round-1)+200)`, which is nanoseconds (no
+        // `* time.Millisecond`). Flip to `from_millis` expectations
+        // only when the Charon pin moves past charon#4537.
         assert_eq!(want, must_duration(linear_subsequent_round_timeout(round)));
     }
 

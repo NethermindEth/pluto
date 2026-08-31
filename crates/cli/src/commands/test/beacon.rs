@@ -1613,8 +1613,8 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
 
     let min = sorted[0];
     let max = sorted[sorted.len().saturating_sub(1)];
-    // For even-length slices this picks the upper-middle element, matching typical
-    // beacon tooling.
+    // For even-length slices this picks the upper-middle element, matching
+    // typical beacon tooling.
     let median = sorted[sorted.len() / 2];
     let sum: StdDuration = durations.iter().sum();
     let count = u32::try_from(durations.len()).unwrap_or_else(|_| {
@@ -2406,8 +2406,8 @@ mod tests {
         let cfg = default_beacon_args(vec![]);
         let result = beacon_ping_test(cancel, cfg, &url_without_auth).await;
 
-        // Without credentials the request still succeeds (no auth enforcement by
-        // request_rtt), but no Authorization header is sent.
+        // Without credentials the request still succeeds (no auth enforcement
+        // by request_rtt), but no Authorization header is sent.
         assert_eq!(result.verdict, TestVerdict::Ok);
 
         let requests = server.received_requests().await.unwrap();

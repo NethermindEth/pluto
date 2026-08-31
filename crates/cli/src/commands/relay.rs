@@ -80,10 +80,12 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             [] => None,
             [loki_url, rest @ ..] => {
                 if !rest.is_empty() {
-                    // Charon fans logs out to every entry in `loki-addresses`, but
-                    // `pluto_tracing::TracingConfig` only supports a single Loki
-                    // layer today. `tracing::warn!` would be a no-op here because
-                    // no subscriber is installed yet (init happens later inside
+                    // Charon fans logs out to every entry in `loki-addresses`,
+                    // but `pluto_tracing::TracingConfig`
+                    // only supports a single Loki
+                    // layer today. `tracing::warn!` would be a no-op here
+                    // because no subscriber is installed
+                    // yet (init happens later inside
                     // `commands::relay::run`), so write directly to stderr.
                     eprintln!(
                         "warning: {extra} additional --loki-addresses ignored; only the first is used",
@@ -522,9 +524,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = relay_args(dir.path());
 
-        // Covers the CLI entry point that the fixture bypasses: tracing init and
-        // the Loki drain. A pre-cancelled token is deterministic because the
-        // shutdown arm of the serve loop is the `biased` first branch.
+        // Covers the CLI entry point that the fixture bypasses: tracing init
+        // and the Loki drain. A pre-cancelled token is deterministic
+        // because the shutdown arm of the serve loop is the `biased`
+        // first branch.
         let ct = CancellationToken::new();
         ct.cancel();
 

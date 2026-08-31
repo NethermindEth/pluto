@@ -433,7 +433,8 @@ mod tests {
         let local = PeerId::random();
         let peer = PeerId::random();
         let behaviour = &mut behaviour(local, [peer]);
-        // The all-relay guard: one direct connection is enough to leave it alone.
+        // The all-relay guard: one direct connection is enough to leave it
+        // alone.
         seed_store(
             behaviour,
             peer,
@@ -455,7 +456,8 @@ mod tests {
         let local = PeerId::random();
         let peer = PeerId::random();
         let behaviour = &mut behaviour(local, [peer]);
-        // Identify has not reported an address yet, so there is nothing to dial.
+        // Identify has not reported an address yet, so there is nothing to
+        // dial.
         seed_store(
             behaviour,
             peer,

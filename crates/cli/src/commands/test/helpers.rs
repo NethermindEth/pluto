@@ -360,7 +360,8 @@ pub(crate) async fn write_result_to_file(
 
     let file_content_json = serde_json::to_vec(&all_results)?;
 
-    // tempfile is a synchronous crate, but keep existing_file open during operation
+    // tempfile is a synchronous crate, but keep existing_file open during
+    // operation
     tokio::task::spawn_blocking(move || -> CliResult<()> {
         use std::io::Write as _;
 
@@ -697,7 +698,8 @@ mod tests {
         assert!(must_output_to_file_on_quiet(true, "").is_err());
     }
 
-    // Ground truth from Go fastssz (with Duration as string format matching Rust)
+    // Ground truth from Go fastssz (with Duration as string format matching
+    // Rust)
     const GO_HASH_EMPTY: &str = "7b7d000000000000000000000000000000000000000000000000000000000000";
     const GO_HASH_ALL_CATEGORIES: &str =
         "64469d918903e272849172b3b36e812f602411b664a89b59c04393332b69f63b";

@@ -888,8 +888,8 @@ mod tests {
 
         let key = PubKey::new([0; PK_LEN]);
 
-        // Check whether the string representation is the same as the go's public key
-        // length
+        // Check whether the string representation is the same as the go's
+        // public key length
         assert_eq!(key.to_string().len(), ORIGINAL_PK_LEN);
         assert_eq!(
             key.to_string(),

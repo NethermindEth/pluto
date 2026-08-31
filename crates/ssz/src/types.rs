@@ -733,8 +733,8 @@ mod tests {
 
     #[test]
     fn bitlist_bit_at_matches_ssz_round_trip() {
-        // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2 set,
-        // matching the bytes returned by `aggregation_bits()`.
+        // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2
+        // set, matching the bytes returned by `aggregation_bits()`.
         let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]).expect("bitlist decode");
         assert_eq!(bl.len(), 3);
         assert_eq!(bl.bit_indices(), vec![0, 2]);
@@ -832,8 +832,8 @@ mod tests {
 
     #[test]
     fn bitvector_from_ssz_rejects_nonzero_padding() {
-        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be zero.
-        // Bit 15 set (0x80 in the final byte) is invalid padding.
+        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be
+        // zero. Bit 15 set (0x80 in the final byte) is invalid padding.
         assert!(<BitVector<12> as Decode>::from_ssz_bytes(&[0x00, 0x80]).is_err());
         // Zero padding decodes; used bits (0..12) are preserved.
         let bv = <BitVector<12> as Decode>::from_ssz_bytes(&[0xFF, 0x0F]).expect("valid padding");

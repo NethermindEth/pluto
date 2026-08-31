@@ -287,8 +287,8 @@ mod tests {
         let peer_b = peer_id_from_key(generate_insecure_k1_key(3).public_key()).expect("peer b id");
         let cluster = vec![peer_a, peer_b];
 
-        // Node B echoes the request's duty (its slot distinguishes requests) and
-        // stamps its own peer id on the response.
+        // Node B echoes the request's duty (its slot distinguishes requests)
+        // and stamps its own peer id on the response.
         let responder_peer_b = peer_b.to_string();
         let mut node_b = build_node(3, cluster.clone(), move |_peer, request| {
             Some(PriorityMsg {
@@ -392,7 +392,8 @@ mod tests {
 
         let (mut behaviour, _sender) = new(Arc::new(|_, _| async { Ok(None) }.boxed()), ctx);
 
-        // Known peer with a stored address: that address is offered for the dial.
+        // Known peer with a stored address: that address is offered for the
+        // dial.
         let resolved = behaviour
             .handle_pending_outbound_connection(
                 ConnectionId::new_unchecked(1),
@@ -598,7 +599,8 @@ mod tests {
             }
         }
 
-        // Drive A in the background; its send fails when B closes without reply.
+        // Drive A in the background; its send fails when B closes without
+        // reply.
         let driver_a = tokio::spawn(async move {
             loop {
                 let _ = swarm_a.select_next_some().await;

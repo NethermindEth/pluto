@@ -225,9 +225,10 @@ impl ProtocolState {
     ) {
         let peer_name = pluto_p2p::name::peer_name(&self.peer_id);
 
-        // nickname/version are peer-supplied and unbounded in length; truncate at
-        // the metric boundary so a pathological value cannot blow up label memory.
-        // Reset the previous series under the SAME truncated form it was stored.
+        // nickname/version are peer-supplied and unbounded in length; truncate
+        // at the metric boundary so a pathological value cannot blow up
+        // label memory. Reset the previous series under the SAME
+        // truncated form it was stored.
         let nickname = truncate_label(nickname);
 
         // Reset previous peer nickname if it changed
@@ -575,7 +576,8 @@ mod tests {
             .unwrap();
 
         // The wire format should be: [varint length][protobuf bytes]
-        // Minimal message is 14 bytes, so length prefix is just 1 byte (14 < 128)
+        // Minimal message is 14 bytes, so length prefix is just 1 byte (14 <
+        // 128)
         assert_eq!(buf[0] as usize, PEERINFO_MINIMAL.len());
         assert_eq!(&buf[1..], PEERINFO_MINIMAL);
 

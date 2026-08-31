@@ -225,9 +225,9 @@ impl fmt::Display for SemVer {
 impl Eq for SemVer {}
 
 impl Ord for SemVer {
-    // Only major and minor versions are used for comparison, unless both self and
-    // other have patch versions, in which case the patch version is also used.
-    // Pre-release labels are ignored.
+    // Only major and minor versions are used for comparison, unless both self
+    // and other have patch versions, in which case the patch version is
+    // also used. Pre-release labels are ignored.
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         if self.major != other.major {
             if self.major < other.major {

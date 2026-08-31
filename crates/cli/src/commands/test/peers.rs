@@ -346,7 +346,8 @@ fn run_self_tests_in_new_task(
     self_tests: Vec<TestCaseName>,
     only_self_tests: bool,
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
-    // Self tests run concurrently with peer tests; give the node a moment to bind.
+    // Self tests run concurrently with peer tests; give the node a moment to
+    // bind.
     tokio::spawn(async move {
         tokio::time::sleep(SELF_TEST_NODE_BIND_DELAY).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
@@ -943,9 +944,10 @@ fn build_peer_results(
             }
             "PingMeasure" => {
                 let r = TestResult::new("PingMeasure");
-                // Use the most recent ping rather than the first: we cannot issue
-                // an on-demand ping (pings are driven by the libp2p keepalive schedule),
-                // so .last() is the closest approximation to a fresh measurement.
+                // Use the most recent ping rather than the first: we cannot
+                // issue an on-demand ping (pings are driven by
+                // the libp2p keepalive schedule), so .last() is
+                // the closest approximation to a fresh measurement.
                 if let Some(&(_, rtt)) = state.ping_rtts.last() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
@@ -953,8 +955,9 @@ fn build_peer_results(
                 }
             }
             "PingLoad" => {
-                // Gap vs charon: charon issues on-demand pings during load; libp2p drives
-                // pings on its own keepalive schedule so we can only filter existing RTTs.
+                // Gap vs charon: charon issues on-demand pings during load;
+                // libp2p drives pings on its own keepalive
+                // schedule so we can only filter existing RTTs.
                 let r = TestResult::new("PingLoad");
                 let load_rtts: Vec<Duration> = if let Some(ct) = state.connect_time {
                     state

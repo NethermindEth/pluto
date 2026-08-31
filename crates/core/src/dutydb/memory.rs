@@ -651,7 +651,8 @@ impl State {
         let root = att_data.tree_hash_root().0;
         let slot = att_data.slot;
 
-        // Unlike Go implementation, we key by root only, slot field is redundant.
+        // Unlike Go implementation, we key by root only, slot field is
+        // redundant.
         let key = AggKey { root };
         if !self.aggregation_duties.contains_key(&key) {
             self.aggregation_keys_by_slot
@@ -659,8 +660,9 @@ impl State {
                 .or_default()
                 .push(key);
         }
-        // we don't check existingDataRoot != providedDataRoot because these values
-        // come from the same source and the error was unreachable
+        // we don't check existingDataRoot != providedDataRoot because these
+        // values come from the same source and the error was
+        // unreachable
         self.aggregation_duties.insert(key, agg.clone()); // unconditional overwrite
 
         Ok(())
@@ -1237,7 +1239,8 @@ mod tests {
         set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(a));
         set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(b));
 
-        // Must succeed: the commIdx=0 entry tolerates differing beacon_block_root.
+        // Must succeed: the commIdx=0 entry tolerates differing
+        // beacon_block_root.
         db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
             .await
             .unwrap();
@@ -1500,9 +1503,10 @@ mod tests {
 
     #[tokio::test]
     async fn duty_expiry() {
-        // Real handle so `store()`'s `add(...)` returns `AddOutcome::Scheduled`.
-        // Eviction is driven manually via `trim_tx` so the test stays
-        // deterministic instead of racing the deadliner's timer.
+        // Real handle so `store()`'s `add(...)` returns
+        // `AddOutcome::Scheduled`. Eviction is driven manually via
+        // `trim_tx` so the test stays deterministic instead of racing
+        // the deadliner's timer.
         let deadliner = far_future_handle();
         let (trim_tx, trim_rx) = channel::<Duty>(64);
         let db = make_db_with_deadliner(deadliner, trim_rx);

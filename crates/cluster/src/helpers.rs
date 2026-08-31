@@ -203,8 +203,8 @@ pub fn sign_operator(
 /// conversions.
 pub fn threshold(nodes: u64) -> u64 {
     // Integer ceiling division: ceil(a/b) = (a + b - 1) / b
-    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes + 2) /
-    // 3
+    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes +
+    // 2) / 3
     let numerator = nodes.checked_mul(2).expect("threshold: nodes * 2 overflow");
     let adjusted = numerator
         .checked_add(2)
