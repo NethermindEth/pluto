@@ -16,6 +16,10 @@ pub mod layers;
 /// Metrics for the tracing.
 pub mod metrics;
 
+/// Span-propagating task spawning.
+pub mod spawn;
+
 pub use config::{ConsoleConfig, LokiConfig, TracingConfig, TracingConfigBuilder};
 
 pub use init::{LokiInit, init};
+pub use spawn::spawn;

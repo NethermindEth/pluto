@@ -268,6 +268,7 @@ impl Broadcaster {
     /// success record the broadcast count and submission delay. Internal-only
     /// duties (randao, prepare-aggregator, prepare-sync-contribution) are
     /// no-ops; deprecated and unknown duty types return an error.
+    #[tracing::instrument(name = "bcast", level = "debug", skip_all, fields(topic = "bcast"))]
     pub async fn broadcast(&self, mut duty: Duty, set: SignedDataSet) -> Result<()> {
         match duty.duty_type {
             DutyType::Attester => self.broadcast_attester(&duty, &set).await?,

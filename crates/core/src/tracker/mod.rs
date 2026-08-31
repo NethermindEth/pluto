@@ -463,6 +463,7 @@ impl TrackerService {
         );
     }
 
+    #[tracing::instrument(name = "tracker", level = "debug", skip_all, fields(topic = "tracker"))]
     async fn run(mut self) {
         let mut events: HashMap<Duty, Vec<Event>> = HashMap::new();
 

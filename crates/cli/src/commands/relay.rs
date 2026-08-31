@@ -309,6 +309,7 @@ pub struct RelayLokiArgs {
     pub loki_service: String,
 }
 
+#[tracing::instrument(name = "relay", level = "debug", skip_all, fields(topic = "relay"))]
 pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,

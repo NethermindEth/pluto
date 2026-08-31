@@ -123,6 +123,7 @@ pub(crate) async fn propose_priority(
 }
 
 /// Hashes and packs the local value, then starts or joins the duty runner.
+#[tracing::instrument(name = "qbft", level = "debug", skip_all, fields(topic = "qbft"))]
 async fn propose<M>(
     consensus: &Consensus,
     duty: Duty,
@@ -166,6 +167,7 @@ where
 }
 
 /// Starts participating in a duty without a local proposal value.
+#[tracing::instrument(name = "qbft", level = "debug", skip_all, fields(topic = "qbft"))]
 pub(crate) async fn participate(
     consensus: &Consensus,
     duty: Duty,
@@ -194,6 +196,7 @@ pub(crate) async fn participate(
 }
 
 /// Runs one consensus instance and publishes its completion result.
+#[tracing::instrument(name = "qbft", level = "debug", skip_all, fields(topic = "qbft"))]
 pub(crate) async fn run_instance(
     consensus: &Consensus,
     duty: Duty,

@@ -631,6 +631,7 @@ impl<B: NetworkBehaviour> Node<B> {
     }
 
     /// Handles a swarm event to update metrics and logging.
+    #[tracing::instrument(name = "p2p", level = "debug", skip_all, fields(topic = "p2p"))]
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
             // Identify - update peer addresses in the peer store.

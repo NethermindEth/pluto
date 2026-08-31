@@ -250,7 +250,19 @@ pub fn new_router(
         )
         .route("/eth/v1/node/version", get(node_version))
         .fallback(proxy_handler)
+        // Attach the `vapi` topic to every request so warn/error logs emitted
+        // while handling it are counted under `app_log_{warn,error}_total{topic="vapi"}`.
+        .layer(middleware::from_fn(with_vapi_topic))
         .with_state(state)
+}
+
+/// Middleware that runs each request handler inside a `vapi` topic span so log
+/// metrics are attributed to the validator API component.
+async fn with_vapi_topic(req: Request, next: Next) -> Response {
+    use tracing::Instrument as _;
+
+    let span = tracing::debug_span!("vapi", topic = "vapi");
+    next.run(req).instrument(span).await
 }
 
 async fn attester_duties(
