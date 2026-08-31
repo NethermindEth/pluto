@@ -666,7 +666,8 @@ pub async fn wire_core_workflow(
                             }
                         };
                         let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                        // Logged before the error moves into the tracker's `Arc`.
+                        // Logged before the error moves into the tracker's
+                        // `Arc`.
                         let step_err = match dutydb.store(duty.clone(), core_set).await {
                             Ok(()) => None,
                             Err(err) => {
