@@ -4,19 +4,13 @@
 //! to/from EIP 2335 (<https://eips.ethereum.org/EIPS/eip-2335>) compatible Keystore files.
 //! Passwords are expected/created in files with same identical names as the
 //! keystores, except with txt extension.
-//!
-//! Note: The following cluster-related keystore functions are implemented in
-//! `pluto_cluster::manifest::cluster` to avoid cyclic dependencies:
-//! - `keyshares_to_validator_pubkey` - Maps keyshares to validator pubkeys
-//! - `share_idx_for_cluster` - Returns share index for cluster's ENR identity
-//!   key
 
 use std::path::Path;
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use pluto_crypto::{tbls, types::PrivateKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use uuid::Builder;
 
 use super::{
     error::{KeystoreError, Result},
@@ -126,19 +120,26 @@ pub fn encrypt(
     pbkdf2_c: Option<u32>,
     rng: &mut impl rand::RngCore,
 ) -> Result<Keystore> {
-    let tbls = BlstImpl;
-    let pub_key = tbls
-        .secret_to_public_key(secret)
+    let pub_key = tbls::secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
     let crypto = keystorev4::encrypt(secret, password.as_ref(), pbkdf2_c, rng)?;
+
+    // Draw from the caller's `rng`, not the thread-local one, so a seeded rng
+    // reproduces the whole keystore. `from_random_bytes` stamps the v4 version
+    // and variant bits over the raw bytes.
+    let mut id_bytes = [0u8; 16];
+    rng.fill_bytes(&mut id_bytes);
 
     Ok(Keystore {
         crypto,
         description: String::new(),
         pubkey: hex::encode(pub_key),
         path: EIP2334_PATH.to_string(),
-        id: Uuid::new_v4().to_string().to_uppercase(),
+        id: Builder::from_random_bytes(id_bytes)
+            .into_uuid()
+            .to_string()
+            .to_uppercase(),
         version: EIP2335_KEYSTORE_VERSION,
     })
 }
@@ -239,7 +240,7 @@ async fn write_file(path: impl AsRef<Path>, data: &[u8], mode: u32) -> Result<()
 mod tests {
     use std::path::PathBuf;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use rand::SeedableRng;
     use tempfile::TempDir;
 
     use super::*;
@@ -247,8 +248,7 @@ mod tests {
 
     /// Generates a random BLS secret key for testing.
     fn generate_secret_key() -> PrivateKey {
-        let tbls = BlstImpl;
-        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+        tbls::generate_secret_key(rand::thread_rng()).unwrap()
     }
 
     #[tokio::test]
@@ -269,6 +269,26 @@ mod tests {
         let actual = key_files.sequenced_keys().unwrap();
 
         assert_eq!(secrets, actual);
+    }
+
+    #[test]
+    fn seeded_rng_gives_a_reproducible_keystore() {
+        let secret = generate_secret_key();
+
+        let encrypt_with_seed = |seed| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            encrypt(&secret, "password", Some(INSECURE_PBKDF2_C), &mut rng).unwrap()
+        };
+
+        let first = encrypt_with_seed(42);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&encrypt_with_seed(42)).unwrap(),
+        );
+
+        // A hard-coded id would satisfy the equality above too, so pin that it
+        // still comes from the stream.
+        assert_ne!(first.id, encrypt_with_seed(43).id);
     }
 
     #[tokio::test]

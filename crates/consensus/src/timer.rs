@@ -5,21 +5,20 @@
 //! timer selection follows the shared feature-set state.
 //!
 //! Public surface used by other modules:
-//! - [`RoundTimer`] is the common timer interface.
-//! - [`RoundTimerFuture`] is the cancellable timeout returned by a timer.
-//! - [`RoundTimerFunc`] and [`get_round_timer_func`] select the concrete
-//!   strategy.
-//! - [`TimerType`] identifies the selected strategy for logging/metrics.
-//! - [`IncreasingRoundTimer`], [`EagerDoubleLinearRoundTimer`], and
-//!   [`LinearRoundTimer`] are the concrete strategy implementations.
-//! - [`Error`] and [`Result`] carry timer construction failures.
+//! - `RoundTimer` is the common timer interface.
+//! - `RoundTimerFuture` is the cancellable timeout returned by a timer.
+//! - `RoundTimerFunc` and `get_round_timer_func` select the concrete strategy.
+//! - `TimerType` identifies the selected strategy for logging/metrics.
+//! - `IncreasingRoundTimer`, `EagerDoubleLinearRoundTimer`, and
+//!   `LinearRoundTimer` are the concrete strategy implementations.
+//! - `Error` and [`Result`] carry timer construction failures.
 //!
 //! Usage:
-//! - Call [`get_round_timer_func`] once when wiring consensus.
-//! - Call the returned [`RoundTimerFunc`] once per duty/consensus instance.
-//! - For each round, call [`RoundTimer::timer`] and await the returned future
-//!   in the instance event loop. Dropping the future cancels that timeout.
-//! - If [`TimerType::eager`] is true, start the first round timer before the
+//! - Call `get_round_timer_func` once when wiring consensus.
+//! - Call the returned `RoundTimerFunc` once per duty/consensus instance.
+//! - For each round, call `RoundTimer::timer` and await the returned future in
+//!   the instance event loop. Dropping the future cancels that timeout.
+//! - If `TimerType::eager` is true, start the first round timer before the
 //!   proposal value is available so peers align on round boundaries.
 
 use std::{
@@ -535,9 +534,10 @@ mod tests {
     #[test_case(4, Duration::from_nanos(800) ; "round_4")]
     #[test_case(11, Duration::from_nanos(2_200) ; "round_11")]
     fn linear_subsequent_round_timeout_is_nanoseconds(round: i64, want: Duration) {
-        // Mirrors Charon v1.7.1 roundtimer.go:243 `time.Duration(200*(round-1)+200)`,
-        // which is nanoseconds (no `* time.Millisecond`). Flip to `from_millis`
-        // expectations only when the Charon pin moves past charon#4537.
+        // Mirrors Charon v1.7.1 roundtimer.go:243
+        // `time.Duration(200*(round-1)+200)`, which is nanoseconds (no
+        // `* time.Millisecond`). Flip to `from_millis` expectations
+        // only when the Charon pin moves past charon#4537.
         assert_eq!(want, must_duration(linear_subsequent_round_timeout(round)));
     }
 

@@ -25,8 +25,7 @@ use pluto_cluster::{
 };
 use pluto_consensus::protocols;
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PrivateKey, PublicKey},
 };
 use pluto_eth1wrap as eth1wrap;
@@ -464,11 +463,13 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         );
 
         // Needed if --split-existing-keys is called without a definition file.
-        // It's safe to unwrap here because we know the length is less than u64::MAX.
+        // It's safe to unwrap here because we know the length is less than
+        // u64::MAX.
         args.num_validators = u64::try_from(secrets.len()).expect("secrets length is too large");
     }
 
-    // Get a cluster definition, either from a definition file or from the config.
+    // Get a cluster definition, either from a definition file or from the
+    // config.
     let (mut def, mut deposit_amounts) = if let Some((def, eth1cl)) = definition_input {
         validate_definition(&def, args.insecure_keys, &args.keymanager_addrs, &eth1cl).await?;
 
@@ -489,8 +490,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     }
 
     if secrets.is_empty() {
-        // This is the case in which split-keys is undefined and user passed validator
-        // amount on CLI
+        // This is the case in which split-keys is undefined and user passed
+        // validator amount on CLI
         secrets = generate_keys(def.num_validators)?;
     }
 
@@ -674,7 +675,6 @@ fn create_validator_registrations(
         .try_into()
         .map_err(|_| CreateClusterError::InvalidForkVersionLength)?;
 
-    let tbls = BlstImpl;
     let mut registrations = Vec::with_capacity(secrets.len());
 
     for (secret, fee_address) in secrets.iter().zip(fee_recipient_addresses.iter()) {
@@ -684,7 +684,7 @@ fn create_validator_registrations(
             eth2util::network::fork_version_to_genesis_time(&fork_version)?
         };
 
-        let pk = tbls.secret_to_public_key(secret)?;
+        let pk = tbls::secret_to_public_key(secret)?;
 
         let unsigned_reg = eth2util_registration::new_message(
             pk,
@@ -695,7 +695,7 @@ fn create_validator_registrations(
 
         let sig_root = eth2util_registration::get_message_signing_root(&unsigned_reg, fork_version);
 
-        let sig = tbls.sign(secret, &sig_root)?;
+        let sig = tbls::sign(secret, &sig_root)?;
 
         registrations.push(BuilderRegistration {
             message: Registration {
@@ -787,7 +787,8 @@ async fn write_keys_to_keymanager(
         for shares in share_sets {
             let password = random_hex64()?;
             let pbkdf2_c = if args.insecure_keys {
-                // Match Charon's `keystorev4.WithCost(..., 4)` => 2^4 iterations.
+                // Match Charon's `keystorev4.WithCost(..., 4)` => 2^4
+                // iterations.
                 Some(16u32)
             } else {
                 None
@@ -855,16 +856,15 @@ fn sign_deposit_datas(
     if deposit_amounts.is_empty() {
         return Err(CreateClusterError::EmptyDepositAmounts);
     }
-    let tbls = BlstImpl;
     let mut dd = Vec::new();
     for &deposit_amount in deposit_amounts {
         let mut datas = Vec::new();
         for (secret, withdrawal_addr) in secrets.iter().zip(withdrawal_addresses.iter()) {
             let withdrawal_addr = eth2util::helpers::checksum_address(withdrawal_addr)?;
-            let pk = tbls.secret_to_public_key(secret)?;
+            let pk = tbls::secret_to_public_key(secret)?;
             let msg = deposit::new_message(pk, &withdrawal_addr, deposit_amount, compounding)?;
             let sig_root = deposit::get_message_signing_root(&msg, network)?;
-            let sig = tbls.sign(secret, &sig_root)?;
+            let sig = tbls::sign(secret, &sig_root)?;
             datas.push(DepositData {
                 pub_key: msg.pubkey,
                 withdrawal_credentials: msg.withdrawal_credentials,
@@ -878,11 +878,10 @@ fn sign_deposit_datas(
 }
 
 fn generate_keys(num_validators: u64) -> Result<Vec<PrivateKey>> {
-    let tbls = BlstImpl;
     let mut secrets = Vec::new();
 
     for _ in 0..num_validators {
-        let secret = tbls.generate_secret_key(OsRng)?;
+        let secret = tbls::generate_secret_key(OsRng)?;
         secrets.push(secret);
     }
 
@@ -993,22 +992,21 @@ fn get_tss_shares(
     threshold: u64,
     num_nodes: u64,
 ) -> Result<(Vec<PublicKey>, Vec<Vec<PrivateKey>>)> {
-    let tbls = BlstImpl;
     let mut dvs = Vec::new();
     let mut splits = Vec::new();
 
     for secret in secrets {
-        let shares = tbls.threshold_split(secret, num_nodes, threshold)?;
+        let shares = tbls::threshold_split(secret, num_nodes, threshold)?;
 
-        // Preserve order when transforming from map of private shares to array of
-        // private keys
+        // Preserve order when transforming from map of private shares to array
+        // of private keys
         let mut entries: Vec<_> = shares.into_iter().collect();
         entries.sort_by_key(|(idx, _)| *idx);
         let secret_set = entries.into_iter().map(|(_, share)| share).collect();
 
         splits.push(secret_set);
 
-        let pubkey = tbls.secret_to_public_key(secret)?;
+        let pubkey = tbls::secret_to_public_key(secret)?;
         dvs.push(pubkey);
     }
 
@@ -1275,7 +1273,6 @@ fn get_validators(
     }
 
     let mut vals = Vec::with_capacity(dv_pubkeys.len());
-    let tbls = BlstImpl;
 
     for (idx, dv_pubkey) in dv_pubkeys.iter().enumerate() {
         let pub_shares: Vec<Vec<u8>> = dv_priv_shares
@@ -1283,7 +1280,7 @@ fn get_validators(
             .map(|shares| {
                 shares
                     .iter()
-                    .map(|share| tbls.secret_to_public_key(share))
+                    .map(tbls::secret_to_public_key)
                     .collect::<std::result::Result<Vec<_>, _>>()
             })
             .transpose()?
@@ -1320,12 +1317,11 @@ fn get_validators(
 fn agg_sign(secrets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
     use pluto_crypto::types::Signature;
 
-    let tbls = BlstImpl;
     let mut sigs: Vec<Signature> = Vec::new();
 
     for shares in secrets {
         for share in shares {
-            let sig = tbls.sign(share, message)?;
+            let sig = tbls::sign(share, message)?;
             sigs.push(sig);
         }
     }
@@ -1334,7 +1330,7 @@ fn agg_sign(secrets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
         return Ok(Vec::new());
     }
 
-    let agg = tbls.aggregate(&sigs)?;
+    let agg = tbls::aggregate(&sigs)?;
     Ok(agg.to_vec())
 }
 
@@ -1447,7 +1443,6 @@ mod tests {
         lock::Lock,
         version::versions::*,
     };
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls as _};
     use pluto_eth1wrap::EthClient;
     use pluto_eth2util::{
         deposit,
@@ -1662,8 +1657,9 @@ mod tests {
             }
         }
 
-        // If a definition file was loaded from disk, config hash and creator must be
-        // preserved, and operators must have their ENRs populated.
+        // If a definition file was loaded from disk, config hash and creator
+        // must be preserved, and operators must have their ENRs
+        // populated.
         if config.def_file_path.is_some() {
             assert_eq!(lock.definition.config_hash, ref_def.config_hash);
             assert_eq!(lock.definition.creator, ref_def.creator);
@@ -1674,7 +1670,8 @@ mod tests {
 
         const PREV_VERSIONS: &[&str] = &[V1_0, V1_1, V1_2, V1_3, V1_4, V1_5];
 
-        // Builder registrations must be populated (v1.7+, always true for v1.10).
+        // Builder registrations must be populated (v1.7+, always true for
+        // v1.10).
         for val in &lock.distributed_validators {
             if PREV_VERSIONS.contains(&lock.definition.version.as_str()) {
                 continue;
@@ -1689,7 +1686,8 @@ mod tests {
             }
 
             if config.split_keys {
-                // For SplitKeys mode the timestamp must be close to now, not a genesis time.
+                // For SplitKeys mode the timestamp must be close to now, not a
+                // genesis time.
                 let reg_ts = val.builder_registration.message.timestamp;
                 let diff = chrono::Utc::now().signed_duration_since(reg_ts);
                 assert!(
@@ -1785,10 +1783,9 @@ mod tests {
         match prep {
             PrepKind::None => {}
             PrepKind::SplitKeys { num_keys } => {
-                let tbls = BlstImpl;
                 let mut keys = Vec::new();
                 for _ in 0..num_keys {
-                    keys.push(tbls.generate_secret_key(rand::thread_rng()).unwrap());
+                    keys.push(tbls::generate_secret_key(rand::thread_rng()).unwrap());
                 }
                 keystore::store_keys_insecure(
                     &keys,
@@ -2094,10 +2091,9 @@ mod tests {
         let split_keys_temp = TempDir::new().unwrap();
 
         // Generate and store split keys insecurely.
-        let tbls_impl = BlstImpl;
         let mut keys = Vec::new();
         for _ in 0..num_split_keys {
-            keys.push(tbls_impl.generate_secret_key(rand::thread_rng()).unwrap());
+            keys.push(tbls::generate_secret_key(rand::thread_rng()).unwrap());
         }
         keystore::store_keys_insecure(&keys, split_keys_temp.path(), &CONFIRM_INSECURE_KEYS)
             .await
@@ -2134,7 +2130,8 @@ mod tests {
         let mut output = Vec::new();
         run(&mut output, args).await.unwrap();
 
-        // Since `cluster-lock.json` is copied into each node directory, use node0.
+        // Since `cluster-lock.json` is copied into each node directory, use
+        // node0.
         let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
             .await
             .unwrap();
@@ -2205,7 +2202,8 @@ mod tests {
         let eth1 = test_eth1_client().await;
         let keymanager_addrs: Vec<String> = vec![];
 
-        // "zero address": gnosis fork version with zero withdrawal addrs -> error
+        // "zero address": gnosis fork version with zero withdrawal addrs ->
+        // error
         {
             let mut def = definition.clone();
             def.fork_version = vec![0x00, 0x00, 0x00, 0x64]; // gnosis
@@ -2216,7 +2214,8 @@ mod tests {
             );
         }
 
-        // "fork versions": goerli -> ok; mainnet with zero withdrawal addrs -> error
+        // "fork versions": goerli -> ok; mainnet with zero withdrawal addrs ->
+        // error
         {
             let def = definition.clone();
             super::validate_definition(&def, false, &keymanager_addrs, &eth1)
@@ -2232,7 +2231,8 @@ mod tests {
             );
         }
 
-        // "insufficient keymanager addresses": 1 addr for 4-operator cluster -> error
+        // "insufficient keymanager addresses": 1 addr for 4-operator cluster ->
+        // error
         {
             let def = definition.clone();
             let km_addrs = vec!["127.0.0.1:1234".to_string()];
@@ -2293,8 +2293,8 @@ mod tests {
             );
         }
 
-        // "invalid hash": remote def with modified num_validators -> "Invalid config
-        // hash"
+        // "invalid hash": remote def with modified num_validators -> "Invalid
+        // config hash"
         {
             let mut def = remote_def.clone();
             def.num_validators = 3;
@@ -2308,8 +2308,8 @@ mod tests {
             );
         }
 
-        // "invalid config signatures": remote def with modified num_validators + rehash
-        // -> "invalid creator config signature"
+        // "invalid config signatures": remote def with modified num_validators
+        // + rehash -> "invalid creator config signature"
         {
             let mut def = remote_def.clone();
             def.num_validators = 3;
@@ -2339,7 +2339,8 @@ mod tests {
     /// Port of Go's TestMultipleAddresses.
     #[tokio::test]
     async fn multiple_addresses() {
-        // "insufficient fee recipient addresses": 0 addrs for 4 validators → error
+        // "insufficient fee recipient addresses": 0 addrs for 4 validators →
+        // error
         {
             let err = super::validate_addresses(4, &[], &[]).unwrap_err();
             let err_str = format!("{err}");
@@ -2349,8 +2350,8 @@ mod tests {
             );
         }
 
-        // "insufficient withdrawal addresses": 0 withdrawal addrs for 1 validator →
-        // error
+        // "insufficient withdrawal addresses": 0 withdrawal addrs for 1
+        // validator → error
         {
             let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
             let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
@@ -2364,12 +2365,14 @@ mod tests {
         // "insufficient addresses from remote URL": deserializing a definition
         // with num_validators=2 but empty validators list must fail with the
         // Go-compatible error message.  Testing at the JSON-parse level mirrors
-        // what Go's runCreateCluster triggers when it calls unmarshalDefinitionV1x10.
+        // what Go's runCreateCluster triggers when it calls
+        // unmarshalDefinitionV1x10.
         {
             let def_json = tokio::fs::read(DEF_PATH).await.unwrap();
             let mut def_value: serde_json::Value = serde_json::from_slice(&def_json).unwrap();
-            // Clear the validators list while keeping num_validators=2 to create a
-            // mismatch that mirrors the Go test (d.ValidatorAddresses = []).
+            // Clear the validators list while keeping num_validators=2 to
+            // create a mismatch that mirrors the Go test
+            // (d.ValidatorAddresses = []).
             def_value["validators"] = serde_json::json!([]);
             let modified_json = serde_json::to_vec(&def_value).unwrap();
 
@@ -2492,9 +2495,7 @@ mod tests {
 
         const TEST_AUTH_TOKEN: &str = "api-token-test";
 
-        let tbls_impl = BlstImpl;
-
-        let original_secret = tbls_impl.generate_secret_key(rand::thread_rng()).unwrap();
+        let original_secret = tbls::generate_secret_key(rand::thread_rng()).unwrap();
         let key_dir = TempDir::new().unwrap();
         keystore::store_keys_insecure(
             std::slice::from_ref(&original_secret),
@@ -2575,7 +2576,7 @@ mod tests {
                 shares.insert(u64::try_from(i + 1).unwrap(), secret);
             }
 
-            let recovered = tbls_impl.recover_secret(&shares).unwrap();
+            let recovered = tbls::recover_secret(&shares).unwrap();
             assert_eq!(recovered, original_secret);
         }
 

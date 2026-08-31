@@ -8,7 +8,6 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
-use futures::{Stream, StreamExt};
 use reqwest::Url;
 use std::{
     collections::{HashMap, HashSet},
@@ -16,6 +15,7 @@ use std::{
     time,
 };
 use tokio::sync::OnceCell;
+use tokio_stream::{Stream, StreamExt};
 use tree_hash::TreeHash;
 
 /// Error that can occur when using the
@@ -303,6 +303,10 @@ fn fork_version_from_schedule(
 /// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
 /// the Capella fork (spec-derived), falling back to the genesis fork version
 /// when the spec has no Capella entry.
+///
+/// Reading the version from the beacon node's own spec keeps devnets and other
+/// custom networks working. The genesis fallback is defensive: a spec without
+/// a Capella version already fails while the schedule is built.
 fn voluntary_exit_fork_version(
     spec_data: &serde_json::Value,
     genesis_fork_version: phase0::Version,
@@ -605,7 +609,7 @@ impl EthBeaconNodeApiClient {
     /// Fetches the resolved beacon domain for the provided domain type and
     /// epoch. Non-exit domains resolve the fork version from the
     /// fork-schedule endpoint (go-eth2-client parity, see
-    /// [`fork_version_from_schedule`]); voluntary exits stay pinned to the
+    /// `fork_version_from_schedule`); voluntary exits stay pinned to the
     /// Capella fork per EIP-7044.
     pub async fn fetch_domain(
         &self,
@@ -1011,7 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn event_stream_preserves_topic_and_raw_data() {
         use crate::EventstreamRequestQueryTopic;
-        use futures::StreamExt;
+        use tokio_stream::StreamExt;
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{method, path},
@@ -1036,7 +1040,7 @@ mod tests {
             ])
             .await
             .expect("open stream");
-        futures::pin_mut!(stream);
+        let mut stream = std::pin::pin!(stream);
 
         let first = stream.next().await.expect("first event").expect("ok event");
         assert_eq!(first.topic, "head");

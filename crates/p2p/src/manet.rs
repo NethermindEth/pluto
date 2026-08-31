@@ -3,7 +3,7 @@
 //! This module provides utilities for determining whether multiaddresses are
 //! public, private, or unroutable based on IP ranges and DNS domain names.
 //!
-//! Original implementation: https://github.com/multiformats/go-multiaddr/blob/master/net/private.go
+//! Original implementation: <https://github.com/multiformats/go-multiaddr/blob/master/net/private.go>
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -79,7 +79,7 @@ const NAT64_CIDRS: &[(&str, Ipv6Addr, u8)] = &[
 ];
 
 /// Unresolvable domains that do not resolve to an IP address.
-/// Ref: https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names
+/// Ref: <https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names>
 const UNRESOLVABLE_DOMAINS: &[&str] = &[
     // Reverse DNS Lookup
     ".in-addr.arpa",
@@ -89,7 +89,7 @@ const UNRESOLVABLE_DOMAINS: &[&str] = &[
 ];
 
 /// Private use domains reserved for private use with no central authority.
-/// Ref: https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names
+/// Ref: <https://en.wikipedia.org/wiki/Special-use_domain_name#Reserved_domain_names>
 const PRIVATE_USE_DOMAINS: &[&str] = &[
     // RFC 8375: Reserved for home networks
     ".home.arpa",
@@ -127,20 +127,24 @@ impl Manet for Multiaddr {
                         && !in_ipv4_range(ip, UNROUTABLE_CIDR4);
                 }
                 Protocol::Ip6(ip) => {
-                    // IP6 documentation prefix (part of Unroutable6) is a subset of the ip6
-                    // global unicast allocation so we ensure that it's not a documentation
+                    // IP6 documentation prefix (part of Unroutable6) is a
+                    // subset of the ip6 global unicast
+                    // allocation so we ensure that it's not a documentation
                     // prefix by diffing with Unroutable6
                     let is_public_unicast = in_ipv6_range(ip, GLOBAL_UNICAST_CIDR6)
                         && !in_ipv6_range(ip, UNROUTABLE_CIDR6);
                     if is_public_unicast {
                         return true;
                     }
-                    // The WellKnown NAT64 prefix (RFC 6052) can only reference a public IPv4
-                    // address. The Local use NAT64 prefix (RFC 8215) can
-                    // reference private IPv4 addresses. But since the
-                    // translation from Local use NAT64 prefix to IPv4 address is left
-                    // to the user we have no way of knowing which IPv4 address is referenced.
-                    // We count these as Public addresses because a false negative for this method
+                    // The WellKnown NAT64 prefix (RFC 6052) can only reference
+                    // a public IPv4 address. The Local use
+                    // NAT64 prefix (RFC 8215) can reference
+                    // private IPv4 addresses. But since the
+                    // translation from Local use NAT64 prefix to IPv4 address
+                    // is left to the user we have no way of
+                    // knowing which IPv4 address is referenced.
+                    // We count these as Public addresses because a false
+                    // negative for this method
                     // here is generally worse than a false positive.
                     return in_ipv6_range(ip, NAT64_CIDRS);
                 }
@@ -190,8 +194,9 @@ impl Manet for Multiaddr {
                 | Protocol::Dns6(name)
                 | Protocol::Dnsaddr(name) => {
                     // Only localhost domain is considered private for DNS
-                    // We don't check for privateUseDomains because private use domains can
-                    // resolve to public IP addresses
+                    // We don't check for privateUseDomains because private use
+                    // domains can resolve to public IP
+                    // addresses
                     return is_subdomain(&name, LOCALHOST_DOMAIN);
                 }
                 _ => {

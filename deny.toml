@@ -9,7 +9,6 @@ targets = [
     { triple = "x86_64-apple-darwin" },
     { triple = "x86_64-pc-windows-msvc" },
     { triple = "wasm32-unknown-unknown" },
-    { triple = "wasm32-wasi" },
     { triple = "aarch64-linux-android" },
     { triple = "aarch64-apple-ios" },
 ]
@@ -67,7 +66,7 @@ allow = [
     "Xnet",
     "Zlib",
 ]
-exceptions = [{ crate = "attohttpc", allow = ["MPL-2.0"] }, { crate = "dyn-eq", allow = ["MPL-2.0"] }]
+exceptions = [{ crate = "dyn-eq", allow = ["MPL-2.0"] }]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"
 

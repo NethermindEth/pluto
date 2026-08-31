@@ -51,7 +51,7 @@ struct ScheduleTuple {
     start_time: SystemTime,
 }
 
-/// Validator-mock scheduler. Built by [`Component::new`]; drops cleanly when
+/// Validator-mock scheduler. Built by `Component::new`; drops cleanly when
 /// [`Component::shutdown`] is called or the value is dropped.
 pub struct Component {
     inner: Arc<Inner>,
@@ -192,7 +192,8 @@ impl Component {
     /// Refreshes attester + sync-committee state for the lookahead window.
     /// Mirrors Go's `manageEpochState`.
     async fn manage_epoch_state(&self, epoch: MetaEpoch) -> Result<()> {
-        // Drop attesters / sync-comm members for the past `EPOCH_WINDOW` epochs.
+        // Drop attesters / sync-comm members for the past `EPOCH_WINDOW`
+        // epochs.
         let mut e = epoch;
         for _ in 0..EPOCH_WINDOW {
             self.delete_attesters(e).await;
@@ -375,10 +376,11 @@ async fn run_duty_via_inner(inner: &Inner, duty: ScheduleTuple) -> Result<()> {
         DutyType::BuilderRegistration => {
             // The simnet beacon mock has no builder-registration submission
             // path, so there is nothing to perform. Charon's vmock errors on
-            // this duty ("unexpected duty"), and its `dutiesForSlot` enqueues it
-            // ~slots_per_epoch times at each epoch boundary — the schedule-tuple
-            // key includes the look-ahead slot, so the shared epoch-start time
-            // is not deduped — which this port mirrors exactly. Charon tolerates
+            // this duty ("unexpected duty"), and its `dutiesForSlot` enqueues
+            // it ~slots_per_epoch times at each epoch boundary —
+            // the schedule-tuple key includes the look-ahead slot,
+            // so the shared epoch-start time is not deduped — which
+            // this port mirrors exactly. Charon tolerates
             // the resulting warning burst; the smoke-test alert gate does not,
             // so skip it silently rather than error.
             Ok(())

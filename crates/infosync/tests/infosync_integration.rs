@@ -73,10 +73,11 @@ impl Consensus for TestConsensus {
     ) -> Result<(), ConsensusError> {
         let slot = duty.slot.inner();
 
-        // Claim the decision atomically before fanning out: hold the lock across
-        // the check and the insert so two concurrent first proposals for the
-        // same duty cannot both notify subscribers. Later proposals see the
-        // recorded result and assert it is identical.
+        // Claim the decision atomically before fanning out: hold the lock
+        // across the check and the insert so two concurrent first
+        // proposals for the same duty cannot both notify subscribers.
+        // Later proposals see the recorded result and assert it is
+        // identical.
         {
             let mut proposed = self.proposed.lock().expect("proposed mutex");
             if let Some(prev) = proposed.get(&slot) {
@@ -268,7 +269,8 @@ async fn three_host_infosync() {
     }
 
     // Wait until every host is connected to all peers before triggering, so the
-    // priority exchange reuses established connections rather than racing dials.
+    // priority exchange reuses established connections rather than racing
+    // dials.
     {
         let mut connected: Vec<HashSet<PeerId>> = vec![HashSet::new(); N];
         let mesh = async {

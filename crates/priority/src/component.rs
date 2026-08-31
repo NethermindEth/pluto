@@ -360,8 +360,8 @@ impl Component {
         let msg = sign_msg(&msg, &self.privkey)?;
 
         // Bound the instance by the duty deadline. The token is cancelled (not
-        // merely dropped) on elapse so the prioritiser's detached consensus task,
-        // which holds a clone of it, also tears down.
+        // merely dropped) on elapse so the prioritiser's detached consensus
+        // task, which holds a clone of it, also tears down.
         let instance_ct = ct.child_token();
         let remaining = deadline
             .signed_duration_since(Utc::now())
@@ -543,7 +543,8 @@ mod tests {
 
     #[test]
     fn topic_result_from_proto_wrong_type_url() {
-        // Valid StringValue bytes but an envelope naming the wrong message type.
+        // Valid StringValue bytes but an envelope naming the wrong message
+        // type.
         let value = Value {
             kind: Some(Kind::StringValue("v1".to_owned())),
         };

@@ -1,16 +1,16 @@
 //! Priority protocol engine: per-duty exchange and consensus orchestration.
 //!
 //! [`Prioritiser`] resolves cluster-wide priorities for a duty in two steps:
-//! first it exchanges its own signed [`PriorityMsg`] with all peers and
+//! first it exchanges its own signed `PriorityMsg` with all peers and
 //! collects their responses (until all received or the exchange timeout
-//! elapses), then it deterministically computes a [`PriorityResult`] and
+//! elapses), then it deterministically computes a `PriorityResult` and
 //! proposes it through cluster [`Consensus`].
 //!
 //! The engine is built on tokio primitives: a per-duty request buffer
-//! ([`mpsc`]) feeds the [`run_instance`] select loop,
+//! (`mpsc`) feeds the `run_instance` select loop,
 //! peer exchanges run as spawned tasks writing into a shared responses channel,
-//! request responses travel over [`oneshot`] channels, and shutdown is
-//! signalled by a [`CancellationToken`].
+//! request responses travel over `oneshot` channels, and shutdown is
+//! signalled by a `CancellationToken`.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -233,7 +233,7 @@ impl Prioritiser {
     ///
     /// Returns the [`Prioritiser`] plus the [`Behaviour`] the caller must
     /// register with the swarm. The behaviour's inbound handler dispatches into
-    /// [`Shared::handle_request`].
+    /// `Shared::handle_request`.
     ///
     /// `p2p_context`'s known-peer set must cover every entry in `peers`
     /// (enforced by [`new_component`](crate::new_component)). Exchanges target
@@ -318,7 +318,8 @@ impl Prioritiser {
                     },
                 }
             }
-            // Cancelling `quit` on exit unblocks any in-flight `handle_request`.
+            // Cancelling `quit` on exit unblocks any in-flight
+            // `handle_request`.
             shared.quit.cancel();
         });
     }
@@ -347,9 +348,10 @@ impl Prioritiser {
         match self.inner.shared.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
             AddOutcome::FailedToCompute => {
-                // The deadliner shares the engine/instance cancellation token, so
-                // a failure while shutting down is a cancellation, not a genuine
-                // compute error — report it like the run-loop cancel path.
+                // The deadliner shares the engine/instance cancellation token,
+                // so a failure while shutting down is a
+                // cancellation, not a genuine compute error —
+                // report it like the run-loop cancel path.
                 if ct.is_cancelled() || self.inner.shared.quit.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -895,7 +897,8 @@ mod tests {
 
         let ct = CancellationToken::new();
         // The cleanup loop consumes whatever the deadliner emits; drive it with
-        // a hand-built expired-duty channel to assert deletion deterministically.
+        // a hand-built expired-duty channel to assert deletion
+        // deterministically.
         let (expired_tx, expired_rx) = mpsc::channel(1);
         let (deadliner, _real_expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
         let (prio, _behaviour) = Prioritiser::new_internal(

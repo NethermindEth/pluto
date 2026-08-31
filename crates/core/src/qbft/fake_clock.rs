@@ -130,8 +130,8 @@ impl FakeClock {
         duration: Duration,
         pending_timer_actions: Option<&AtomicIsize>,
     ) -> usize {
-        // Advance time and collect expired senders under lock, but perform sends
-        // without holding lock.
+        // Advance time and collect expired senders under lock, but perform
+        // sends without holding lock.
         let mut expired = vec![];
 
         let now = {

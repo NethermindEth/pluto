@@ -1,18 +1,18 @@
 //! libp2p request/response transport for the priority protocol.
 //!
-//! The transport is split into the user-facing [`Sender`] handle and the
-//! libp2p-owned [`Behaviour`]/[`handler::Handler`] runtime objects. It performs
+//! The transport is split into the user-facing `Sender` handle and the
+//! libp2p-owned `Behaviour`/`handler::Handler` runtime objects. It performs
 //! a single round-trip per exchange on the priority protocol:
 //!
-//! - Outbound: [`Sender::send_receive`] sends a [`PriorityMsg`] to a peer and
-//!   resolves with that peer's [`PriorityMsg`] response.
-//! - Inbound: a negotiated stream reads a [`PriorityMsg`], invokes the
-//!   registered [`InboundHandler`] callback to produce a response, and writes
-//!   it back. A `None` response closes the stream without replying.
+//! - Outbound: `Sender::send_receive` sends a `PriorityMsg` to a peer and
+//!   resolves with that peer's `PriorityMsg` response.
+//! - Inbound: a negotiated stream reads a `PriorityMsg`, invokes the registered
+//!   `InboundHandler` callback to produce a response, and writes it back. A
+//!   `None` response closes the stream without replying.
 //!
-//! [`new`] takes the inbound handler callback (the prioritiser's request
-//! handler) and returns the [`Behaviour`] to register with the swarm plus a
-//! cloneable [`Sender`] that the prioritiser uses to drive exchanges.
+//! `new` takes the inbound handler callback (the prioritiser's request
+//! handler) and returns the `Behaviour` to register with the swarm plus a
+//! cloneable `Sender` that the prioritiser uses to drive exchanges.
 
 mod behaviour;
 mod handler;
@@ -287,8 +287,8 @@ mod tests {
         let peer_b = peer_id_from_key(generate_insecure_k1_key(3).public_key()).expect("peer b id");
         let cluster = vec![peer_a, peer_b];
 
-        // Node B echoes the request's duty (its slot distinguishes requests) and
-        // stamps its own peer id on the response.
+        // Node B echoes the request's duty (its slot distinguishes requests)
+        // and stamps its own peer id on the response.
         let responder_peer_b = peer_b.to_string();
         let mut node_b = build_node(3, cluster.clone(), move |_peer, request| {
             Some(PriorityMsg {
@@ -392,7 +392,8 @@ mod tests {
 
         let (mut behaviour, _sender) = new(Arc::new(|_, _| async { Ok(None) }.boxed()), ctx);
 
-        // Known peer with a stored address: that address is offered for the dial.
+        // Known peer with a stored address: that address is offered for the
+        // dial.
         let resolved = behaviour
             .handle_pending_outbound_connection(
                 ConnectionId::new_unchecked(1),
@@ -598,7 +599,8 @@ mod tests {
             }
         }
 
-        // Drive A in the background; its send fails when B closes without reply.
+        // Drive A in the background; its send fails when B closes without
+        // reply.
         let driver_a = tokio::spawn(async move {
             loop {
                 let _ = swarm_a.select_next_some().await;

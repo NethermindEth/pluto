@@ -268,7 +268,8 @@ fn unit_scale(unit: &str) -> Option<u64> {
 
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Matches Go's `time.Duration.String()` (see Go's `time.Duration.format`).
+        // Matches Go's `time.Duration.String()` (see Go's
+        // `time.Duration.format`).
         write!(f, "{}", format_go_duration(self.inner))
     }
 }
@@ -283,8 +284,8 @@ fn format_go_duration(duration: StdDuration) -> String {
     let mut w = buf.len();
 
     if u < SECOND {
-        // Special case: if duration is smaller than a second, use smaller units, like
-        // 1.2ms.
+        // Special case: if duration is smaller than a second, use smaller
+        // units, like 1.2ms.
         let prec: usize;
 
         w -= 1;

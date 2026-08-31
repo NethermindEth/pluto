@@ -1,15 +1,15 @@
 //! Core tracking module for duty lifecycle monitoring.
 //!
-//! [`TrackerService::start`] spawns a background loop that accumulates
-//! per-duty [`Event`]s submitted by core workflow components via the
-//! [`Tracker`] trait. When the analyser deadline fires the accumulated events
-//! are passed through [`analysis::analyse_duty_failed`] and
-//! [`analysis::analyse_participation`], and the results are dispatched to the
-//! reporters in [`reporters`] for metrics and structured logging. When the
+//! `TrackerService::start` spawns a background loop that accumulates
+//! per-duty `Event`s submitted by core workflow components via the
+//! `Tracker` trait. When the analyser deadline fires the accumulated events
+//! are passed through `analysis::analyse_duty_failed` and
+//! `analysis::analyse_participation`, and the results are dispatched to the
+//! reporters in `reporters` for metrics and structured logging. When the
 //! deleter deadline fires the events for that duty are discarded to bound
 //! memory usage.
 //!
-//! Both deadliners must share the same [`CancellationToken`] as the tracker so
+//! Both deadliners must share the same `CancellationToken` as the tracker so
 //! that the whole system shuts down together.
 
 /// Failure reason definitions for duty analysis.
@@ -211,7 +211,8 @@ pub struct TrackerHandle {
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
         // Shutdown is signalled by the receiver being dropped, which causes
-        // send() to return Err immediately — no explicit cancellation select needed.
+        // send() to return Err immediately — no explicit cancellation select
+        // needed.
         if let Err(e) = self.input_tx.send(event).await {
             tracing::warn!(
                 duty = %e.0.duty,
@@ -1118,8 +1119,9 @@ mod tests {
 
         let recs = part_records.lock().unwrap();
         assert_eq!(recs.len(), 1);
-        // analyse_participation counts distinct pubkeys across all stored events;
-        // expected_per_peer==3 proves each key produced its own event entry.
+        // analyse_participation counts distinct pubkeys across all stored
+        // events; expected_per_peer==3 proves each key produced its own
+        // event entry.
         assert_eq!(recs[0].expected_per_peer, 3);
     }
 }

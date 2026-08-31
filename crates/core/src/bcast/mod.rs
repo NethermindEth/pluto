@@ -6,7 +6,7 @@ mod recast;
 use std::{any::Any, error::Error as StdError};
 
 use chrono::{DateTime, Duration, Utc};
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::tbls;
 use pluto_eth2api::{
     AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
     GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
@@ -200,8 +200,8 @@ impl DelayCalculator {
                     context: "attester delay",
                 })?
         } else if matches!(duty_type, DutyType::Aggregator | DutyType::SyncContribution) {
-            // Two-thirds of the slot; multiply before dividing to avoid the extra
-            // rounding loss of (slot_duration / 3) * 2.
+            // Two-thirds of the slot; multiply before dividing to avoid the
+            // extra rounding loss of (slot_duration / 3) * 2.
             let two_thirds = div_duration(
                 mul_duration(self.slot_duration, 2, "aggregation delay")?,
                 3,
@@ -274,8 +274,9 @@ impl Broadcaster {
             DutyType::Proposer => self.broadcast_proposer(&duty, &set).await?,
             DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
             DutyType::BuilderRegistration => {
-                // Use first slot in current epoch for accurate delay calculations while
-                // submitting builder registrations. This is because builder
+                // Use first slot in current epoch for accurate delay
+                // calculations while submitting builder
+                // registrations. This is because builder
                 // registrations are submitted in first slot of every epoch.
                 duty.slot = first_slot_in_current_epoch(self.client.api()).await?;
                 self.broadcast_builder_registration(&duty, &set).await?;
@@ -317,16 +318,16 @@ impl Broadcaster {
     async fn broadcast_attester(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let mut attestations = set_to_attestations(set)?;
 
-        // This has been introduced because of a bug in electra for versions v1.3.0,
-        // v1.3.1, v1.4.0 and v1.4.1. The code block below will be triggered
-        // only if:
+        // This has been introduced because of a bug in electra for versions
+        // v1.3.0, v1.3.1, v1.4.0 and v1.4.1. The code block below will
+        // be triggered only if:
         // - there is a charon node in the cluster at one of the above mentioned
         //   versions;
-        // - the current charon node has received partially signed attestations ONLY
-        //   from such nodes.
+        // - the current charon node has received partially signed attestations
+        //   ONLY from such nodes.
         //
-        // As long as charon has received at least one partially signed attestation in
-        // its threshold signatures from either:
+        // As long as charon has received at least one partially signed
+        // attestation in its threshold signatures from either:
         // - its own VC;
         // - another charon node at version v1.3.2, v1.4.2 or newer
         // this (expensive) code block will not be triggered.
@@ -419,10 +420,11 @@ impl Broadcaster {
     /// inline notes for the validate-first and surface-any-failure semantics.
     async fn broadcast_exits(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         // Two deliberate choices:
-        // 1. set_to_exits validates every item up front, so a wrong-typed set fails
-        //    before ANY exit is submitted (no partial submission on a bad set).
-        // 2. Submit every exit and return an error if ANY failed, so a partial failure
-        //    is always surfaced rather than masked by a later success.
+        // 1. set_to_exits validates every item up front, so a wrong-typed set
+        //    fails before ANY exit is submitted (no partial submission on a bad
+        //    set).
+        // 2. Submit every exit and return an error if ANY failed, so a partial
+        //    failure is always surfaced rather than masked by a later success.
         let mut last_error = None;
         for (pubkey, exit) in set_to_exits(set)? {
             match self.client.api().submit_voluntary_exit(exit).await {
@@ -536,10 +538,11 @@ impl Broadcaster {
                 source: Box::new(source),
             })?;
 
-        // Try to find the matching attester duty and attestation by verifying the full
-        // aggregated signature of the attestation with the pubkey found in the attester
-        // duty. Once match is found, update the attestation's validator index
-        // with the one from the attester duty.
+        // Try to find the matching attester duty and attestation by verifying
+        // the full aggregated signature of the attestation with the
+        // pubkey found in the attester duty. Once match is found,
+        // update the attestation's validator index with the one from
+        // the attester duty.
         for attester_duty in duties {
             if attester_duty.slot != slot {
                 continue;
@@ -706,7 +709,7 @@ fn attestation_matches_duty(
     .0;
     let signature = payload.signature();
 
-    match BlstImpl.verify(&attester_duty.pubkey, &signing_root, &signature) {
+    match tbls::verify(&attester_duty.pubkey, &signing_root, &signature) {
         Ok(()) => Ok(true),
         Err(pluto_crypto::types::Error::VerificationFailed(_)) => Ok(false),
         Err(source) => Err(Error::Crypto {
@@ -799,7 +802,6 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
     use pluto_eth2api::{
         GetStateValidatorsResponseResponse, ValidatorResponseValidator,
         spec::{bellatrix, electra, phase0},
@@ -1016,7 +1018,7 @@ mod tests {
         }
         .tree_hash_root()
         .0;
-        let signature = BlstImpl.sign(secret, &signing_root).expect("sign");
+        let signature = tbls::sign(secret, &signing_root).expect("sign");
 
         versioned::VersionedAttestation {
             version: versioned::DataVersion::Electra,
@@ -1218,10 +1220,8 @@ mod tests {
 
     #[tokio::test]
     async fn broadcast_attester_backfills_electra_validator_index() {
-        let secret = BlstImpl
-            .generate_insecure_secret(StdRng::seed_from_u64(42))
-            .expect("secret");
-        let public_key = BlstImpl.secret_to_public_key(&secret).expect("pubkey");
+        let secret = tbls::generate_insecure_secret(StdRng::seed_from_u64(42)).expect("secret");
+        let public_key = tbls::secret_to_public_key(&secret).expect("pubkey");
         let beacon = BeaconMock::builder()
             .spec(deterministic_electra_spec())
             .endpoint_overrides(vec![(

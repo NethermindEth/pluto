@@ -34,11 +34,14 @@ pub enum FrostCoreError {
     /// The commitment has no coefficients.
     #[error("incorrect commitment")]
     IncorrectCommitment,
+    /// The polynomial has no coefficients.
+    #[error("empty polynomial")]
+    EmptyPolynomial,
 }
 
 /// A participant identifier wrapping a non-zero scalar.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L14-L26
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L14-L26>
 #[derive(Copy, Clone, Debug)]
 pub struct Identifier {
     id: u32,
@@ -91,7 +94,7 @@ impl Ord for Identifier {
 
 /// A commitment to a single polynomial coefficient (a group element).
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L242-L249
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L242-L249>
 #[derive(Copy, Clone, Debug)]
 pub struct CoefficientCommitment(G1Projective);
 
@@ -110,7 +113,7 @@ impl CoefficientCommitment {
 /// The commitments to the coefficients of a secret polynomial, used for
 /// Feldman verifiable secret sharing.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L293-L310
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L293-L310>
 #[derive(Clone, Debug)]
 pub struct VerifiableSecretSharingCommitment(Vec<CoefficientCommitment>);
 
@@ -138,7 +141,7 @@ impl VerifiableSecretSharingCommitment {
 
 /// A secret scalar value representing a signer's share of the group secret.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L82-L87
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L82-L87>
 #[derive(Clone, ZeroizeOnDrop)]
 pub struct SigningShare(Scalar);
 
@@ -162,15 +165,20 @@ impl SigningShare {
     }
 
     /// Evaluate the polynomial defined by `coefficients` at `peer`.
-    pub fn from_coefficients(coefficients: &[Scalar], peer: Identifier) -> Self {
-        Self::new(evaluate_polynomial(peer, coefficients))
+    ///
+    /// Returns [`FrostCoreError::EmptyPolynomial`] if `coefficients` is empty.
+    pub fn from_coefficients(
+        coefficients: &[Scalar],
+        peer: Identifier,
+    ) -> Result<Self, FrostCoreError> {
+        Ok(Self::new(evaluate_polynomial(peer, coefficients)?))
     }
 }
 
 /// A public group element that represents a single signer's public
 /// verification share.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L158-L165
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L158-L165>
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyingShare(G1Projective);
 
@@ -197,7 +205,7 @@ impl VerifyingShare {
 
 /// The group public key, used to verify threshold signatures.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L10-L20
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L10-L20>
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VerifyingKey(G1Projective);
 
@@ -214,7 +222,7 @@ impl VerifyingKey {
 
     /// Derive the verifying key from the first coefficient commitment.
     ///
-    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L81-L93
+    /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L81-L93>
     pub fn from_commitment(
         commitment: &VerifiableSecretSharingCommitment,
     ) -> Result<Self, FrostCoreError> {
@@ -230,7 +238,7 @@ impl VerifyingKey {
 
 /// Secret and public key material generated during DKG.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L384-L411
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L384-L411>
 pub struct SecretShare {
     identifier: Identifier,
     signing_share: SigningShare,
@@ -255,7 +263,7 @@ impl SecretShare {
     ///
     /// Checks that `G * signing_share == evaluate_vss(identifier, commitment)`.
     ///
-    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468
+    /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468>
     #[allow(clippy::arithmetic_side_effects)]
     pub fn verify(&self) -> Result<(), FrostCoreError> {
         let f_result = G1Projective::generator() * self.signing_share.to_scalar();
@@ -271,7 +279,7 @@ impl SecretShare {
 
 /// A key package containing all key material for a participant.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L617-L643
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L617-L643>
 #[derive(ZeroizeOnDrop)]
 pub struct KeyPackage {
     #[zeroize(skip)]
@@ -346,7 +354,7 @@ impl KeyPackage {
 /// Public data containing all signers' verification shares and the group
 /// public key.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L712-L729
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L712-L729>
 #[derive(Debug)]
 pub struct PublicKeyPackage {
     verifying_shares: BTreeMap<Identifier, VerifyingShare>,
@@ -377,7 +385,7 @@ impl PublicKeyPackage {
 
     /// Derive a public key package from all participants' DKG commitments.
     ///
-    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L765-L777
+    /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L765-L777>
     pub fn from_dkg_commitments(
         commitments: &BTreeMap<Identifier, &VerifiableSecretSharingCommitment>,
     ) -> Result<Self, FrostCoreError> {
@@ -389,7 +397,7 @@ impl PublicKeyPackage {
 
     /// Derive verifying shares for each participant from a summed commitment.
     ///
-    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L747-L763
+    /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L747-L763>
     fn from_commitment(
         identifiers: &BTreeSet<Identifier>,
         commitment: &VerifiableSecretSharingCommitment,
@@ -410,9 +418,15 @@ impl PublicKeyPackage {
 /// Given coefficients `[a_0, a_1, ..., a_{t-1}]`, computes
 /// `a_0 + a_1 * x + a_2 * x^2 + ... + a_{t-1} * x^{t-1}`.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595>
 #[allow(clippy::arithmetic_side_effects)]
-fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scalar {
+fn evaluate_polynomial(
+    identifier: Identifier,
+    coefficients: &[Scalar],
+) -> Result<Scalar, FrostCoreError> {
+    let a0 = *coefficients
+        .first()
+        .ok_or(FrostCoreError::EmptyPolynomial)?;
     let mut value = Scalar::ZERO;
     let x = identifier.to_scalar();
 
@@ -420,18 +434,14 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
         value = value + *coeff;
         value = value * x;
     }
-    value = value
-        + *coefficients
-            .first()
-            .expect("coefficients must have at least one element");
-    value
+    Ok(value + a0)
 }
 
 /// Evaluate the VSS verification equation at `identifier`.
 ///
 /// Computes `sum_{k=0}^{t-1} commitment[k] * identifier^k`.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615>
 #[allow(clippy::arithmetic_side_effects)]
 fn evaluate_vss(
     identifier: Identifier,
@@ -454,7 +464,7 @@ fn evaluate_vss(
 /// commitment of length t where each element is the sum of the corresponding
 /// elements across all participants.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62>
 #[allow(clippy::arithmetic_side_effects)]
 fn sum_commitments(
     commitments: &[&VerifiableSecretSharingCommitment],
@@ -484,7 +494,7 @@ fn sum_commitments(
 
 /// Validate that (min_signers, max_signers) form a valid pair.
 ///
-/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L796-L815
+/// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L796-L815>
 pub fn validate_num_of_signers(min_signers: u16, max_signers: u16) -> Result<(), FrostCoreError> {
     if min_signers < 2 {
         return Err(FrostCoreError::InvalidMinSigners);
@@ -556,7 +566,8 @@ mod tests {
         let rendered = format!("{share:?}");
 
         assert!(rendered.contains("<redacted>"));
-        // The unredacted form would render the inner `Scalar(...)`; it must not.
+        // The unredacted form would render the inner `Scalar(...)`; it must
+        // not.
         assert!(!rendered.contains("Scalar"));
     }
 
@@ -585,6 +596,15 @@ mod tests {
         assert!(matches!(
             PublicKeyPackage::from_dkg_commitments(&empty_commitments),
             Err(FrostCoreError::IncorrectNumberOfCommitments)
+        ));
+    }
+
+    #[test]
+    fn from_coefficients_rejects_empty_polynomial() {
+        let peer = Identifier::from_u32(1).expect("identifier");
+        assert!(matches!(
+            SigningShare::from_coefficients(&[], peer),
+            Err(FrostCoreError::EmptyPolynomial)
         ));
     }
 }

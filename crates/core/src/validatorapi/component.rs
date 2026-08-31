@@ -660,7 +660,7 @@ impl Component {
     /// derives the triple from the concrete signed-data wrapper it is
     /// processing, then invokes this helper.
     ///
-    /// Skipped entirely when [`Self::insecure_test`] is set.
+    /// Skipped entirely when `Self::insecure_test` is set.
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
@@ -841,7 +841,7 @@ impl Component {
     }
 
     /// Variant of [`Self::verify_partial_sig`] that takes a pre-resolved
-    /// [`phase0::Domain`]. Lets batched submit paths (e.g. validator
+    /// `phase0::Domain`. Lets batched submit paths (e.g. validator
     /// registrations) resolve the signing domain once and skip the two
     /// upstream domain-lookup calls that [`Self::verify_partial_sig`] would
     /// otherwise issue for every entry.
@@ -1099,9 +1099,9 @@ impl Handler for Component {
                 crate::signeddata::VersionedAttestation::new_partial(att.0.clone(), self.share_idx)
                     .map_err(map_attestation_signed_data_error)?;
 
-            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER and
-            // the epoch comes from the attestation's own target checkpoint
-            // (not derived from the slot).
+            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER
+            // and the epoch comes from the attestation's own target
+            // checkpoint (not derived from the slot).
             verify_par_signed_attestation(self, &pubkey, att_data.target.epoch, &par_sig_data)
                 .await?;
 
@@ -1322,8 +1322,8 @@ impl Handler for Component {
                 .with_boxed_source(err)
             })?;
 
-        // The await hook yields an unsigned aggregated attestation; the response
-        // type is the same versioned-attestation wrapper.
+        // The await hook yields an unsigned aggregated attestation; the
+        // response type is the same versioned-attestation wrapper.
         let data = crate::signeddata::VersionedAttestation::new(agg_att.0)
             .map_err(map_attestation_signed_data_error)?;
 
@@ -1561,7 +1561,8 @@ impl Handler for Component {
             }
         }
 
-        // A missing hook is a wiring bug, not a runtime condition, so fail fast.
+        // A missing hook is a wiring bug, not a runtime condition, so fail
+        // fast.
         let await_fn = self
             .await_agg_sig_db_fn
             .as_ref()
@@ -1616,10 +1617,10 @@ impl Handler for Component {
                     "unknown validator public key in request",
                 )
             })?;
-            // Mark the validator seen as soon as its share resolves to a cluster
-            // root — before the upstream call — so a validator the beacon node
-            // has no row for yet (e.g. not activated) still counts toward
-            // readiness.
+            // Mark the validator seen as soon as its share resolves to a
+            // cluster root — before the upstream call — so a
+            // validator the beacon node has no row for yet (e.g.
+            // not activated) still counts toward readiness.
             self.observe_root_pubkey(root);
             root_pubkeys.push(format_bls_pubkey(root));
         }
@@ -2736,7 +2737,7 @@ mod tests {
     use std::sync::Mutex;
 
     use chrono::{DateTime, Utc};
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
     use pluto_eth2api::spec::altair::{
         ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
         SyncCommitteeContribution as AltairSyncCommitteeContribution,
@@ -3514,10 +3515,8 @@ mod tests {
     #[tokio::test]
     async fn verify_partial_sig_accepts_valid_and_rejects_invalid() {
         // Generate a BLS keypair to act as this node's public share.
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
 
         let dv_root = dv_pubkey(0xAA);
         let map = HashMap::from([(dv_root, pubshare)]);
@@ -3534,7 +3533,7 @@ mod tests {
             pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
                 .await
                 .unwrap();
-        let good_signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let good_signature = tbls::sign(&secret, &signing_root).unwrap();
 
         component
             .verify_partial_sig(&dv_root, domain, epoch, message_root, &good_signature)
@@ -3605,10 +3604,8 @@ mod tests {
     /// the 400 the VC would misread as an invalid signature.
     #[tokio::test]
     async fn beacon_outage_during_verification_maps_to_502_not_400() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xAB);
 
         // Unroutable beacon node: domain resolution fails before any BLS
@@ -4467,10 +4464,8 @@ mod tests {
         const VAL_IDX: u64 = 5;
         const EPOCH: u64 = 3;
 
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xCC);
         let map = HashMap::from([(dv_root, pubshare)]);
         let active = HashMap::from([(VAL_IDX, dv_root)]);
@@ -4600,10 +4595,8 @@ mod tests {
     /// upstream + real BLS to drive the verification path.
     #[tokio::test]
     async fn submit_validator_registrations_rejects_bad_signature() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xA5);
         let map = HashMap::from([(dv_root, pubshare)]);
 
@@ -5023,10 +5016,8 @@ mod tests {
     /// share passes the outer partial-sig verify and the set fans out.
     #[tokio::test]
     async fn submit_sync_committee_messages_accepts_valid_partial_sig() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = [0x77_u8; 48];
 
         let slot: u64 = 1;
@@ -5043,7 +5034,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let map = HashMap::from([(dv_root, pubshare)]);
         let cancel = CancellationToken::new();
@@ -5096,10 +5087,8 @@ mod tests {
     /// the signing root.
     #[tokio::test]
     async fn verify_partial_sig_round_trips_sync_committee_domain() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = [0xAB_u8; 48];
         let map = HashMap::from([(dv_root, pubshare)]);
 
@@ -5124,7 +5113,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         component
             .verify_partial_sig(
@@ -5146,10 +5135,8 @@ mod tests {
     async fn submit_sync_committee_contributions_rejects_invalid_partial_sig() {
         // A valid BLS point: an unparseable root pubkey would map to 500
         // (server-side state), not the 400 under test.
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let dv_root = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let dv_root = tbls::secret_to_public_key(&secret).unwrap();
         let mock = mock_beacon_for_signing().await;
         let cancel = CancellationToken::new();
         let (deadliner, _deadliner_rx) = DeadlinerTask::start(
@@ -5195,14 +5182,10 @@ mod tests {
         // Root secret signs the inner selection proof; share secret signs
         // the outer partial sig. Both pubkeys are derived from the BLS
         // secret keys and wired through the per-validator share map.
-        let root_secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let root_pubkey = BlstImpl.secret_to_public_key(&root_secret).unwrap();
-        let share_secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let share_pubkey = BlstImpl.secret_to_public_key(&share_secret).unwrap();
+        let root_secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let root_pubkey = tbls::secret_to_public_key(&root_secret).unwrap();
+        let share_secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let share_pubkey = tbls::secret_to_public_key(&share_secret).unwrap();
 
         let slot: u64 = 1;
         let subcommittee_index: u64 = 3;
@@ -5233,9 +5216,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let selection_proof = BlstImpl
-            .sign(&root_secret, &selection_proof_signing_root)
-            .unwrap();
+        let selection_proof = tbls::sign(&root_secret, &selection_proof_signing_root).unwrap();
 
         // Outer: sign HTR(ContributionAndProof) — including the just-computed
         // selection_proof — with the share secret under
@@ -5258,7 +5239,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let outer_signature = BlstImpl.sign(&share_secret, &outer_signing_root).unwrap();
+        let outer_signature = tbls::sign(&share_secret, &outer_signing_root).unwrap();
 
         let map = HashMap::from([(root_pubkey, share_pubkey)]);
         let cancel = CancellationToken::new();

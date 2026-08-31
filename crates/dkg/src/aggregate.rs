@@ -5,10 +5,8 @@ use pluto_core::{
     types::{ParSignedData, PubKey, SignedData},
 };
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
-    tblsconv::signature_from_bytes,
-    types::{PublicKey, Signature},
+    tbls,
+    types::{PublicKey, Signature, signature_from_bytes},
 };
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util::{deposit, registration};
@@ -23,7 +21,7 @@ pub type Result<T> = std::result::Result<T, AggregateError>;
 pub enum AggregateError {
     /// Failed to convert raw bytes into a threshold signature.
     #[error(transparent)]
-    SignatureBytes(#[from] pluto_crypto::tblsconv::ConvError),
+    SignatureBytes(#[from] pluto_crypto::types::ConvError),
 
     /// Failed to verify or aggregate threshold signatures.
     #[error(transparent)]
@@ -143,7 +141,7 @@ pub fn agg_lock_hash_sig(
                 .get(&partial.share_idx)
                 .ok_or(AggregateError::InvalidPubshare)?;
 
-            BlstImpl.verify(pubshare, hash, &sig).map_err(|source| {
+            tbls::verify(pubshare, hash, &sig).map_err(|source| {
                 AggregateError::InvalidLockHashPartialSignature {
                     share_idx: partial.share_idx,
                     pub_key: pub_key_hex.clone(),
@@ -156,7 +154,7 @@ pub fn agg_lock_hash_sig(
         }
     }
 
-    Ok((BlstImpl.aggregate(&sigs)?, pubkeys))
+    Ok((tbls::aggregate(&sigs)?, pubkeys))
 }
 
 /// Aggregates threshold deposit-data signatures per validator.
@@ -188,9 +186,8 @@ pub fn agg_deposit_data(
                 }
             })?;
 
-        let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
-        BlstImpl
-            .verify(&share.pub_key, &sig_root, &agg_sig)
+        let agg_sig = tbls::threshold_aggregate(&partial_sigs)?;
+        tbls::verify(&share.pub_key, &sig_root, &agg_sig)
             .map_err(AggregateError::InvalidDepositAggregatedSignature)?;
 
         res.push(phase0::DepositData {
@@ -237,9 +234,8 @@ pub fn agg_validator_registrations(
                 }
             })?;
 
-        let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
-        BlstImpl
-            .verify(&share.pub_key, &sig_root, &agg_sig)
+        let agg_sig = tbls::threshold_aggregate(&partial_sigs)?;
+        tbls::verify(&share.pub_key, &sig_root, &agg_sig)
             .map_err(AggregateError::InvalidValidatorRegistrationAggregatedSignature)?;
 
         res.push(msg.set_signature(agg_sig)?);
@@ -295,8 +291,7 @@ fn verify_threshold_partials(
             .get(&partial.share_idx)
             .ok_or(AggregateError::InvalidPubshare)?;
 
-        BlstImpl
-            .verify(pubshare, message, &sig)
+        tbls::verify(pubshare, message, &sig)
             .map_err(|_| invalid_signature_error(partial.share_idx))?;
 
         res.insert(partial.share_idx, sig);
@@ -310,7 +305,7 @@ mod tests {
     use super::*;
 
     use pluto_core::signeddata::VersionedSignedValidatorRegistration as CoreRegistration;
-    use pluto_crypto::tblsconv::pubkey_to_eth2;
+    use pluto_crypto::types::pubkey_to_eth2;
     use pluto_eth2api::{
         v1,
         versioned::{BuilderVersion, VersionedSignedValidatorRegistration},
@@ -319,22 +314,18 @@ mod tests {
     use rand::SeedableRng;
 
     fn build_share_fixture() -> (Share, HashMap<u64, pluto_crypto::types::PrivateKey>) {
-        let tbls = BlstImpl;
-        let secret = tbls
-            .generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(7))
+        let secret = tbls::generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(7))
             .expect("secret generation should succeed");
-        let pub_key = tbls
-            .secret_to_public_key(&secret)
-            .expect("public key derivation should succeed");
-        let secret_shares = tbls
-            .threshold_split(&secret, 4, 3)
-            .expect("threshold split should succeed");
+        let pub_key =
+            tbls::secret_to_public_key(&secret).expect("public key derivation should succeed");
+        let secret_shares =
+            tbls::threshold_split(&secret, 4, 3).expect("threshold split should succeed");
         let public_shares = secret_shares
             .iter()
             .map(|(idx, share)| {
                 (
                     *idx,
-                    tbls.secret_to_public_key(share)
+                    tbls::secret_to_public_key(share)
                         .expect("public share derivation should succeed"),
                 )
             })
@@ -384,12 +375,11 @@ mod tests {
             .into_iter()
             .map(|idx| {
                 partial_signature(
-                    BlstImpl
-                        .sign(
-                            secret_shares.get(&idx).expect("share should exist"),
-                            &sig_root,
-                        )
-                        .expect("partial signing should succeed"),
+                    tbls::sign(
+                        secret_shares.get(&idx).expect("share should exist"),
+                        &sig_root,
+                    )
+                    .expect("partial signing should succeed"),
                     idx,
                 )
             })
@@ -405,8 +395,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         let agg = res[0].0.v1.as_ref().expect("v1 registration should exist");
         assert_eq!(agg.message, reg.0.v1.as_ref().expect("v1 reg").message);
-        BlstImpl
-            .verify(&share.pub_key, &sig_root, &agg.signature)
+        tbls::verify(&share.pub_key, &sig_root, &agg.signature)
             .expect("aggregate signature should verify");
     }
 
@@ -431,12 +420,11 @@ mod tests {
             } else {
                 &sig_root
             };
-            let sig = BlstImpl
-                .sign(
-                    secret_shares.get(&idx).expect("share should exist"),
-                    message,
-                )
-                .expect("signing should succeed");
+            let sig = tbls::sign(
+                secret_shares.get(&idx).expect("share should exist"),
+                message,
+            )
+            .expect("signing should succeed");
             partials.push(partial_signature(sig, idx));
         }
 
@@ -467,12 +455,11 @@ mod tests {
             } else {
                 hash
             };
-            let sig = BlstImpl
-                .sign(
-                    secret_shares.get(&idx).expect("share should exist"),
-                    message,
-                )
-                .expect("signing should succeed");
+            let sig = tbls::sign(
+                secret_shares.get(&idx).expect("share should exist"),
+                message,
+            )
+            .expect("signing should succeed");
             partials.push(partial_signature(sig, idx));
         }
 
@@ -506,12 +493,11 @@ mod tests {
             .into_iter()
             .map(|idx| {
                 partial_signature(
-                    BlstImpl
-                        .sign(
-                            secret_shares.get(&idx).expect("share should exist"),
-                            &sig_root,
-                        )
-                        .expect("signing should succeed"),
+                    tbls::sign(
+                        secret_shares.get(&idx).expect("share should exist"),
+                        &sig_root,
+                    )
+                    .expect("signing should succeed"),
                     idx,
                 )
             })
@@ -537,8 +523,7 @@ mod tests {
             .into_iter()
             .map(|idx| {
                 partial_signature(
-                    BlstImpl
-                        .sign(secret_shares.get(&idx).expect("share should exist"), hash)
+                    tbls::sign(secret_shares.get(&idx).expect("share should exist"), hash)
                         .expect("signing should succeed"),
                     idx,
                 )
@@ -579,12 +564,11 @@ mod tests {
             .into_iter()
             .map(|idx| {
                 partial_signature(
-                    BlstImpl
-                        .sign(
-                            secret_shares.get(&idx).expect("share should exist"),
-                            &sig_root,
-                        )
-                        .expect("signing should succeed"),
+                    tbls::sign(
+                        secret_shares.get(&idx).expect("share should exist"),
+                        &sig_root,
+                    )
+                    .expect("signing should succeed"),
                     idx,
                 )
             })

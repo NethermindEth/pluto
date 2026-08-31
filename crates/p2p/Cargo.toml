@@ -37,13 +37,14 @@ pluto-testutil.workspace = true
 vise-exporter.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-pluto-cluster.workspace = true
+pluto-cluster = { workspace = true, features = ["test-cluster"] }
 hex.workspace = true
 libp2p.workspace = true
 k256.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 futures.workspace = true
 wiremock.workspace = true
+test-case.workspace = true
 
 [lints]
 workspace = true

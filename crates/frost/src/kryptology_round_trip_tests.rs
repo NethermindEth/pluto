@@ -10,7 +10,7 @@ use crate::kryptology;
 /// This matches Go's signing flow: non-interactive BLS partial signatures
 /// combined via Lagrange interpolation, verified with standard BLS pairings.
 ///
-/// See: https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/test/frost_dkg/bls/main.go#L23
+/// See: <https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/test/frost_dkg/bls/main.go#L23>
 #[test]
 fn kryptology_bls_round_trip_2_of_4_ctx_0() {
     let mut rng = StdRng::seed_from_u64(20260410);

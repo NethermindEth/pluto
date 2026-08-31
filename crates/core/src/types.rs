@@ -54,18 +54,43 @@ pub enum DutyType {
 
 impl Display for DutyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(s) = self.as_str() {
+            return f.write_str(s);
+        }
+        // DutySentinel renders as a JSON object, so it keeps the serde path.
         // safe to unwrap because we know the duty type is valid
         let v = serde_json::to_value(self).expect("failed to serialize duty type");
-        if let Some(s) = v.as_str() {
-            write!(f, "{}", s)
-        } else {
-            // fallback for non-string variants (structs, numbers, etc.)
-            write!(f, "{}", v)
-        }
+        write!(f, "{}", v)
     }
 }
 
 impl DutyType {
+    /// Returns the rendered name for this duty type, or [`None`] for
+    /// [`DutyType::DutySentinel`], which has no flat string form.
+    ///
+    /// The strings MUST match the `snake_case` serde encoding: they are used as
+    /// metric label values and in [`Display`].
+    pub fn as_str(&self) -> Option<&'static str> {
+        let s = match self {
+            DutyType::Unknown => "unknown",
+            DutyType::Proposer => "proposer",
+            DutyType::Attester => "attester",
+            DutyType::Signature => "signature",
+            DutyType::Exit => "exit",
+            DutyType::BuilderProposer => "builder_proposer",
+            DutyType::BuilderRegistration => "builder_registration",
+            DutyType::Randao => "randao",
+            DutyType::PrepareAggregator => "prepare_aggregator",
+            DutyType::Aggregator => "aggregator",
+            DutyType::SyncMessage => "sync_message",
+            DutyType::PrepareSyncContribution => "prepare_sync_contribution",
+            DutyType::SyncContribution => "sync_contribution",
+            DutyType::InfoSync => "info_sync",
+            DutyType::DutySentinel(_) => return None,
+        };
+        Some(s)
+    }
+
     /// Returns true if the duty type is valid.
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
@@ -863,8 +888,8 @@ mod tests {
 
         let key = PubKey::new([0; PK_LEN]);
 
-        // Check whether the string representation is the same as the go's public key
-        // length
+        // Check whether the string representation is the same as the go's
+        // public key length
         assert_eq!(key.to_string().len(), ORIGINAL_PK_LEN);
         assert_eq!(
             key.to_string(),
@@ -1051,6 +1076,43 @@ mod tests {
         assert!(DutyType::Exit.is_valid());
         assert!(!DutyType::DutySentinel(Box::new(DutyType::Unknown)).is_valid());
         assert!(!DutyType::DutySentinel(Box::new(DutyType::Attester)).is_valid());
+    }
+
+    /// `Display` renders duty types into metric label values, so it must stay
+    /// byte-identical to the serde encoding it used to round-trip through.
+    #[test]
+    fn duty_type_as_str_matches_serde() {
+        let all = [
+            DutyType::Unknown,
+            DutyType::Proposer,
+            DutyType::Attester,
+            DutyType::Signature,
+            DutyType::Exit,
+            DutyType::BuilderProposer,
+            DutyType::BuilderRegistration,
+            DutyType::Randao,
+            DutyType::PrepareAggregator,
+            DutyType::Aggregator,
+            DutyType::SyncMessage,
+            DutyType::PrepareSyncContribution,
+            DutyType::SyncContribution,
+            DutyType::InfoSync,
+        ];
+        for dt in &all {
+            let json = serde_json::to_value(dt).expect("serialize");
+            let expected = json.as_str().expect("unit variants encode as strings");
+            assert_eq!(dt.as_str(), Some(expected), "as_str for {dt:?}");
+            assert_eq!(dt.to_string(), expected, "Display for {dt:?}");
+        }
+    }
+
+    /// `DutySentinel` has no flat string form; it keeps the JSON-object
+    /// rendering the previous serde round-trip produced.
+    #[test]
+    fn duty_type_sentinel_display_keeps_json_form() {
+        let sentinel = DutyType::DutySentinel(Box::new(DutyType::Attester));
+        assert_eq!(sentinel.as_str(), None);
+        assert_eq!(sentinel.to_string(), r#"{"duty_sentinel":"attester"}"#);
     }
 
     #[test]

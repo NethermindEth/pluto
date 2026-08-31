@@ -18,6 +18,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::*;
 
+/// Byte length of a serialized BLS12-381 scalar.
+const SCALAR_BYTES: usize = 32;
+
+/// Bit width of BLS12-381 scalars as consumed by blst multi-scalar
+/// multiplication.
+const SCALAR_BITS: usize = 255;
+
 /// Errors from the kryptology-compatible FROST protocol.
 #[derive(Debug, thiserror::Error)]
 pub enum KryptologyError {
@@ -359,7 +366,7 @@ pub fn round1<R: RngCore + CryptoRng>(
             continue;
         }
         let j_id = Identifier::from_u32(j)?;
-        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
+        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id)?.to_scalar();
         shares.insert(
             j,
             ShamirShare {
@@ -415,8 +422,8 @@ pub fn round2(
 ) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), KryptologyError> {
     // Bounds mirror ObolNetwork/kryptology@v0.1.0 dkg_round2.go, where
     // `feldman.Limit == max_signers`:
-    // - bcast:   threshold-1 <= len <= max_signers      (may include this node's
-    //   own Round1Bcast)
+    // - bcast:   threshold-1 <= len <= max_signers      (may include this
+    //   node's own Round1Bcast)
     // - p2psend: threshold-1 <= len <= max_signers - 1  (never includes self)
     let min_received = (secret.threshold - 1) as usize;
     let bcast_max = secret.max_signers as usize;
@@ -431,18 +438,19 @@ pub fn round2(
 
     let own_identifier = Identifier::from_u32(secret.id)?;
     let mut own_share_scalar =
-        SigningShare::from_coefficients(&secret.coefficients, own_identifier).to_scalar();
+        SigningShare::from_coefficients(&secret.coefficients, own_identifier)?.to_scalar();
 
     let mut peer_commitments: BTreeMap<Identifier, VerifiableSecretSharingCommitment> =
         BTreeMap::new();
     let mut share_sum = Scalar::ZERO;
 
     for (&sender_id, bcast) in received_bcasts {
-        // Charon's getRound2Inputs may include this node's own Round1Bcast in the
-        // broadcast map. Go's Round2 skips it (`if id == dp.Id { continue }`) rather
-        // than erroring. Self's commitment is added to peer_commitments separately
-        // below, and self's share contribution is the own_share_scalar term — so the
-        // self entry must be skipped here for both verification and share summation.
+        // Charon's getRound2Inputs may include this node's own Round1Bcast in
+        // the broadcast map. Go's Round2 skips it (`if id == dp.Id {
+        // continue }`) rather than erroring. Self's commitment is added
+        // to peer_commitments separately below, and self's share
+        // contribution is the own_share_scalar term — so the self entry
+        // must be skipped here for both verification and share summation.
         if sender_id == secret.id {
             continue;
         }
@@ -478,7 +486,8 @@ pub fn round2(
             .ok_or(KryptologyError::InvalidShare { culprit: sender_id })?;
         // Step (1): identifier must be non-zero and addressed to us. kryptology
         // only checks `id == 0`; we additionally require the share is addressed
-        // to this participant. Both map to InvalidShare with the sender culprit.
+        // to this participant. Both map to InvalidShare with the sender
+        // culprit.
         if share.id == 0 || share.id != secret.id {
             return Err(KryptologyError::InvalidShare { culprit: sender_id });
         }
@@ -647,12 +656,12 @@ impl BlsSignature {
             .map(|ps| Scalar::from(u64::from(ps.identifier)))
             .collect();
 
-        let mut combined = blst_p2::default();
-
-        for (i, ps) in partial_sigs.iter().enumerate() {
-            // Lagrange coefficient: L_i(0) = prod_{j!=i} ( x_j / (x_j - x_i) )
+        // Lagrange coefficients: L_i(0) = prod_{j!=i} ( x_j / (x_j - x_i) ),
+        // serialized little-endian for blst multi-scalar multiplication.
+        let mut lambda_bytes = Vec::with_capacity(SCALAR_BYTES * partial_sigs.len());
+        for i in 0..partial_sigs.len() {
             let mut lambda = Scalar::ONE;
-            for (j, _) in partial_sigs.iter().enumerate() {
+            for j in 0..partial_sigs.len() {
                 if i == j {
                     continue;
                 }
@@ -663,13 +672,13 @@ impl BlsSignature {
                 let den_inv = den.invert().ok_or(KryptologyError::InvalidSignerCount)?;
                 lambda = lambda * num * den_inv;
             }
-
-            let weighted = p2_mult(&ps.point, &lambda);
-
-            let mut tmp = blst_p2::default();
-            unsafe { blst_p2_add_or_double(&mut tmp, &combined, &weighted) };
-            combined = tmp;
+            lambda_bytes.extend_from_slice(&lambda.to_bytes());
         }
+
+        // Multi-scalar multiplication (Pippenger) over all partials at once;
+        // `p2_affines::from` batch-converts to affine with a single inversion.
+        let points: Vec<blst_p2> = partial_sigs.iter().map(|ps| ps.point).collect();
+        let combined = p2_affines::from(&points).mult(&lambda_bytes, SCALAR_BITS);
 
         Ok(BlsSignature { point: combined })
     }
@@ -1168,7 +1177,8 @@ mod tests {
         let (bcast2, _shares2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
         let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
-        // Broadcast map includes self (id 2), exactly like Charon's getRound2Inputs.
+        // Broadcast map includes self (id 2), exactly like Charon's
+        // getRound2Inputs.
         let received_bcasts: BTreeMap<u32, Round1Bcast> =
             [(1, bcast1), (2, bcast2), (3, bcast3)].into();
         // Shares map never includes self.

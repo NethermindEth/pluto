@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PublicKey};
+use pluto_crypto::{tbls, types::PublicKey};
 use pluto_eth2api::client::EthBeaconNodeApiClient;
 use tracing::{debug, error, info_span};
 
@@ -196,10 +196,10 @@ impl Aggregator {
             return Err(SigAggError::InsufficientDistinctSignatures { pubkey: *pubkey });
         }
 
-        let span = info_span!("BlstImpl::threshold_aggregate");
+        let span = info_span!("tbls::threshold_aggregate");
         let agg_bytes = {
             let _enter = span.enter();
-            BlstImpl.threshold_aggregate(&bls_sigs)
+            tbls::threshold_aggregate(&bls_sigs)
         }
         .map_err(|e| {
             error!(parent: &span, error = %e, "threshold aggregate failed");
@@ -281,7 +281,6 @@ pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
 mod tests {
     use std::{fs, sync::Mutex};
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
     use pluto_ssz::HashRoot;
 
     use super::*;
@@ -420,16 +419,15 @@ mod tests {
         const PEERS: u64 = 4;
         const MSG: [u8; 32] = [42u8; 32];
 
-        let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
-        let secret = tbls.generate_secret_key(&mut rng).unwrap();
-        let pubkey = tbls.secret_to_public_key(&secret).unwrap();
-        let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
+        let secret = tbls::generate_secret_key(&mut rng).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
+        let shares = tbls::threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
         let mut bls_map: HashMap<u64, [u8; SIGNATURE_LENGTH]> = HashMap::new();
         let mut sigs = Vec::new();
         for (share_idx, share) in &shares {
-            let sig = tbls.sign(share, &MSG).unwrap();
+            let sig = tbls::sign(share, &MSG).unwrap();
             bls_map.insert(*share_idx, sig);
             sigs.push((*share_idx, sig));
         }
@@ -437,7 +435,7 @@ mod tests {
         BLSContext {
             pubkey,
             sigs,
-            expected_agg: tbls.threshold_aggregate(&bls_map).unwrap(),
+            expected_agg: tbls::threshold_aggregate(&bls_map).unwrap(),
         }
     }
 
@@ -532,7 +530,8 @@ mod tests {
 
     #[tokio::test]
     async fn insufficient_distinct_signatures() {
-        // 4 parSigs all with the same share_idx → deduplicates to 1, below threshold 3.
+        // 4 parSigs all with the same share_idx → deduplicates to 1, below
+        // threshold 3.
         let agg = Aggregator::new(3, noop_verify()).unwrap();
         let mut set = HashMap::new();
         set.insert(PubKey::new([0u8; 48]), mock_par_sigs(4, 0));
@@ -569,17 +568,16 @@ mod tests {
         const THRESHOLD: u64 = 3;
         const PEERS: u64 = 4;
 
-        let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
 
-        let secret = tbls.generate_secret_key(&mut rng).unwrap();
-        let pubkey = tbls.secret_to_public_key(&secret).unwrap();
-        let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
+        let secret = tbls::generate_secret_key(&mut rng).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
+        let shares = tbls::threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
         let msg = [7u8; 32];
         let mut par_sigs = Vec::new();
         for (share_idx, share) in &shares {
-            let sig = tbls.sign(share, &msg).unwrap();
+            let sig = tbls::sign(share, &msg).unwrap();
             par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
         }
 
@@ -609,8 +607,8 @@ mod tests {
 
     #[tokio::test]
     async fn deduplication_succeeds() {
-        // 5 parSigs with 4 distinct share indices (one duplicate) at threshold 3 →
-        // success.
+        // 5 parSigs with 4 distinct share indices (one duplicate) at threshold
+        // 3 → success.
         let ctx = make_bls_context();
         let mut par_sigs: Vec<ParSignedData> = ctx
             .sigs
@@ -618,8 +616,8 @@ mod tests {
             .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
 
-        // Add a duplicate of the first share — last writer wins, same sig so result
-        // identical.
+        // Add a duplicate of the first share — last writer wins, same sig so
+        // result identical.
         let (first_idx, first_sig) = ctx.sigs[0];
         par_sigs.push(ParSignedData::new(
             MockSignedData { sig: first_sig },
@@ -696,7 +694,6 @@ mod tests {
         const THRESHOLD: u64 = 3;
         const PEERS: u64 = 4;
 
-        let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
         let msg = [55u8; 32];
 
@@ -704,19 +701,19 @@ mod tests {
         let mut expected: HashMap<PubKey, [u8; SIGNATURE_LENGTH]> = HashMap::new();
 
         for _ in 0..2 {
-            let secret = tbls.generate_secret_key(&mut rng).unwrap();
-            let pubkey_bytes = tbls.secret_to_public_key(&secret).unwrap();
-            let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
+            let secret = tbls::generate_secret_key(&mut rng).unwrap();
+            let pubkey_bytes = tbls::secret_to_public_key(&secret).unwrap();
+            let shares = tbls::threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
             let mut par_sigs = Vec::new();
             let mut bls_map: HashMap<u64, [u8; SIGNATURE_LENGTH]> = HashMap::new();
             for (share_idx, share) in &shares {
-                let sig = tbls.sign(share, &msg).unwrap();
+                let sig = tbls::sign(share, &msg).unwrap();
                 bls_map.insert(*share_idx, sig);
                 par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
             }
 
-            let agg_sig = tbls.threshold_aggregate(&bls_map).unwrap();
+            let agg_sig = tbls::threshold_aggregate(&bls_map).unwrap();
             let pubkey = PubKey::new(pubkey_bytes);
             expected.insert(pubkey, agg_sig);
             agg_set.insert(pubkey, par_sigs);
@@ -844,8 +841,8 @@ mod tests {
         let without_idx = VersionedAttestation::new(inner_no_idx).unwrap();
 
         let ctx = make_bls_context();
-        // First par_sig has no validator_index; second has it — template must prefer
-        // the latter.
+        // First par_sig has no validator_index; second has it — template must
+        // prefer the latter.
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
