@@ -18,18 +18,28 @@ pluto/
     build-proto/           # Protobuf/build-time code generation
     cli/                   # `pluto` CLI binary and command wiring
     cluster/               # Cluster types and helpers
+    consensus/             # QBFT consensus protocol implementation
     core/                  # Core domain logic
     crypto/                # Cryptographic primitives and helpers
     dkg/                   # Distributed key generation logic
+    eth1wrap/              # Execution-layer (eth1) client wrapper
     eth2api/               # Beacon-node API client types/helpers
     eth2util/              # Ethereum consensus utility code
+    featureset/            # Feature flag management
+    frost/                 # FROST threshold signature implementation
+    infosync/              # Peer info synchronisation protocol
     k1util/                # Secp256k1 utilities
     p2p/                   # P2P networking (libp2p)
+    parsigex/              # Partial-signature exchange protocol
     peerinfo/              # Peer info utilities
+    priority/              # Priority queue / duty prioritisation
     relay-server/          # Relay server implementation
+    ssz/                   # SSZ serialisation helpers
     testutil/              # Test helpers/fixtures (workspace-internal)
     tracing/               # Observability/tracing utilities
+  scripts/                 # Helper shell scripts (cluster comparison, DKG runner, etc.)
   test-infra/              # Docker-compose and local infra for integration testing/observability
+  third_party/             # Vendored third-party code (e.g. patched libp2p multistream-select)
   deny.toml                # `cargo deny` policy
   rust-toolchain.toml      # Rust toolchain pin
   rustfmt.toml             # Formatting rules
