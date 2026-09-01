@@ -255,7 +255,10 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "constructor wires together the full priority component; each argument is a distinct collaborator"
+)]
 pub fn new_component(
     peers: Vec<PeerId>,
     min_required: i64,
@@ -360,8 +363,8 @@ impl Component {
         let msg = sign_msg(&msg, &self.privkey)?;
 
         // Bound the instance by the duty deadline. The token is cancelled (not
-        // merely dropped) on elapse so the prioritiser's detached consensus task,
-        // which holds a clone of it, also tears down.
+        // merely dropped) on elapse so the prioritiser's detached consensus
+        // task, which holds a clone of it, also tears down.
         let instance_ct = ct.child_token();
         let remaining = deadline
             .signed_duration_since(Utc::now())
@@ -543,7 +546,8 @@ mod tests {
 
     #[test]
     fn topic_result_from_proto_wrong_type_url() {
-        // Valid StringValue bytes but an envelope naming the wrong message type.
+        // Valid StringValue bytes but an envelope naming the wrong message
+        // type.
         let value = Value {
             kind: Some(Kind::StringValue("v1".to_owned())),
         };

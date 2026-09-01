@@ -51,8 +51,8 @@ impl Scalar {
     pub const ONE: Self = {
         // Montgomery form of 1 for BLS12-381 scalar field.
         // R mod r where R = 2^256 and r is the scalar field order.
-        // Computed from: blst_scalar_from_uint64([1,0,0,0]) -> blst_fr_from_scalar
-        // Pre-computed constant:
+        // Computed from: blst_scalar_from_uint64([1,0,0,0]) ->
+        // blst_fr_from_scalar Pre-computed constant:
         Scalar(blst_fr {
             l: [
                 0x0000_0001_ffff_fffe,

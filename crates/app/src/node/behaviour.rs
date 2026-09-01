@@ -167,8 +167,9 @@ pub(crate) async fn wire_p2p(
     })?;
 
     // Peer metadata exchange. Use the Charon-compatible short git hash: Charon
-    // rejects a peer's whole peerinfo record if the git hash isn't `^[0-9a-f]{7}$`,
-    // so this always advertises a well-formed hash even in git-less builds.
+    // rejects a peer's whole peerinfo record if the git hash isn't
+    // `^[0-9a-f]{7}$`, so this always advertises a well-formed hash even in
+    // git-less builds.
     let git_hash = pluto_core::version::git_commit_hash_short();
     let peerinfo_config = peerinfo::Config::new(LocalPeerInfo::new(
         pluto_core::version::VERSION.to_string(),

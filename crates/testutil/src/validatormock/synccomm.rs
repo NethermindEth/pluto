@@ -94,7 +94,7 @@ pub struct SyncCommMember {
     // Immutable state.
     eth2_cl: EthBeaconNodeApiClient,
     epoch: Epoch,
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "reserved for duty matching against pubkeys")]
     pubkeys: Vec<BLSPubKey>,
     sign_func: SignFunc,
 
@@ -749,7 +749,10 @@ mod tests {
     /// subnet contains 128 indices, and indices [75, 133, 289, 491] map to
     /// subcommittees [0, 1, 2, 3].
     #[tokio::test]
-    #[allow(clippy::redundant_test_prefix)]
+    #[expect(
+        clippy::redundant_test_prefix,
+        reason = "test name mirrors the Go test identifier"
+    )]
     async fn test_get_subcommittees() {
         let mock = BeaconMock::builder()
             .sync_committee_size(512)

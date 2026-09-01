@@ -42,8 +42,10 @@ pub(crate) fn instrument_duty(duty: &Duty, delay: Option<Duration>) {
     BCAST_METRICS.broadcast_total[&duty_type].inc();
 
     if let Some(delay) = delay {
-        // Delays never approach f64's 2^53 ms exact range, so the cast is exact.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "delays never approach f64's 2^53 ms exact range, so the cast is exact"
+        )]
         let seconds = delay.num_milliseconds() as f64 / 1_000.0;
         BCAST_METRICS.broadcast_delay_seconds[&duty_type].observe(seconds);
     }

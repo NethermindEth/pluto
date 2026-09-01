@@ -375,10 +375,11 @@ impl Lock {
         let fee_recipient_addresses = self.fee_recipient_addresses();
 
         for (validator_idx, validator) in self.distributed_validators.iter().enumerate() {
-            // In Go, `noRegistration` checks `len == 0` (empty slice), which catches fields
-            // missing from JSON. The zero Ethereum address ([0;20]) is a valid
-            // fee_recipient (len=20 in Go, passes the check). Only BLS
-            // signature and pubkey can never be legitimately all-zero for a
+            // In Go, `noRegistration` checks `len == 0` (empty slice), which
+            // catches fields missing from JSON. The zero Ethereum
+            // address ([0;20]) is a valid fee_recipient (len=20 in
+            // Go, passes the check). Only BLS signature and pubkey
+            // can never be legitimately all-zero for a
             // real registration.
             let no_registration = validator.builder_registration.signature == EMPTY_SIGNATURE
                 || validator.builder_registration.message.pub_key == EMPTY_VALIDATOR_PUBKEY;
@@ -787,7 +788,8 @@ mod tests {
             }
         }
 
-        // Guard against the glob silently matching nothing (e.g. a renamed dir).
+        // Guard against the glob silently matching nothing (e.g. a renamed
+        // dir).
         assert!(definitions > 0, "no example definitions found");
         assert!(locks > 0, "no example locks found");
     }
@@ -803,8 +805,8 @@ mod tests {
             lock.definition.uuid.to_string().to_uppercase(),
             "0194FDC2-FA2F-4CC0-81D3-FF12045B73C8"
         );
-        // skip rest of definition verification as it is already tested in definition
-        // tests
+        // skip rest of definition verification as it is already tested in
+        // definition tests
 
         // Test distributed_validators length
         assert_eq!(lock.distributed_validators.len(), 2);
@@ -1081,9 +1083,10 @@ mod tests {
         assert!(lock.verify_hashes().is_ok());
         let golden = lock.lock_hash.clone();
 
-        // Append an identical (so `legacy_validator_addresses` still collapses to a
-        // single address, keeping field (0) unchanged) extra address entry, making
-        // validator_addresses.len() != distributed_validators.len().
+        // Append an identical (so `legacy_validator_addresses` still collapses
+        // to a single address, keeping field (0) unchanged) extra
+        // address entry, making validator_addresses.len() !=
+        // distributed_validators.len().
         let extra = lock.definition.validator_addresses[0].clone();
         lock.definition.validator_addresses.push(extra);
         assert_ne!(
@@ -1091,9 +1094,10 @@ mod tests {
             lock.distributed_validators.len()
         );
 
-        // Field (1) count must still track distributed_validators, so the legacy
-        // lock hash is unchanged. The buggy field (`validator_addresses.len()`)
-        // would diverge from this golden hash.
+        // Field (1) count must still track distributed_validators, so the
+        // legacy lock hash is unchanged. The buggy field
+        // (`validator_addresses.len()`) would diverge from this golden
+        // hash.
         let recomputed = hash_lock(&lock).expect("hash_lock should not error");
         assert_eq!(recomputed.to_vec(), golden);
     }

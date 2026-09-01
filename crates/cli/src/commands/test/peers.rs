@@ -57,7 +57,13 @@ struct TestBehaviour {
 #[derive(Debug)]
 enum TestBehaviourEvent {
     Relay(relay::client::Event),
-    RelayManager(#[allow(dead_code)] pluto_p2p::relay::RelayManagerEvent),
+    RelayManager(
+        #[expect(
+            dead_code,
+            reason = "event payload is never read; only the variant tag matters"
+        )]
+        pluto_p2p::relay::RelayManagerEvent,
+    ),
 }
 
 impl From<relay::client::Event> for TestBehaviourEvent {
@@ -98,9 +104,10 @@ pub struct TestPeersArgs {
     pub test_config: TestConfigArgs,
 
     /// [REQUIRED] Comma-separated list of each peer ENR address.
-    // Doc comment doubles as clap help text, so the brackets must stay
-    // literal rather than becoming a rustdoc link.
-    #[allow(rustdoc::broken_intra_doc_links)]
+    #[expect(
+        rustdoc::broken_intra_doc_links,
+        reason = "doc comment doubles as clap help text, so the brackets must stay literal rather than becoming a rustdoc link"
+    )]
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
 
@@ -346,7 +353,8 @@ fn run_self_tests_in_new_task(
     self_tests: Vec<TestCaseName>,
     only_self_tests: bool,
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
-    // Self tests run concurrently with peer tests; give the node a moment to bind.
+    // Self tests run concurrently with peer tests; give the node a moment to
+    // bind.
     tokio::spawn(async move {
         tokio::time::sleep(SELF_TEST_NODE_BIND_DELAY).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
@@ -502,9 +510,8 @@ async fn run_relay_http_tests(
 
 async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingRelay");
-    let client = reqwest::Client::new();
     tokio::select! {
-        res = client.get(url).send() => match res {
+        res = super::http_client().get(url).send() => match res {
             Ok(resp) if resp.status().is_success() => result.ok(),
             Ok(resp) => result.fail(TestResultError::from_string(format!("HTTP status {}", resp.status()))),
             Err(e) => result.fail(e),
@@ -657,7 +664,10 @@ struct PeerState {
     identify_received: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "drives the peer test event loop from many independent inputs; grouping them into a struct would not improve clarity"
+)]
 async fn run_peer_event_loop(
     mut node: Node<TestBehaviour>,
     cluster_peers: &[Peer],
@@ -944,9 +954,10 @@ fn build_peer_results(
             }
             "PingMeasure" => {
                 let r = TestResult::new("PingMeasure");
-                // Use the most recent ping rather than the first: we cannot issue
-                // an on-demand ping (pings are driven by the libp2p keepalive schedule),
-                // so .last() is the closest approximation to a fresh measurement.
+                // Use the most recent ping rather than the first: we cannot
+                // issue an on-demand ping (pings are driven by
+                // the libp2p keepalive schedule), so .last() is
+                // the closest approximation to a fresh measurement.
                 if let Some(&(_, rtt)) = state.ping_rtts.last() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
@@ -954,8 +965,9 @@ fn build_peer_results(
                 }
             }
             "PingLoad" => {
-                // Gap vs charon: charon issues on-demand pings during load; libp2p drives
-                // pings on its own keepalive schedule so we can only filter existing RTTs.
+                // Gap vs charon: charon issues on-demand pings during load;
+                // libp2p drives pings on its own keepalive
+                // schedule so we can only filter existing RTTs.
                 let r = TestResult::new("PingLoad");
                 let load_rtts: Vec<Duration> = if let Some(ct) = state.connect_time {
                     state
@@ -1045,7 +1057,10 @@ async fn keep_node_alive(
     ct: CancellationToken,
 ) {
     tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a bounded keep-alive interval to a fresh Instant cannot overflow in practice"
+    )]
     let deadline = tokio::time::Instant::now() + keep_alive;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

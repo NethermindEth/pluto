@@ -1,7 +1,10 @@
 //! Peerinfo example
 //!
 //! See the [README](./README.md) for usage instructions.
-#![allow(missing_docs)]
+#![expect(
+    missing_docs,
+    reason = "example binary; public items are self-explanatory"
+)]
 use std::{
     collections::HashMap,
     fs,
@@ -98,7 +101,7 @@ pub struct CombinedBehaviour {
 }
 
 /// Events from the combined behaviour.
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "example enum variants are self-explanatory")]
 #[derive(Debug)]
 pub enum CombinedBehaviourEvent {
     PeerInfo(Event),

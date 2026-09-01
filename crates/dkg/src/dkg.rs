@@ -612,7 +612,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     result
 }
 
-#[allow(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+#[expect(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
 async fn run_ceremony<T: frost::FTransport>(
     conf: &Config,
     eth1: &EthClient,

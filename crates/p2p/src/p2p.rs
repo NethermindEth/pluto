@@ -389,7 +389,8 @@ impl<B: NetworkBehaviour> Node<B> {
     ) -> Result<()> {
         let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
 
-        // Advertise filtered addresses (external + optionally filtered internal)
+        // Advertise filtered addresses (external + optionally filtered
+        // internal)
         let advertised_addrs = utils::filter_advertised_addresses(
             utils::ExternalAddresses(external_addrs),
             utils::InternalAddresses(listen_addrs.to_vec()),
@@ -690,8 +691,9 @@ impl<B: NetworkBehaviour> Node<B> {
                 // Sockets from health probes, port scanners and incompatible
                 // clients that never complete the libp2p transport upgrade show
                 // up as `Transport` errors. That is routine noise on any
-                // publicly-reachable node, so log it at debug; keep other listen
-                // errors (wrong peer id, denied, aborted, ...) at warn.
+                // publicly-reachable node, so log it at debug; keep other
+                // listen errors (wrong peer id, denied,
+                // aborted, ...) at warn.
                 if matches!(error, ListenError::Transport(_)) {
                     debug!(%error, "incoming connection failed");
                 } else {

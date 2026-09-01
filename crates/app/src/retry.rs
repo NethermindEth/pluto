@@ -128,7 +128,7 @@ pub async fn do_async<
     let deadline = (options.deadline_fn)(t);
     let now = options.clock.now();
 
-    #[allow(
+    #[expect(
         clippy::arithmetic_side_effects,
         reason = "chrono to std conversion is safe for negative values"
     )]
