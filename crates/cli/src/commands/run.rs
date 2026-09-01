@@ -26,7 +26,6 @@
 //! ignored with a warning.
 
 use std::{
-    collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     time::Duration as StdDuration,
@@ -35,10 +34,10 @@ use std::{
 use pluto_eth2util::helpers::validate_http_headers;
 use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
+    commands::common::{LICENSE, parse_relay_addrs},
     duration::Duration,
     error::{CliError, Result},
 };
@@ -50,8 +49,6 @@ const MAX_GRAFFITI_BYTES: usize = 28;
 const MAX_GRAFFITI_BYTES_NO_APPEND: usize = 32;
 /// Maximum peer nickname length in bytes.
 const MAX_NICKNAME_BYTES: usize = 32;
-/// Grace period for the Loki background task to flush buffered logs on exit.
-const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 /// Default `--monitoring-address`.
 const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
 /// Default `--simnet-validator-keys-dir` (matches Charon).
@@ -82,12 +79,6 @@ pub struct RunArgs {
 
     #[command(flatten)]
     pub p2p: RunP2PArgs,
-
-    #[command(flatten)]
-    pub log: RunLogArgs,
-
-    #[command(flatten)]
-    pub loki: RunLokiArgs,
 
     #[command(flatten)]
     pub feature: RunFeatureArgs,
@@ -478,61 +469,6 @@ pub struct RunP2PArgs {
     pub disable_reuseport: bool,
 }
 
-/// Logging flags.
-#[derive(clap::Args, Clone, Debug)]
-pub struct RunLogArgs {
-    #[arg(
-        long = "log-format",
-        env = "CHARON_LOG_FORMAT",
-        default_value = "console",
-        help = "Log format; console, logfmt or json"
-    )]
-    pub format: String,
-
-    #[arg(
-        long = "log-level",
-        env = "CHARON_LOG_LEVEL",
-        default_value = "info",
-        help = "Log level; debug, info, warn or error"
-    )]
-    pub level: String,
-
-    #[arg(
-        long = "log-color",
-        env = "CHARON_LOG_COLOR",
-        default_value = "auto",
-        help = "Log color; auto, force, disable."
-    )]
-    pub color: ConsoleColor,
-
-    #[arg(
-        long = "log-output-path",
-        env = "CHARON_LOG_OUTPUT_PATH",
-        help = "Path in which to write on-disk logs."
-    )]
-    pub log_output_path: Option<std::path::PathBuf>,
-}
-
-/// Loki flags.
-#[derive(clap::Args, Clone, Debug)]
-pub struct RunLokiArgs {
-    #[arg(
-        long = "loki-addresses",
-        env = "CHARON_LOKI_ADDRESSES",
-        value_delimiter = ',',
-        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
-    )]
-    pub loki_addresses: Vec<String>,
-
-    #[arg(
-        long = "loki-service",
-        env = "CHARON_LOKI_SERVICE",
-        default_value = "pluto",
-        help = "Service label sent with logs to Loki."
-    )]
-    pub loki_service: String,
-}
-
 /// Feature set flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunFeatureArgs {
@@ -614,15 +550,13 @@ pub struct FeatureSetConfig {
 }
 
 /// Configuration for the `run` command — the settings produced from the parsed
-/// flags, consumed by [`run`] (tracing/Loki) and bridged into
+/// flags, consumed by [`run`] and bridged into
 /// [`pluto_app::node::AppConfig`] by [`build_app_config`]; `p2p_fuzz` is the
 /// single test-only field, set only via the hidden `unsafe run` command.
 #[derive(Debug)]
 pub struct RunConfig {
     /// P2P configuration built from [`RunP2PArgs`].
     pub p2p: pluto_p2p::config::P2PConfig,
-    /// Tracing configuration built from [`RunLogArgs`]/[`RunLokiArgs`].
-    pub log: pluto_tracing::TracingConfig,
     /// Feature set configuration.
     pub feature_set: FeatureSetConfig,
     /// Path to the cluster lock file.
@@ -648,14 +582,16 @@ pub struct RunConfig {
     /// Beacon node submission request timeout.
     pub beacon_node_submit_timeout: StdDuration,
     /// \[DISABLED\] Jaeger tracing address.
-    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
-    // when set, and the field is never read again.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "accepted for Charon flag parity; `RunConfig::try_from` already warns when set, and the field is never read again"
+    )]
     pub jaeger_addr: String,
     /// \[DISABLED\] Jaeger tracing service name.
-    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
-    // when set, and the field is never read again.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "accepted for Charon flag parity; `RunConfig::try_from` already warns when set, and the field is never read again"
+    )]
     pub jaeger_service: String,
     /// OTLP gRPC tracing backend address.
     pub otlp_address: String,
@@ -717,8 +653,6 @@ impl TryFrom<RunArgs> for RunConfig {
             debug_monitoring,
             no_verify,
             p2p,
-            log,
-            loki,
             feature,
         } = args;
 
@@ -791,12 +725,8 @@ impl TryFrom<RunArgs> for RunConfig {
             disable_reuse_port: p2p.disable_reuseport,
         };
 
-        let log_config =
-            build_console_tracing_config(log.level, &log.color, build_loki_config(&loki));
-
         Ok(Self {
             p2p: p2p_config,
-            log: log_config,
             feature_set: FeatureSetConfig {
                 min_status: feature.feature_set,
                 enabled: feature.feature_set_enable,
@@ -895,78 +825,10 @@ fn validate_vc_tls(cert: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Builds the optional Loki tracing configuration from the loki flags.
-///
-/// Only a single Loki endpoint is supported today, so any extra
-/// `--loki-addresses` entries are ignored with a warning. The warning goes to
-/// stderr because no tracing subscriber is installed yet.
-fn build_loki_config(loki: &RunLokiArgs) -> Option<pluto_tracing::LokiConfig> {
-    match loki.loki_addresses.as_slice() {
-        [] => None,
-        [loki_url, rest @ ..] => {
-            if !rest.is_empty() {
-                eprintln!(
-                    "warning: {extra} additional --loki-addresses ignored; only the first is used",
-                    extra = rest.len(),
-                );
-            }
-
-            Some(pluto_tracing::LokiConfig {
-                loki_url: loki_url.clone(),
-                labels: HashMap::from([("service".to_string(), loki.loki_service.clone())]),
-                extra_fields: HashMap::new(),
-            })
-        }
-    }
-}
-
 /// Runs the `run` command from an already-built configuration.
-///
-/// Initializes tracing and owns the Loki lifecycle for the command's lifetime:
-/// when `--loki-addresses` is set, the background task is spawned here and
-/// drained on exit so buffered logs are delivered.
 pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
-    let loki_shutdown = match pluto_tracing::init(&config.log) {
-        Ok(Some(loki)) => Some((loki.controller, tokio::spawn(loki.task))),
-        Ok(None) => None,
-        // In tests the global subscriber is shared across runs in the same
-        // process, so reinitializing fails; treat that as "no Loki worker"
-        // rather than failing the command.
-        #[cfg(test)]
-        Err(pluto_tracing::init::Error::Init(_)) => None,
-        Err(err) => return Err(err.into()),
-    };
-
     info!("{LICENSE}");
 
-    let result = run_workflow(config, ct).await;
-
-    if let Err(err) = &result {
-        // Surface the failure through the subscriber so it reaches Loki before
-        // the worker is drained; `main` only `eprintln!`s the returned error
-        // and that path bypasses the tracing subscriber.
-        error!(error = %err, "run exited with error");
-    }
-
-    // Drain the Loki worker under a single budget so a hung endpoint cannot
-    // wedge process exit; hard-abort after the budget elapses.
-    if let Some((controller, handle)) = loki_shutdown {
-        let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
-            controller.shutdown().await;
-            let _ = handle.await;
-        })
-        .await;
-        abort_handle.abort();
-    }
-
-    result
-}
-
-/// The long-running validator workflow: bridges the parsed [`RunConfig`] into
-/// [`pluto_app::node::AppConfig`] and drives the node until `ct` fires (signal
-/// handling lives in `main`).
-async fn run_workflow(config: RunConfig, ct: CancellationToken) -> Result<()> {
     let app_config = build_app_config(config)?;
     pluto_app::node::App::new(app_config).run(ct).await?;
     Ok(())
@@ -998,7 +860,6 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     // bridge behavior fails to compile instead of being silently dropped.
     let RunConfig {
         p2p,
-        log: _,
         feature_set: _,
         lock_file,
         manifest_file: _,
@@ -1096,7 +957,6 @@ fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
 }
 
 /// Warns about observability/availability-only flags the run workflow ignores.
-/// Runs after tracing init (see [`run`]) so the warnings reach the subscriber.
 fn warn_ignored_flags(config: &RunConfig) {
     if !config.debug_addr.is_empty() {
         warn!(
@@ -1174,12 +1034,16 @@ fn parse_socket_addr(flag: &str, addr: &str) -> Result<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands, UnsafeCommands};
+    use crate::{
+        cli::{Cli, Commands, UnsafeCommands},
+        commands::common::{LogFormat, LogLevel},
+    };
     use clap::{CommandFactory, Parser};
     use std::{collections::BTreeSet, time::Duration as StdDuration};
 
-    /// Every flag the safe `run` command must expose.
-    const EXPECTED_RUN_FLAGS: [&str; 54] = [
+    /// Every flag the safe `run` command must expose itself. The log and Loki
+    /// flags are global and live on the root command.
+    const EXPECTED_RUN_FLAGS: [&str; 48] = [
         // priv key
         "private-key-file",
         "private-key-file-lock",
@@ -1230,14 +1094,6 @@ mod tests {
         "p2p-tcp-address",
         "p2p-udp-address",
         "p2p-disable-reuseport",
-        // log
-        "log-format",
-        "log-level",
-        "log-color",
-        "log-output-path",
-        // loki
-        "loki-addresses",
-        "loki-service",
         // feature
         "feature-set-enable",
         "feature-set-disable",
@@ -1278,6 +1134,23 @@ mod tests {
             panic!("expected run command");
         };
         (*args).try_into()
+    }
+
+    /// Parses safe `run` args and returns the tracing config the global log
+    /// flags produce.
+    fn parse_tracing(extra: &[&str]) -> pluto_tracing::TracingConfig {
+        let mut argv = vec![
+            "pluto",
+            "run",
+            "--beacon-node-endpoints",
+            "http://beacon.node",
+        ];
+        argv.extend_from_slice(extra);
+
+        Cli::try_parse_from(argv)
+            .expect("run args should parse")
+            .tracing
+            .tracing_config()
     }
 
     /// Returns the `Display` string of the error from a failing `parse_run`.
@@ -1381,6 +1254,13 @@ mod tests {
             "http://beacon.node",
         ])
         .expect("run command should parse");
+
+        // Log and Loki flags are global, so they land on the root.
+        assert_eq!(cli.tracing.log_level, LogLevel::Info);
+        assert_eq!(cli.tracing.log_format, LogFormat::Console);
+        assert_eq!(cli.tracing.loki_service, "pluto");
+        assert!(cli.tracing.loki_addresses.is_empty());
+
         let Commands::Run(args) = cli.command else {
             panic!("expected run command");
         };
@@ -1440,13 +1320,6 @@ mod tests {
         assert!(args.p2p.tcp_addrs.is_empty());
         assert!(args.p2p.external_ip.is_none());
 
-        // Log.
-        assert_eq!(args.log.level, "info");
-        assert_eq!(args.log.format, "console");
-
-        // Loki.
-        assert_eq!(args.loki.loki_service, "pluto");
-
         // Feature.
         assert_eq!(args.feature.feature_set, "stable");
         assert!(args.feature.feature_set_enable.is_empty());
@@ -1469,9 +1342,9 @@ mod tests {
 
     #[test]
     fn run_empty_relays_flag_yields_no_relays() {
-        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
-        // single empty string, which the bridge filters out (used by the simnet
-        // smoke test for isolated, relay-free nodes).
+        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields
+        // a single empty string, which the bridge filters out (used by
+        // the simnet smoke test for isolated, relay-free nodes).
         let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
         assert!(
             config.p2p.relays.is_empty(),
@@ -1582,19 +1455,16 @@ mod tests {
 
     #[test]
     fn run_loki_config_built_from_addresses() {
-        // `--loki-addresses` must produce a Loki layer in the tracing config so
-        // `run` spawns/drains the Loki worker (regression for the lifecycle bug
-        // where the worker was initialized in `main` and then dropped).
-        let config = parse_run(&[
+        // The Loki flags are global, but they must still reach the subscriber
+        // config when supplied on `run`.
+        let tracing_config = parse_tracing(&[
             "--loki-addresses",
             "http://loki.test/push",
             "--loki-service",
             "svc",
-        ])
-        .expect("config should build");
+        ]);
 
-        let loki = config
-            .log
+        let loki = tracing_config
             .loki
             .as_ref()
             .expect("loki layer should be configured");
@@ -1602,13 +1472,7 @@ mod tests {
         assert_eq!(loki.labels.get("service").map(String::as_str), Some("svc"));
 
         // No `--loki-addresses` → no Loki layer (nothing to spawn).
-        assert!(
-            parse_run(&[])
-                .expect("config should build")
-                .log
-                .loki
-                .is_none()
-        );
+        assert!(parse_tracing(&[]).loki.is_none());
     }
 
     #[test]
@@ -1749,10 +1613,6 @@ mod tests {
         );
         // p2p_fuzz is never set on the safe `run` path.
         assert!(!config.p2p_fuzz);
-        // `--log-color=force` forces ANSI on the console layer.
-        let console = config.log.console.as_ref().expect("console config");
-        assert!(console.with_ansi);
-        assert_eq!(config.log.override_env_filter.as_deref(), Some("debug"));
     }
 
     /// Builds the app config from safe `run` flags.
@@ -1838,8 +1698,8 @@ mod tests {
 
     #[test]
     fn build_app_config_resolves_hostname_validator_api_addr() {
-        // Charon accepts hostnames here, so the bridge must resolve them instead
-        // of requiring a literal IP.
+        // Charon accepts hostnames here, so the bridge must resolve them
+        // instead of requiring a literal IP.
         let config =
             app_config(&["--validator-api-address=localhost:3600"]).expect("hostname resolves");
         assert_eq!(config.validator_api_addr.port(), 3600);
@@ -1901,18 +1761,19 @@ mod tests {
 
     #[test]
     fn run_fuzz_beacon_mock_allowed_with_endpoint() {
-        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint is
-        // present; it must not additionally require `--simnet-beacon-mock`.
+        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint
+        // is present; it must not additionally require
+        // `--simnet-beacon-mock`.
         parse_run(&["--simnet-beacon-mock-fuzz"]).expect("fuzz + endpoint is valid");
     }
 
     #[test]
     fn build_app_config_registers_fully_specified_testnet() {
-        // A fully-specified `--testnet-*` config registers the custom network before
-        // the lock is loaded, so a cluster lock carrying this genesis fork
-        // version resolves during load (`verify_signatures` -> EIP-712 ->
-        // `fork_version_to_chain_id` looks it up in the supported-networks
-        // registry).
+        // A fully-specified `--testnet-*` config registers the custom network
+        // before the lock is loaded, so a cluster lock carrying this
+        // genesis fork version resolves during load
+        // (`verify_signatures` -> EIP-712 -> `fork_version_to_chain_id`
+        // looks it up in the supported-networks registry).
         let fork_version = [0x00, 0x00, 0x05, 0x31];
 
         // Not registered before the bridge runs.
@@ -1930,7 +1791,8 @@ mod tests {
         ])
         .expect("fully-specified testnet is now supported");
 
-        // Registered: the lock's fork version now resolves to the custom network.
+        // Registered: the lock's fork version now resolves to the custom
+        // network.
         assert_eq!(
             pluto_eth2util::network::fork_version_to_network(&fork_version)
                 .expect("custom fork version resolves after registration"),

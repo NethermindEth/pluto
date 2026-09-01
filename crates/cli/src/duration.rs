@@ -28,7 +28,11 @@ impl Duration {
     }
 
     /// Rounds the duration based on its magnitude
-    #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::arithmetic_side_effects,
+        reason = "rounding arithmetic on bounded millisecond/microsecond values cannot overflow, and the u128->u64 casts fit the rounded magnitudes"
+    )]
     pub fn round(self) -> Self {
         let rounded = if self.inner > StdDuration::from_secs(1) {
             // Round to 10ms
@@ -183,10 +187,11 @@ pub fn parse_go_duration(s: &str) -> Result<StdDuration, String> {
         if frac > 0 {
             // Match Go: float64 is nanosecond-accurate for fractions of the
             // largest unit (hours).
-            #[allow(
+            #[expect(
                 clippy::cast_precision_loss,
                 clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
+                clippy::cast_sign_loss,
+                reason = "matches Go: float64 is nanosecond-accurate for fractions of the largest unit (hours), and the result is bounded by GO_MAX_DURATION_NANOS"
             )]
             let frac_nanos = (frac as f64 * (unit as f64 / scale)) as u64;
             nanos = nanos
@@ -268,13 +273,17 @@ fn unit_scale(unit: &str) -> Option<u64> {
 
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Matches Go's `time.Duration.String()` (see Go's `time.Duration.format`).
+        // Matches Go's `time.Duration.String()` (see Go's
+        // `time.Duration.format`).
         write!(f, "{}", format_go_duration(self.inner))
     }
 }
 
 /// Formats a duration like Go's `time.Duration.String()`.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "buffer index and unit arithmetic operate on a fixed 32-byte buffer sized for the maximum u64 duration, so it cannot overflow or underflow"
+)]
 fn format_go_duration(duration: StdDuration) -> String {
     let nanos_u128 = duration.as_nanos();
     let mut u: u64 = u64::try_from(nanos_u128).unwrap_or(u64::MAX);
@@ -283,8 +292,8 @@ fn format_go_duration(duration: StdDuration) -> String {
     let mut w = buf.len();
 
     if u < SECOND {
-        // Special case: if duration is smaller than a second, use smaller units, like
-        // 1.2ms.
+        // Special case: if duration is smaller than a second, use smaller
+        // units, like 1.2ms.
         let prec: usize;
 
         w -= 1;
@@ -354,7 +363,10 @@ fn format_go_duration(duration: StdDuration) -> String {
 
 /// Formats the fraction of `v / 10**prec` into the tail of `buf`, omitting
 /// trailing zeros. Returns the new start index and `v / 10**prec`.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "buffer index arithmetic stays within the caller's fixed buffer and prec is bounded, so it cannot overflow or underflow"
+)]
 fn fmt_frac(buf: &mut [u8], mut v: u64, prec: usize) -> (usize, u64) {
     // Omit trailing zeros up to and including decimal point.
     let mut w = buf.len();
@@ -380,7 +392,10 @@ fn fmt_frac(buf: &mut [u8], mut v: u64, prec: usize) -> (usize, u64) {
 
 /// Formats `v` into the tail of `buf`. Returns the index where the output
 /// begins.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "buffer index arithmetic stays within the caller's fixed buffer sized for the maximum u64, so it cannot overflow or underflow"
+)]
 fn fmt_int(buf: &mut [u8], mut v: u64) -> usize {
     let mut w = buf.len();
     if v == 0 {

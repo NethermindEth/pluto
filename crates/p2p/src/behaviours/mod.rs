@@ -3,7 +3,10 @@
 //! This module provides pre-configured network behaviours that combine multiple
 //! libp2p protocols for use in Charon nodes.
 
-#![allow(missing_docs)] // we need to allow missing docs for the derive macro
+#![expect(
+    missing_docs,
+    reason = "the NetworkBehaviour derive macro generates undocumented items"
+)]
 
 /// Pluto behaviour.
 pub mod pluto;

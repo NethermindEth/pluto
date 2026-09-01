@@ -10,11 +10,6 @@
 //! directly from tests. The networked driver that polls the beacon node and
 //! builds the `Block` inputs is layered on top separately.
 
-// TODO: The networked `InclusionChecker` that wires the default reporters and drives
-// this core is added in a follow-up; until then some core items (default
-// reporters, committee plumbing) have no in-crate caller.
-#![allow(dead_code)]
-
 use std::{
     any::Any,
     collections::HashMap,
@@ -905,7 +900,8 @@ mod tests {
         let att3 = Attestation::new(phase0_attestation(3));
         let block4 = proposal();
 
-        // Seeded into the block below; the rest are recomputed inside `submitted`.
+        // Seeded into the block below; the rest are recomputed inside
+        // `submitted`.
         let agg2_root = agg2.0.message.aggregate.data.tree_hash_root().0;
 
         core.submitted(
@@ -954,7 +950,8 @@ mod tests {
         // Attester (1, 3) and aggregator (2) report via att-included.
         assert_eq!(sorted_slots(&included), vec![1, 2, 3]);
         assert!(missed.lock().unwrap().is_empty());
-        // All four duties resolve via the tracker callback (incl. proposer 100).
+        // All four duties resolve via the tracker callback (incl. proposer
+        // 100).
         assert_eq!(sorted_slots(&resolved), vec![1, 2, 3, 100]);
     }
 

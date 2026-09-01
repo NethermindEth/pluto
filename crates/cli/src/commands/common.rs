@@ -1,5 +1,7 @@
 //! Shared helpers for CLI commands.
 
+use std::{collections::HashMap, fmt, path::PathBuf};
+
 use pluto_p2p::config::RelayAddr;
 use tracing::warn;
 
@@ -24,32 +26,183 @@ pub enum ConsoleColor {
     Disable,
 }
 
-/// Builds a tracing configuration for CLI commands, optionally enabling Loki.
+/// The log levels `tracing_subscriber`'s `EnvFilter` understands.
 ///
-/// `loki` is `Some` when the caller wants events forwarded to a Loki endpoint
-/// (e.g. via `--loki-addresses`), and `None` for commands that only need
-/// console output.
+/// `Display` renders the directive spelling, so these compose into a filter
+/// string that always parses.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        })
+    }
+}
+
+/// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
+/// prefix-matches against every `libp2p_relay::*` target.
+fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
+    match relay_level {
+        Some(level) => format!("{base},libp2p_relay={level}"),
+        None => base.to_string(),
+    }
+}
+
+/// Log output encoding
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable, optionally colored.
+    #[default]
+    Console,
+    /// Flat `key=value` pairs.
+    Logfmt,
+    /// One JSON object per event.
+    Json,
+}
+
+/// Logging and Loki flags, accepted by every subcommand.
+///
+/// These are `global`, so they parse identically before or after the
+/// subcommand and are readable from the root [`crate::cli::Cli`] before any
+/// command-specific config conversion runs. That ordering is what lets
+/// `main` install the subscriber before validation starts.
 // TODO: wire `log-output-path` (file output) and `log-format` (logfmt/json)
 // into the tracing layers. `pluto_tracing` supports console + Loki only, so
-// `run`/`dkg`/`relay` accept these flags but do not yet apply them.
-pub fn build_console_tracing_config(
-    level: impl Into<String>,
-    color: &ConsoleColor,
-    loki: Option<pluto_tracing::LokiConfig>,
-) -> pluto_tracing::TracingConfig {
-    let mut builder = pluto_tracing::TracingConfig::builder().with_default_console();
+// these flags are accepted but not yet applied.
+#[derive(clap::Args, Clone, Debug)]
+#[command(next_help_heading = "Logging")]
+pub struct TracingArgs {
+    #[arg(
+        long = "log-format",
+        env = "CHARON_LOG_FORMAT",
+        default_value = "console",
+        global = true,
+        ignore_case = true,
+        display_order = 1000,
+        help = "Log format; console, logfmt or json"
+    )]
+    pub log_format: LogFormat,
 
-    builder = match color {
-        ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
-        ConsoleColor::Force => builder.console_with_ansi(true),
-        ConsoleColor::Disable => builder.console_with_ansi(false),
-    };
+    #[arg(
+        long = "log-level",
+        env = "CHARON_LOG_LEVEL",
+        default_value = "info",
+        global = true,
+        ignore_case = true,
+        display_order = 1001,
+        help = "Log level"
+    )]
+    pub log_level: LogLevel,
 
-    if let Some(loki) = loki {
-        builder = builder.loki(loki);
+    #[arg(
+        long = "log-color",
+        env = "CHARON_LOG_COLOR",
+        default_value = "auto",
+        global = true,
+        ignore_case = true,
+        display_order = 1002,
+        help = "Log color; auto, force, disable."
+    )]
+    pub log_color: ConsoleColor,
+
+    #[arg(
+        long = "log-output-path",
+        env = "CHARON_LOG_OUTPUT_PATH",
+        global = true,
+        display_order = 1003,
+        help = "Path in which to write on-disk logs."
+    )]
+    pub log_output_path: Option<PathBuf>,
+
+    #[arg(
+        long = "loki-addresses",
+        env = "CHARON_LOKI_ADDRESSES",
+        value_delimiter = ',',
+        global = true,
+        display_order = 1004,
+        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
+    )]
+    pub loki_addresses: Vec<String>,
+
+    #[arg(
+        long = "loki-service",
+        env = "CHARON_LOKI_SERVICE",
+        default_value = "pluto",
+        global = true,
+        display_order = 1005,
+        help = "Service label sent with logs to Loki."
+    )]
+    pub loki_service: String,
+
+    #[arg(
+        long = "p2p-relay-loglevel",
+        env = "CHARON_P2P_RELAY_LOGLEVEL",
+        global = true,
+        ignore_case = true,
+        display_order = 1006,
+        help = "Libp2p circuit relay log level. Defaults to --log-level."
+    )]
+    pub p2p_relay_log_level: Option<LogLevel>,
+}
+
+impl TracingArgs {
+    /// Builds the subscriber configuration.
+    ///
+    /// Emits nothing: this runs before the subscriber exists, so any diagnostic
+    /// it produced would be dropped. Deferred warnings live in
+    /// [`TracingArgs::warn_unused`].
+    pub fn tracing_config(&self) -> pluto_tracing::TracingConfig {
+        let ansi = match self.log_color {
+            ConsoleColor::Auto => std::env::var_os("NO_COLOR").is_none(),
+            ConsoleColor::Force => true,
+            ConsoleColor::Disable => false,
+        };
+
+        let mut builder = pluto_tracing::TracingConfig::builder()
+            .with_default_console()
+            .console_with_ansi(ansi)
+            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level));
+
+        // Only the first address is used; see `warn_unused`.
+        if let Some(loki_url) = self.loki_addresses.first() {
+            builder = builder.loki(pluto_tracing::LokiConfig {
+                loki_url: loki_url.clone(),
+                labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
+                extra_fields: HashMap::new(),
+            });
+        }
+
+        builder.build()
     }
 
-    builder.override_env_filter(level.into()).build()
+    /// Reports flag values that were accepted but not applied.
+    ///
+    /// Call once the subscriber is installed.
+    pub fn warn_unused(&self) {
+        // Charon fans logs out to every entry in `loki-addresses`, but
+        // `pluto_tracing::TracingConfig` supports a single Loki layer today.
+        let ignored = self.loki_addresses.len().saturating_sub(1);
+        if ignored > 0 {
+            warn!(
+                ignored,
+                "Additional --loki-addresses ignored; only the first is used"
+            );
+        }
+    }
 }
 
 /// Parses the configured relay addresses, warning about insecure ones.
@@ -91,6 +244,122 @@ pub fn parse_relay_addrs(relays: &[String]) -> std::result::Result<Vec<RelayAddr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Cli;
+    use clap::ValueEnum as _;
+    use std::str::FromStr as _;
+    use tracing::{Level, enabled};
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
+
+    #[test]
+    fn log_flags_accept_any_casing() {
+        // Charon takes these from env as often as from the command line, where
+        // `CHARON_LOG_LEVEL=INFO` is idiomatic.
+        for level in ["debug", "DEBUG", "Debug"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-level={level}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-level={level} should parse: {err}"));
+
+            assert_eq!(
+                cli.tracing.tracing_config().override_env_filter.as_deref(),
+                Some("debug")
+            );
+        }
+
+        for color in ["disable", "DISABLE", "Disable"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-color={color}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-color={color} should parse: {err}"));
+
+            assert!(
+                !cli.tracing
+                    .tracing_config()
+                    .console
+                    .expect("console")
+                    .with_ansi
+            );
+        }
+
+        for format in ["logfmt", "LOGFMT", "Logfmt"] {
+            let cli = <Cli as clap::Parser>::try_parse_from([
+                "pluto",
+                "enr",
+                &format!("--log-format={format}"),
+            ])
+            .unwrap_or_else(|err| panic!("--log-format={format} should parse: {err}"));
+
+            assert_eq!(cli.tracing.log_format, LogFormat::Logfmt);
+        }
+    }
+
+    #[test]
+    fn log_flags_reject_unknown_values() {
+        for flag in [
+            "--log-level=nonsense",
+            "--log-format=nonsense",
+            "--p2p-relay-loglevel=fatal",
+        ] {
+            let err = match <Cli as clap::Parser>::try_parse_from(["pluto", "enr", flag]) {
+                Ok(_) => panic!("{flag} should be rejected"),
+                Err(err) => err,
+            };
+
+            assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        }
+    }
+
+    /// Runs `f` with a subscriber that only lets `filter` through.
+    fn with_filter(filter: &str, f: impl FnOnce()) {
+        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
+    }
+
+    #[test]
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An unset relay level leaves the base filter alone.
+        with_filter(&relay_filter(LogLevel::Info, None), || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+        });
+
+        // A relay level silences the upstream relay crate but not our own logs.
+        with_filter(&relay_filter(LogLevel::Info, Some(LogLevel::Error)), || {
+            assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+            assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
+        });
+    }
+
+    #[test]
+    fn every_log_level_composes_into_a_valid_filter() {
+        for base in LogLevel::value_variants() {
+            for relay in LogLevel::value_variants() {
+                let filter = relay_filter(*base, Some(*relay));
+                EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn p2p_relay_loglevel_reaches_the_env_filter() {
+        // The flag is global, so it composes with `--log-level` from the root
+        // rather than from the `relay` subcommand that used to own it.
+        let cli = <Cli as clap::Parser>::try_parse_from([
+            "pluto",
+            "relay",
+            "--log-level=info",
+            "--p2p-relay-loglevel=error",
+        ])
+        .expect("relay args should parse");
+
+        assert_eq!(
+            cli.tracing.tracing_config().override_env_filter.as_deref(),
+            Some("info,libp2p_relay=error")
+        );
+    }
 
     // Per-address parsing is covered by `RelayAddr`'s own tests; what is left
     // to check here is the empty-value contract and the error wrapping.

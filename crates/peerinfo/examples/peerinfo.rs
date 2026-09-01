@@ -1,7 +1,10 @@
 //! Peerinfo example
 //!
 //! See the [README](./README.md) for usage instructions.
-#![allow(missing_docs)]
+#![expect(
+    missing_docs,
+    reason = "example binary; public items are self-explanatory"
+)]
 use std::{
     collections::HashMap,
     fs,
@@ -98,7 +101,7 @@ pub struct CombinedBehaviour {
 }
 
 /// Events from the combined behaviour.
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "example enum variants are self-explanatory")]
 #[derive(Debug)]
 pub enum CombinedBehaviourEvent {
     PeerInfo(Event),
@@ -234,8 +237,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing with optional Loki support
     let tracing_config = build_tracing_config(&args);
-    if let Some(loki) = pluto_tracing::init(&tracing_config)? {
-        tokio::spawn(loki.task);
+    let loki = pluto_tracing::init(&tracing_config)?;
+    if loki.is_some() {
         tracing::info!("Loki logging enabled");
     }
 
@@ -399,6 +402,10 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
         }
+    }
+
+    if let Some(loki) = loki {
+        loki.shutdown().await;
     }
 
     Ok(())

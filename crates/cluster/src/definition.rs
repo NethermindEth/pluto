@@ -419,7 +419,10 @@ pub enum InvalidGasLimitError {
 
 impl Definition {
     /// Create a new cluster definition.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the full cluster definition field set"
+    )]
     pub fn new(
         name: String,
         num_validators: u64,
@@ -543,10 +546,11 @@ impl Definition {
     /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
     pub async fn verify_signatures(&self, eth1: &EthClient) -> Result<(), DefinitionError> {
-        // Skip signature verification for definition versions earlier than v1.3 since
-        // there are no EIP712 signatures before v1.3.0. For definition versions
-        // earlier than v1.3.0, error if either config signature or enr signature for
-        // any operator is present.
+        // Skip signature verification for definition versions earlier than v1.3
+        // since there are no EIP712 signatures before v1.3.0. For
+        // definition versions earlier than v1.3.0, error if either
+        // config signature or enr signature for any operator is
+        // present.
         if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
@@ -564,8 +568,8 @@ impl Definition {
         let mut no_op_sigs = 0usize;
 
         for operator in &self.operators {
-            // Completely unsigned operators are also fine, assuming a single cluster-wide
-            // operator.
+            // Completely unsigned operators are also fine, assuming a single
+            // cluster-wide operator.
             if operator.address.is_empty()
                 && operator.enr_signature.is_empty()
                 && operator.config_signature.is_empty()
@@ -1681,12 +1685,13 @@ fn repeat_v_addresses(
     addr: ValidatorAddresses,
     num_validators: u64,
 ) -> Result<Vec<ValidatorAddresses>, DefinitionError> {
-    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it at
-    // SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already enforced on the
-    // validator-addresses field) *before* the clone loop, so a value up to
-    // u64::MAX cannot drive an unbounded allocation / OOM. This is defensive
-    // hardening consistent with the SSZ bound itself; it cannot reject
-    // any definition that could round-trip through SSZ hashing.
+    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it
+    // at SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already
+    // enforced on the validator-addresses field) *before* the clone loop,
+    // so a value up to u64::MAX cannot drive an unbounded allocation / OOM.
+    // This is defensive hardening consistent with the SSZ bound itself; it
+    // cannot reject any definition that could round-trip through SSZ
+    // hashing.
     if num_validators > SSZ_MAX_VALIDATORS as u64 {
         return Err(DefinitionError::NumValidatorsTooLarge {
             num_validators,
@@ -1777,8 +1782,9 @@ mod tests {
             "u64::MAX num_validators must be rejected, not allocated"
         );
         // The deserialize dispatch renders the TryFrom error via Debug
-        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on the
-        // variant name and the enforced max, both of which appear in the Debug repr.
+        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on
+        // the variant name and the enforced max, both of which appear
+        // in the Debug repr.
         let msg = format!("{}", result.unwrap_err());
         assert!(
             msg.contains("NumValidatorsTooLarge") && msg.contains("65536"),

@@ -467,8 +467,9 @@ fn decode_versioned_attestations(
             atts.into_iter()
                 .map(|single| {
                     // SingleAttestation disregards aggregation bits once it is
-                    // converted back, so an empty bitlist is safe; the committee
-                    // index is carried in the committee bitfield.
+                    // converted back, so an empty bitlist is safe; the
+                    // committee index is carried in the
+                    // committee bitfield.
                     let committee_bit = usize::try_from(single.committee_index)
                         .ok()
                         .filter(|&idx| idx < 64)
@@ -1061,16 +1062,16 @@ async fn proxy_handler(
     // instead (below), avoiding a duplicate Authorization header from
     // URL-embedded credentials.
     let mut target = state.upstream_base_url.clone();
-    // Join the upstream base path with the request path (single-slash), mirroring
-    // Go's `httputil.NewSingleHostReverseProxy` director (`joinURLPath` /
-    // `singleJoiningSlash`). A bare `set_path` would *replace* the base path,
-    // dropping any prefix the operator configured: with base `http://beacon/internal`
+    // Join the upstream base path with the request path (single-slash),
+    // mirroring Go's `httputil.NewSingleHostReverseProxy` director
+    // (`joinURLPath` / `singleJoiningSlash`). A bare `set_path` would
+    // *replace* the base path, dropping any prefix the operator configured: with base `http://beacon/internal`
     // and request `/eth/v1/events`, the upstream target must be
     // `http://beacon/internal/eth/v1/events`, not `http://beacon/eth/v1/events`.
     let joined_path = join_single_slash(state.upstream_base_url.path(), uri.path());
     target.set_path(&joined_path);
-    // Combine the base query with the request query the same way the Go director
-    // does: base first, then the request query joined with `&`.
+    // Combine the base query with the request query the same way the Go
+    // director does: base first, then the request query joined with `&`.
     let combined_query = match (state.upstream_base_url.query(), uri.query()) {
         (Some(base), Some(req)) if !base.is_empty() && !req.is_empty() => {
             Some(format!("{base}&{req}"))
