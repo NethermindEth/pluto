@@ -7,12 +7,9 @@ pub struct TracingConfig {
     /// logging is enabled.
     pub loki: Option<LokiConfig>,
 
-    /// Console configuration. Enables console logging if provided. If not - no
-    /// console logging is enabled.
+    /// Console layer options. Defaults are used when absent; console logging is
+    /// always enabled.
     pub console: Option<ConsoleConfig>,
-
-    /// Enables metrics logging. If not - no metrics logging is enabled.
-    pub metrics: bool,
 
     /// Overrides the environment filter. If not - the environment filter is
     /// used.
@@ -175,18 +172,6 @@ impl TracingConfigBuilder {
             .console
             .get_or_insert_with(ConsoleConfig::default)
             .with_ansi = with_ansi;
-        self
-    }
-
-    /// Enables metrics logging.
-    pub fn with_metrics(mut self, enabled: bool) -> Self {
-        self.tracing_config.metrics = enabled;
-        self
-    }
-
-    /// Sets whether metrics logging is enabled.
-    pub fn metrics(mut self, enabled: bool) -> Self {
-        self.tracing_config.metrics = enabled;
         self
     }
 
