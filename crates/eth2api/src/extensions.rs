@@ -639,10 +639,9 @@ impl EthBeaconNodeApiClient {
     /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the
     /// given topics.
     ///
-    /// Unlike the generated [`Self::eventstream`], the returned stream
-    /// preserves each event's topic and yields its raw JSON `data`
-    /// unparsed, so callers can dispatch on the topic and deserialize the
-    /// payload themselves.
+    /// The returned stream preserves each event's topic and yields its raw
+    /// JSON `data` unparsed, so callers can dispatch on the topic and
+    /// deserialize the payload themselves.
     pub async fn event_stream(
         &self,
         topics: &[EventstreamRequestQueryTopic],

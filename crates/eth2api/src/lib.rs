@@ -3,11 +3,10 @@
 //! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
 //! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
 
-#[allow(missing_docs)]
-#[allow(clippy::all)]
-#[rustfmt::skip]
+/// HTTP client for a single beacon node.
 pub mod client;
 
+/// Beacon API request and response types.
 #[allow(missing_docs)]
 #[allow(clippy::all)]
 #[rustfmt::skip]
