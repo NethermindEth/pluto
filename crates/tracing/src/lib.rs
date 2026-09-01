@@ -18,4 +18,4 @@ pub mod metrics;
 
 pub use config::{ConsoleConfig, LokiConfig, TracingConfig, TracingConfigBuilder};
 
-pub use init::{LokiInit, init};
+pub use init::{LokiWorker, init};

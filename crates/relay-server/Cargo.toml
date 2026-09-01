@@ -19,7 +19,6 @@ vise.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 rand.workspace = true
-pluto-tracing.workspace = true
 tracing.workspace = true
 pluto-p2p.workspace = true
 pluto-core.workspace = true
@@ -27,6 +26,7 @@ pluto-core.workspace = true
 [dev-dependencies]
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+pluto-tracing.workspace = true
 
 [lints]
 workspace = true
