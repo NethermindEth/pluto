@@ -967,3 +967,123 @@ pub(crate) fn hash_registration<H: HashWalker>(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    /// A version string no dispatch table knows about.
+    const UNSUPPORTED: &str = "v0.0.1";
+
+    fn v1_10_definition() -> Definition {
+        serde_json::from_str(include_str!("testdata/cluster_definition_v1_10_0.json")).unwrap()
+    }
+
+    fn v1_10_lock() -> Lock {
+        serde_json::from_str(include_str!("testdata/cluster_lock_v1_10_0.json")).unwrap()
+    }
+
+    #[test]
+    fn definition_hash_func_rejects_unsupported_version() {
+        assert!(matches!(
+            get_definition_hash_func::<Hasher>(UNSUPPORTED),
+            Err(SSZError::UnsupportedVersion(v)) if v == UNSUPPORTED
+        ));
+    }
+
+    /// v1.0-v1.2 hash through `hash_lock_legacy`, which never consults this
+    /// table, so those versions are deliberately absent rather than mapped.
+    #[test_case(V1_0 ; "v1.0")]
+    #[test_case(V1_1 ; "v1.1")]
+    #[test_case(V1_2 ; "v1.2")]
+    #[test_case(UNSUPPORTED ; "unknown")]
+    fn validator_hash_func_rejects_unsupported_version(version: &str) {
+        assert!(matches!(
+            get_validator_hash_func::<Hasher>(version),
+            Err(SSZError::UnsupportedVersion(v)) if v == version
+        ));
+    }
+
+    #[test]
+    fn deposit_data_hash_func_rejects_unsupported_version() {
+        assert!(matches!(
+            get_deposit_data_hash_func::<Hasher>(UNSUPPORTED),
+            Err(SSZError::UnsupportedVersion(v)) if v == UNSUPPORTED
+        ));
+    }
+
+    #[test]
+    fn registration_hash_func_rejects_unsupported_version() {
+        assert!(matches!(
+            get_registration_hash_func::<Hasher>(UNSUPPORTED),
+            Err(SSZError::UnsupportedVersion(v)) if v == UNSUPPORTED
+        ));
+    }
+
+    #[test]
+    fn hash_definition_rejects_unsupported_version() {
+        let mut definition = v1_10_definition();
+        definition.version = UNSUPPORTED.to_owned();
+
+        assert!(matches!(
+            hash_definition(&definition, false),
+            Err(SSZError::UnsupportedVersion(v)) if v == UNSUPPORTED
+        ));
+    }
+
+    #[test]
+    fn hash_lock_rejects_unsupported_version() {
+        let mut lock = v1_10_lock();
+        lock.definition.version = UNSUPPORTED.to_owned();
+
+        assert!(matches!(
+            hash_lock(&lock),
+            Err(SSZError::UnsupportedVersion(v)) if v == UNSUPPORTED
+        ));
+    }
+
+    /// A byte *list* past its SSZ limit is rejected, not truncated.
+    #[test]
+    fn hash_definition_rejects_oversized_enr() {
+        let mut definition = v1_10_definition();
+        definition.operators[0].enr = "e".repeat(SSZ_MAX_ENR + 1);
+
+        match hash_definition(&definition, false) {
+            Err(SSZError::IncorrectListSize {
+                namespace,
+                field,
+                actual,
+                expected,
+            }) => {
+                assert_eq!(namespace, "put_byte_list");
+                assert_eq!(field, "ENR");
+                assert_eq!(actual, SSZ_MAX_ENR + 1);
+                assert_eq!(expected, SSZ_MAX_ENR);
+            }
+            other => panic!("expected IncorrectListSize, got {other:?}"),
+        }
+    }
+
+    /// `put_bytes_n` left-pads short input but never accepts over-long input.
+    #[test]
+    fn hash_lock_rejects_oversized_pub_key() {
+        let mut lock = v1_10_lock();
+        lock.distributed_validators[0].pub_key = vec![0u8; SSZ_LEN_PUB_KEY + 1];
+
+        match hash_lock(&lock) {
+            Err(SSZError::IncorrectListSize {
+                namespace,
+                actual,
+                expected,
+                ..
+            }) => {
+                assert_eq!(namespace, "put_bytes_n");
+                assert_eq!(actual, SSZ_LEN_PUB_KEY + 1);
+                assert_eq!(expected, SSZ_LEN_PUB_KEY);
+            }
+            other => panic!("expected IncorrectListSize, got {other:?}"),
+        }
+    }
+}
