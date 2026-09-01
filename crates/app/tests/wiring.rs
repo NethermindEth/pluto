@@ -46,18 +46,16 @@ use pluto_core::{
 };
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum,
+    EthBeaconNodeApiClient,
     spec::{altair, phase0},
-    valcache::ValidatorCache,
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use wiremock::{
-    Mock, MockServer, Request, ResponseTemplate,
-    matchers::{method, path, path_regex},
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
 const PK_LEN: usize = 48;
@@ -119,46 +117,7 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
-}
-
-/// Builds a `/states/{id}/validators` datum for an active validator with the
-/// given index and pubkey.
-fn validator_datum(index: u64, pubkey: PubKey) -> GetStateValidatorsResponseResponseDatum {
-    let v = pluto_testutil::Validator::active(index, pubkey_to_eth2(pubkey));
-    GetStateValidatorsResponseResponseDatum {
-        index: v.index.to_string(),
-        balance: v.balance.to_string(),
-        status: v.status,
-        validator: v.validator,
-    }
-}
-
-/// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
-/// datums whose pubkey appears in the request-body `ids` — so an unseeded
-/// (empty-pubkey) cache resolves zero validators. Cover both `head` and slot
-/// state IDs because the scheduler refreshes the cache by slot immediately.
-async fn mount_filtered_post_validators(
-    server: &MockServer,
-    datums: Vec<GetStateValidatorsResponseResponseDatum>,
-) {
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
-        .respond_with(move |request: &Request| {
-            let body = String::from_utf8_lossy(&request.body);
-            let data: Vec<_> = datums
-                .iter()
-                .filter(|d| body.contains(&d.validator.pubkey))
-                .cloned()
-                .collect();
-            ResponseTemplate::new(200).set_body_json(GetStateValidatorsResponseResponse {
-                execution_optimistic: false,
-                finalized: true,
-                data,
-            })
-        })
-        .mount(server)
-        .await;
+    .unwrap_or_else(|_| panic!("POST {submit_path} should be hit"))
 }
 
 /// Counts POSTs the mock has received for `submit_path`.
@@ -237,22 +196,15 @@ fn wire_inputs_with(
         fee_recipient: [0u8; 20],
     }];
 
-    // One shared, pubkey-scoped cache seeded into both clients at construction,
-    // mirroring production wiring (`node::run`).
-    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
-    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
     // The broadcaster's constructor performs beacon-node calls, so the
-    // submission client must point at the mock too.
-    let submission_client = BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
+    // submission API must point at the mock too.
+    let submission_api = eth2_cl.clone();
 
     WireInputs {
         threshold,
         share_idx: 1,
-        beacon_client,
         eth2_cl,
-        submission_client,
-        validator_cache,
+        submission_api,
         validators,
         consensus,
         builder_enabled: false,
@@ -807,47 +759,41 @@ async fn wiring_rejects_bad_partial_signature() {
     ct.cancel();
 }
 
-/// (d) One pubkey-scoped validator cache is seeded into the scheduler's beacon
-/// client and the submission client at construction (Charon shares a single
-/// cache across both; the validator API reuses the same instance). The mock's
-/// POST validators endpoint returns only validators whose pubkey appears in the
-/// request-body `ids`, so an unseeded (empty-pubkey) cache would resolve zero
-/// validators — the regression this test guards against.
+/// (d) `wire_core_workflow` seeds the shared validator cache with the cluster
+/// pubkeys. The scheduler resolves the current slot on start, so its validators
+/// request must carry those pubkeys in `ids`; an unseeded cache sends an empty
+/// `ids` and resolves zero validators.
 #[tokio::test]
-async fn wiring_seeds_shared_validator_cache() {
+async fn wiring_seeds_validator_cache() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
-    const V_IDX: u64 = 7;
-    mount_filtered_post_validators(mock.server(), vec![validator_datum(V_IDX, pubkey)]).await;
-
     let eth2_cl = mock.client().clone();
     let consensus = build_consensus(&ct);
 
-    // The clients are constructed with the shared, pubkey-seeded cache inside
-    // `wire_inputs` (mirroring production `node::run`). `BeaconNodeClient` clones
-    // share the same `Arc`-backed cache, so the seeded pubkeys are observable
-    // through these probes.
-    let inputs = wire_inputs(eth2_cl, pubkey, consensus, 1);
-    let beacon_probe = inputs.beacon_client.clone();
-    let submission_probe = inputs.submission_client.clone();
+    let _wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
 
-    let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+    const VALIDATORS: &str = "/eth/v1/beacon/states/head/validators";
+    wait_for_post(mock.server(), VALIDATORS).await;
+    let bodies: Vec<_> = mock
+        .server()
+        .received_requests()
         .await
-        .expect("wire did not deadlock")
-        .expect("wire succeeded");
-
-    for (name, probe) in [("beacon", beacon_probe), ("submission", submission_probe)] {
-        let active = tokio::time::timeout(GUARD, probe.active_validators())
-            .await
-            .unwrap_or_else(|_| panic!("(d) {name} client active_validators timed out"))
-            .unwrap_or_else(|e| panic!("(d) {name} client active_validators failed: {e}"));
-        assert_eq!(
-            active.get(&V_IDX),
-            Some(&pubkey_to_eth2(pubkey)),
-            "(d) the {name} client's cache should be seeded with the cluster pubkeys"
-        );
-    }
+        .expect("requests")
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == VALIDATORS)
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(
+        bodies.iter().all(|body| body.contains(&pubkey.to_string())),
+        "(d) validators requests should carry the cluster pubkeys, got: {bodies:?}"
+    );
 
     ct.cancel();
 }

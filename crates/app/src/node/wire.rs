@@ -252,17 +252,10 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node client used for scheduling.
-    pub beacon_client: BeaconNodeClient,
-    /// Beacon node API client used for fetching / dutydb / validatorapi.
+    /// Beacon node API client for everything except broadcasting.
     pub eth2_cl: EthBeaconNodeApiClient,
-    /// Submission beacon node client used for broadcasting.
-    pub submission_client: BeaconNodeClient,
-    /// Pubkey-scoped validator cache shared by the beacon/submission clients
-    /// and the validator API. A clone of the same `Arc`-backed cache seeded
-    /// into those clients, so the per-epoch trim + refresh subscriber wired
-    /// below refreshes every consumer at once.
-    pub validator_cache: ValidatorCache,
+    /// Beacon node API client for broadcasting, built with the submit timeout.
+    pub submission_api: EthBeaconNodeApiClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
     /// Current consensus implementation, from the controller. Forwards to the
@@ -426,10 +419,8 @@ pub async fn wire_core_workflow(
     let WireInputs {
         threshold,
         share_idx,
-        beacon_client,
         eth2_cl,
-        submission_client,
-        validator_cache,
+        submission_api,
         validators,
         consensus,
         builder_enabled,
@@ -457,14 +448,18 @@ pub async fn wire_core_workflow(
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
 
-    // The pubkey-scoped validator cache is built and seeded into the
-    // beacon/submission clients at construction (in `node::run`), and passed in
-    // here so the per-epoch trim + refresh subscriber registered below (and the
-    // validator API) share the same `Arc`-backed state.
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
         Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
     };
+
+    // ---- Beacon node clients ----
+    // Both clients, the per-epoch refresher and the validator API share one
+    // validator cache, so a single refresh serves every consumer.
+    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
+    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
+    let submission_client = BeaconNodeClient::new(submission_api, validator_cache.clone());
 
     // ---- Deadliners (one per component) ----
     //
