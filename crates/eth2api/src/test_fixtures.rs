@@ -635,3 +635,54 @@ pub(crate) fn fulu_beacon_block_body_fixture() -> electra::BeaconBlockBody {
 pub(crate) fn fulu_beacon_block_fixture() -> electra::BeaconBlock {
     electra_beacon_block_fixture()
 }
+
+pub(crate) fn deneb_blinded_beacon_block_fixture() -> deneb::BlindedBeaconBlock {
+    let block = deneb_beacon_block_fixture();
+    let body = block.body;
+    deneb::BlindedBeaconBlock {
+        slot: block.slot,
+        proposer_index: block.proposer_index,
+        parent_root: block.parent_root,
+        state_root: block.state_root,
+        body: deneb::BlindedBeaconBlockBody {
+            randao_reveal: body.randao_reveal,
+            eth1_data: body.eth1_data,
+            graffiti: body.graffiti,
+            proposer_slashings: body.proposer_slashings,
+            attester_slashings: body.attester_slashings,
+            attestations: body.attestations,
+            deposits: body.deposits,
+            voluntary_exits: body.voluntary_exits,
+            sync_aggregate: body.sync_aggregate,
+            execution_payload_header: deneb_execution_payload_header_fixture(),
+            bls_to_execution_changes: body.bls_to_execution_changes,
+            blob_kzg_commitments: body.blob_kzg_commitments,
+        },
+    }
+}
+
+pub(crate) fn electra_blinded_beacon_block_fixture() -> electra::BlindedBeaconBlock {
+    let block = electra_beacon_block_fixture();
+    let body = block.body;
+    electra::BlindedBeaconBlock {
+        slot: block.slot,
+        proposer_index: block.proposer_index,
+        parent_root: block.parent_root,
+        state_root: block.state_root,
+        body: electra::BlindedBeaconBlockBody {
+            randao_reveal: body.randao_reveal,
+            eth1_data: body.eth1_data,
+            graffiti: body.graffiti,
+            proposer_slashings: body.proposer_slashings,
+            attester_slashings: body.attester_slashings,
+            attestations: body.attestations,
+            deposits: body.deposits,
+            voluntary_exits: body.voluntary_exits,
+            sync_aggregate: body.sync_aggregate,
+            execution_payload_header: deneb_execution_payload_header_fixture(),
+            bls_to_execution_changes: body.bls_to_execution_changes,
+            blob_kzg_commitments: body.blob_kzg_commitments,
+            execution_requests: body.execution_requests,
+        },
+    }
+}

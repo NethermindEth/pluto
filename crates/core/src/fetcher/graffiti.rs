@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use pluto_eth2api::{EthBeaconNodeApiClient, GetNodeVersionRequest, GetNodeVersionResponse};
+use pluto_eth2api::EthBeaconNodeApiClient;
 
 use crate::{
     types::PubKey,
@@ -152,15 +152,9 @@ async fn fetch_beacon_node_token(eth2_cl: &EthBeaconNodeApiClient) -> String {
 /// Fetches the beacon node version string (e.g. `Lighthouse/v0.1.5 (Linux
 /// x86_64)`), or `None` on any error.
 async fn node_version(eth2_cl: &EthBeaconNodeApiClient) -> Option<String> {
-    match pluto_eth2api::instrument(
-        "node_version",
-        eth2_cl.get_node_version(GetNodeVersionRequest {}),
-    )
-    .await
-    {
-        Ok(GetNodeVersionResponse::Ok(resp)) => Some(resp.data.version),
-        _ => None,
-    }
+    pluto_eth2api::instrument("node_version", eth2_cl.get_node_version())
+        .await
+        .ok()
 }
 
 #[cfg(test)]

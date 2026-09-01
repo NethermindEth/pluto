@@ -16,7 +16,7 @@ pub enum BeaconNodeClientError {
 }
 
 /// Beacon node client with Charon/Pluto convenience state layered on top of the
-/// generated Beacon API client.
+/// Beacon API client.
 #[derive(Clone)]
 pub struct BeaconNodeClient {
     api: EthBeaconNodeApiClient,
@@ -35,7 +35,7 @@ impl BeaconNodeClient {
         }
     }
 
-    /// Returns the generated Beacon API client.
+    /// Returns the Beacon API client.
     pub fn api(&self) -> &EthBeaconNodeApiClient {
         &self.api
     }
@@ -67,19 +67,16 @@ impl BeaconNodeClient {
 mod tests {
     use super::*;
     use crate::{
-        GetStateValidatorsResponseResponse, GetStateValidatorsResponseResponseDatum,
-        ValidatorResponseValidator, ValidatorStatus, spec::phase0::BLSPubKey,
+        ValidatorsResponse,
+        spec::phase0::{self, BLSPubKey},
+        v1::{Validator, ValidatorStatus},
     };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
 
-    const EFFECTIVE_BALANCE: &str = "32000000000";
-    const ZERO_EPOCH: &str = "0";
-    const FAR_FUTURE_EPOCH: &str = "18446744073709551615";
-    const ZERO_WITHDRAWAL_CREDENTIALS: &str =
-        "0x0000000000000000000000000000000000000000000000000000000000000000";
+    const EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 
     #[tokio::test]
     async fn active_and_complete_validators_share_cache() {
@@ -88,16 +85,16 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data: vec![
-                        test_validator_datum(10, &pubkeys[0], ValidatorStatus::ActiveOngoing),
-                        test_validator_datum(11, &pubkeys[1], ValidatorStatus::PendingQueued),
+                        test_validator(10, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                        test_validator(11, &pubkeys[1], ValidatorStatus::PendingQueued),
                     ],
-                },
-            ))
+                }),
+            )
             .expect(1)
             .mount(&mock)
             .await;
@@ -124,24 +121,20 @@ mod tests {
         bytes
     }
 
-    fn test_validator_datum(
-        index: u64,
-        pubkey: &BLSPubKey,
-        status: ValidatorStatus,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: EFFECTIVE_BALANCE.to_string(),
+    fn test_validator(index: u64, pubkey: &BLSPubKey, status: ValidatorStatus) -> Validator {
+        Validator {
+            index,
+            balance: EFFECTIVE_BALANCE,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: format!("0x{}", hex::encode(pubkey)),
-                withdrawal_credentials: ZERO_WITHDRAWAL_CREDENTIALS.to_string(),
-                effective_balance: EFFECTIVE_BALANCE.to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: EFFECTIVE_BALANCE,
                 slashed: false,
-                activation_eligibility_epoch: ZERO_EPOCH.to_string(),
-                activation_epoch: ZERO_EPOCH.to_string(),
-                exit_epoch: FAR_FUTURE_EPOCH.to_string(),
-                withdrawable_epoch: FAR_FUTURE_EPOCH.to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }

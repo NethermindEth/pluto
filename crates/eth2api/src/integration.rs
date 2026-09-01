@@ -1,7 +1,4 @@
-use crate::{
-    ConsensusVersion, EthBeaconNodeApiClient, ForkSchedule, GetBlockHeaderRequest,
-    GetBlockHeaderRequestPath, GetBlockHeaderResponse,
-};
+use crate::{EthBeaconNodeApiClient, ForkSchedule, spec::DataVersion};
 use std::sync::{Arc, LazyLock, Weak};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -11,28 +8,18 @@ use testcontainers::{
 use tokio::sync::Mutex;
 
 #[tokio::test]
-async fn get_block_header_head_has_signature() {
+async fn get_block_header_head_decodes() {
     let bn = BeaconNodeContainer::shared().await;
     let client =
         EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
 
     let response = client
-        .get_block_header(GetBlockHeaderRequest {
-            path: GetBlockHeaderRequestPath {
-                block_id: "head".into(),
-            },
-        })
+        .get_block_header("head")
         .await
         .expect("Failed to get block header");
 
-    let GetBlockHeaderResponse::Ok(headers) = response else {
-        panic!("Expected Ok response, got: {:?}", response)
-    };
-
-    assert!(
-        !headers.data.header.signature.is_empty(),
-        "Signature should not be empty"
-    );
+    assert!(response.data.canonical, "head header should be canonical");
+    assert_ne!(response.data.root, [0; 32], "head root should be set");
 }
 
 #[tokio::test]
@@ -77,42 +64,42 @@ async fn fetch_fork_config() {
 
     let expected = vec![
         (
-            ConsensusVersion::Altair,
+            DataVersion::Altair,
             ForkSchedule {
                 epoch: 74240,
                 version: [1, 0, 0, 0],
             },
         ),
         (
-            ConsensusVersion::Bellatrix,
+            DataVersion::Bellatrix,
             ForkSchedule {
                 epoch: 144896,
                 version: [2, 0, 0, 0],
             },
         ),
         (
-            ConsensusVersion::Capella,
+            DataVersion::Capella,
             ForkSchedule {
                 epoch: 194048,
                 version: [3, 0, 0, 0],
             },
         ),
         (
-            ConsensusVersion::Deneb,
+            DataVersion::Deneb,
             ForkSchedule {
                 epoch: 269568,
                 version: [4, 0, 0, 0],
             },
         ),
         (
-            ConsensusVersion::Electra,
+            DataVersion::Electra,
             ForkSchedule {
                 epoch: 364032,
                 version: [5, 0, 0, 0],
             },
         ),
         (
-            ConsensusVersion::Fulu,
+            DataVersion::Fulu,
             ForkSchedule {
                 epoch: 411392,
                 version: [6, 0, 0, 0],

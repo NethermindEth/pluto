@@ -753,15 +753,14 @@ async fn resolve_active_validators(
 
     let mut validators = vec![];
     for (index, val) in complete.iter() {
-        let pubkey = types::PubKey::try_from(val.validator.pubkey.as_str())?;
+        let pubkey = types::PubKey::from(val.validator.pubkey);
 
         // Submit validator balance and status metrics.
         // Equivalent to Charon's `newMetricSubmitter` closure
         let pubkey_full = pubkey.to_string();
         let pubkey_abbrev = pubkey.abbreviated();
-        let balance = val.balance.parse::<u64>().unwrap_or_default();
         SCHEDULER_METRICS.validator_balance_gwei[&(pubkey_full.clone(), pubkey_abbrev.clone())]
-            .set(balance);
+            .set(val.balance);
 
         // Emulate Charon's `statusGauge.Reset(pubkey, ...)` in O(1) per
         // validator (see `submit_validator_status_metric`).
@@ -771,14 +770,8 @@ async fn resolve_active_validators(
         // Check for active validators for the given epoch.
         // The activation epoch needs to be checked in cases where this function
         // is called before the epoch starts.
-        if !val.status.is_active() {
-            let activation_epoch = val.validator.activation_epoch.parse::<u64>().map_err(|_| {
-                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("activation_epoch".into())
-            })?;
-
-            if activation_epoch != epoch {
-                continue;
-            }
+        if !val.status.is_active() && val.validator.activation_epoch != epoch {
+            continue;
         }
 
         validators.push(Validator {
@@ -814,29 +807,17 @@ async fn wait_chain_start(client: &pluto_eth2api::BeaconNodeClient) -> Result<()
 
 /// Blocks until the beacon node is synced.
 async fn wait_beacon_sync(client: &pluto_eth2api::BeaconNodeClient) -> Result<()> {
-    let fetch = || {
-        pluto_eth2api::instrument(
-            "node_syncing",
-            client
-                .api()
-                .get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {}),
-        )
-    };
+    let fetch = || pluto_eth2api::instrument("node_syncing", client.api().get_syncing_status());
     let fetch_backoff = crate::expbackoff::fast();
 
     let mut is_syncing_backoff = crate::expbackoff::default().build();
 
     loop {
-        let response: pluto_eth2api::GetSyncingStatusResponse = fetch
+        let state = fetch
             .retry(fetch_backoff)
             .notify(|err, _| tracing::error!(err = ?err, "Failure getting syncing status"))
             .await
             .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-
-        let state = match response {
-            pluto_eth2api::GetSyncingStatusResponse::Ok(syncing) => Ok(syncing.data),
-            _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
-        }?;
 
         if state.is_syncing {
             tracing::info!(
@@ -885,26 +866,17 @@ async fn fetch_attester_duties(
     client: &pluto_eth2api::BeaconNodeClient,
 ) -> Result<Vec<types::AttesterDutyDefinition>> {
     let validators = validators.as_ref();
-    let req = pluto_eth2api::GetAttesterDutiesRequest::builder()
-        .epoch(slot.epoch().to_string())
-        .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
-        .build()
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = pluto_eth2api::instrument("attester_duties", client.api().get_attester_duties(req))
-        .await
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-
-    let att_duties: Vec<types::AttesterDutyDefinition> = match resp {
-        pluto_eth2api::GetAttesterDutiesResponse::Ok(duties) => duties
-            .data
-            .into_iter()
-            .map(|d| {
-                d.try_into()
-                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
-            })
-            .collect::<std::result::Result<Vec<_>, _>>(),
-        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
-    }?;
+    let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
+    let att_duties: Vec<types::AttesterDutyDefinition> = pluto_eth2api::instrument(
+        "attester_duties",
+        client.api().get_attester_duties(slot.epoch(), &indices),
+    )
+    .await
+    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
+    .data
+    .into_iter()
+    .map(types::AttesterDutyDefinition::from)
+    .collect();
 
     let mut remaining = validators
         .iter()
@@ -1019,29 +991,19 @@ async fn fetch_sync_committee_duties(
     client: &pluto_eth2api::BeaconNodeClient,
 ) -> Result<Vec<types::SyncCommitteeDutyDefinition>> {
     let validators = validators.as_ref();
-    let req = pluto_eth2api::GetSyncCommitteeDutiesRequest::builder()
-        .epoch(slot.epoch().to_string())
-        .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
-        .build()
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = pluto_eth2api::instrument(
+    let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
+    let sync_duties: Vec<types::SyncCommitteeDutyDefinition> = pluto_eth2api::instrument(
         "sync_committee_duties",
-        client.api().get_sync_committee_duties(req),
+        client
+            .api()
+            .get_sync_committee_duties(slot.epoch(), &indices),
     )
     .await
-    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-
-    let sync_duties: Vec<types::SyncCommitteeDutyDefinition> = match resp {
-        pluto_eth2api::GetSyncCommitteeDutiesResponse::Ok(duties) => duties
-            .data
-            .into_iter()
-            .map(|d| {
-                d.try_into()
-                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
-            })
-            .collect::<std::result::Result<Vec<_>, _>>(),
-        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
-    }?;
+    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
+    .data
+    .into_iter()
+    .map(types::SyncCommitteeDutyDefinition::from)
+    .collect();
 
     let mut result = vec![];
     for sync_duty in sync_duties.into_iter() {
@@ -1075,10 +1037,7 @@ async fn fetch_sync_committee_duties(
 mod tests {
     use std::{collections::HashSet, time::Duration};
 
-    use pluto_eth2api::{
-        BeaconNodeClient, GetStateValidatorsResponseResponse,
-        GetStateValidatorsResponseResponseDatum,
-    };
+    use pluto_eth2api::{BeaconNodeClient, ValidatorsResponse, v1};
     use pluto_testutil::{BeaconMock, ValidatorSet};
     use wiremock::{
         Mock, ResponseTemplate,
@@ -1107,17 +1066,8 @@ mod tests {
     ///
     /// NOTE: the default mock only serves this endpoint over GET, but
     /// [`valcache::ValidatorCache::get_by_head`] queries it over POST.
-    fn validator_set_a_datums() -> Vec<GetStateValidatorsResponseResponseDatum> {
-        ValidatorSet::validator_set_a()
-            .validators()
-            .into_iter()
-            .map(|v| GetStateValidatorsResponseResponseDatum {
-                index: v.index.to_string(),
-                balance: v.balance.to_string(),
-                status: v.status,
-                validator: v.validator,
-            })
-            .collect()
+    fn validator_set_a_datums() -> Vec<v1::Validator> {
+        ValidatorSet::validator_set_a().validators()
     }
 
     /// `ValidatorSetA` validators with their real indexes but random pubkeys,
@@ -1135,19 +1085,16 @@ mod tests {
 
     /// Mounts the POST `/states/head/validators` endpoint used by
     /// [`valcache::ValidatorCache::get_by_head`].
-    async fn mount_head_validators(
-        mock: &BeaconMock,
-        data: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) {
+    async fn mount_head_validators(mock: &BeaconMock, data: Vec<v1::Validator>) {
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data,
-                },
-            ))
+                }),
+            )
             .mount(mock.server())
             .await;
     }
@@ -1195,17 +1142,16 @@ mod tests {
 
     /// Builds an attester duty definition for tests.
     fn test_attester_def(pubkey: types::PubKey, v_idx: u64, slot: u64) -> types::DutyDefinition {
-        let datum = pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum {
-            pubkey: pubkey.to_string(),
-            validator_index: v_idx.to_string(),
-            slot: slot.to_string(),
-            committee_index: "0".to_string(),
-            committee_length: "0".to_string(),
-            committees_at_slot: "0".to_string(),
-            validator_committee_index: "0".to_string(),
+        let duty = v1::AttesterDuty {
+            pubkey: pubkey.0,
+            validator_index: v_idx,
+            slot,
+            committee_index: 0,
+            committee_length: 0,
+            committees_at_slot: 0,
+            validator_committee_index: 0,
         };
-        let def: types::AttesterDutyDefinition = datum.try_into().expect("valid attester datum");
-        types::DutyDefinition::Attester(def)
+        types::DutyDefinition::Attester(types::AttesterDutyDefinition::from(duty))
     }
 
     /// Drives the actor's `run` loop with test-controlled channels.

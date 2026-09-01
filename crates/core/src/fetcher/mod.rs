@@ -9,15 +9,12 @@ pub use graffiti::{GraffitiBuilder, GraffitiError};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
-    GetAggregatedAttestationV2Response, GetAggregatedAttestationV2ResponseResponseData,
-    ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
-    ProduceBlockV3Response, ProduceSyncCommitteeContributionRequest,
-    ProduceSyncCommitteeContributionResponse,
-    spec::{ConversionError, altair, bellatrix::ExecutionAddress, phase0},
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, ProduceBlockOpts,
+    spec::{altair, bellatrix::ExecutionAddress, phase0},
     versioned,
 };
 use pluto_eth2util::eth2exp::{self, Eth2ExpError};
+use reqwest::StatusCode;
 use tree_hash::TreeHash;
 
 use crate::{
@@ -114,14 +111,6 @@ pub enum FetcherError {
     /// Error from aggregator selection.
     #[error(transparent)]
     Eth2Exp(#[from] Eth2ExpError),
-
-    /// JSON (de)serialization error while decoding a beacon node response.
-    #[error("decode beacon node response: {0}")]
-    Json(#[from] serde_json::Error),
-
-    /// Failed to convert a loosely-typed beacon node value into a spec type.
-    #[error("convert beacon node response: {0}")]
-    Conversion(#[from] ConversionError),
 
     /// Failed to decode a beacon node response into a signed-data type.
     #[error("decode proposal: {0}")]
@@ -351,24 +340,18 @@ impl Fetcher {
 
             let graffiti = self.graffiti_builder.get_graffiti(pubkey);
 
-            let request = ProduceBlockV3Request::builder()
-                .slot(slot.to_string())
-                .randao_reveal(format!("0x{}", hex::encode(randao)))
-                .graffiti(format!("0x{}", hex::encode(graffiti)))
-                .builder_boost_factor(builder_boost_factor.to_string())
-                .build()
-                .map_err(EthBeaconNodeApiClientError::RequestError)?;
+            let opts = ProduceBlockOpts {
+                slot,
+                randao_reveal: randao,
+                graffiti: Some(graffiti),
+                skip_randao_verification: false,
+                builder_boost_factor: Some(builder_boost_factor),
+            };
 
-            let response =
-                match pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(request))
+            let proposal =
+                pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(&opts))
                     .await
-                    .map_err(EthBeaconNodeApiClientError::RequestError)?
-                {
-                    ProduceBlockV3Response::Ok(resp) => resp,
-                    _ => return Err(FetcherError::UnexpectedResponse),
-                };
-
-            let proposal = VersionedProposal::try_from(&response)?;
+                    .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
             // Builders set the fee recipient to themselves, so it always
             // differs from the validator's; only verify when the
@@ -445,24 +428,15 @@ impl Fetcher {
 
     /// Queries the beacon node for attestation data.
     async fn attestation_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
-        let request = ProduceAttestationDataRequest::builder()
-            .slot(slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        match pluto_eth2api::instrument(
+        pluto_eth2api::instrument(
             "attestation_data",
-            self.eth2_cl.produce_attestation_data(request),
+            self.eth2_cl.produce_attestation_data(slot, comm_idx),
         )
         .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            ProduceAttestationDataResponse::Ok(ok) => {
-                Ok(phase0::AttestationData::try_from(&ok.data)?)
-            }
-            _ => Err(FetcherError::NilAttestationData),
-        }
+        .map_err(|err| match HttpError::from_error(&err) {
+            Some(_) => FetcherError::NilAttestationData,
+            None => EthBeaconNodeApiClientError::RequestError(err).into(),
+        })
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
@@ -472,31 +446,17 @@ impl Fetcher {
         comm_idx: u64,
         data_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
-        let request = GetAggregatedAttestationV2Request::builder()
-            .attestation_data_root(format!("0x{}", hex::encode(data_root)))
-            .slot(slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let ok = match pluto_eth2api::instrument(
+        pluto_eth2api::instrument(
             "aggregate_attestation",
-            self.eth2_cl.get_aggregated_attestation_v2(request),
+            self.eth2_cl
+                .get_aggregated_attestation_v2(slot, comm_idx, data_root),
         )
         .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            GetAggregatedAttestationV2Response::Ok(ok) => ok,
-            // Some beacon nodes return nil if the root is not found; surface a
-            // retryable error.
-            _ => return Err(FetcherError::AggregateAttestationNotFound),
-        };
-
-        let version = versioned::DataVersion::from(&ok.version);
-        Ok(versioned::VersionedAttestation {
-            version,
-            validator_index: None,
-            attestation: Some(attestation_payload(version, &ok.data)?),
+        .map_err(|err| match HttpError::from_error(&err) {
+            // Some beacon nodes answer 404 when the root is not found; surface
+            // a retryable error.
+            Some(_) => FetcherError::AggregateAttestationNotFound,
+            None => EthBeaconNodeApiClientError::RequestError(err).into(),
         })
     }
 
@@ -507,25 +467,19 @@ impl Fetcher {
         subcomm_idx: u64,
         block_root: phase0::Root,
     ) -> Result<altair::SyncCommitteeContribution> {
-        let request = ProduceSyncCommitteeContributionRequest::builder()
-            .slot(slot.to_string())
-            .subcommittee_index(subcomm_idx.to_string())
-            .beacon_block_root(format!("0x{}", hex::encode(block_root)))
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        match pluto_eth2api::instrument(
+        pluto_eth2api::instrument(
             "sync_committee_contribution",
-            self.eth2_cl.produce_sync_committee_contribution(request),
+            self.eth2_cl
+                .produce_sync_committee_contribution(slot, subcomm_idx, block_root),
         )
         .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            ProduceSyncCommitteeContributionResponse::Ok(payload) => {
-                Ok(altair::SyncCommitteeContribution::try_from(&payload.data)?)
+        .map_err(|err| match HttpError::from_error(&err) {
+            Some(http) if http.status == StatusCode::NOT_FOUND => {
+                FetcherError::SyncContributionNotFound
             }
-            _ => Err(FetcherError::SyncContributionNotFound),
-        }
+            Some(_) => FetcherError::UnexpectedResponse,
+            None => EthBeaconNodeApiClientError::RequestError(err).into(),
+        })
     }
 
     /// Invokes the AggSigDB resolver.
@@ -555,35 +509,6 @@ fn wrap(context: &'static str) -> impl Fn(FetcherError) -> FetcherError {
 /// Downcasts a `&dyn SignedData` to a concrete signed-data type.
 fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
     (data as &dyn std::any::Any).downcast_ref::<T>()
-}
-
-/// Builds a versioned attestation payload from the beacon node's aggregate
-/// attestation response.
-///
-/// The response carries the attestation as an untagged union: `Object2` is the
-/// phase0-style attestation returned up to Deneb, `Object` is the
-/// committee-aware Electra shape returned from Electra onwards.
-fn attestation_payload(
-    version: versioned::DataVersion,
-    data: &GetAggregatedAttestationV2ResponseResponseData,
-) -> Result<versioned::AttestationPayload> {
-    use GetAggregatedAttestationV2ResponseResponseData as GenData;
-    use versioned::{AttestationPayload as AP, DataVersion as DV};
-
-    Ok(match (version, data) {
-        (DV::Phase0, GenData::Object2(att)) => AP::Phase0(att.try_into()?),
-        (DV::Altair, GenData::Object2(att)) => AP::Altair(att.try_into()?),
-        (DV::Bellatrix, GenData::Object2(att)) => AP::Bellatrix(att.try_into()?),
-        (DV::Capella, GenData::Object2(att)) => AP::Capella(att.try_into()?),
-        (DV::Deneb, GenData::Object2(att)) => AP::Deneb(att.try_into()?),
-        (DV::Electra, GenData::Object(att)) => AP::Electra(att.try_into()?),
-        (DV::Fulu, GenData::Object(att)) => AP::Fulu(att.try_into()?),
-        // A spec-compliant beacon node never pairs a fork version with the
-        // other fork's attestation shape (e.g. an Electra version reporting a
-        // phase0-style body), and `version` is derived from a
-        // `ConsensusVersion`, so it is never `Unknown`.
-        _ => return Err(FetcherError::UnexpectedResponse),
-    })
 }
 
 /// Logs a warning when the fee recipient is not correctly populated in the

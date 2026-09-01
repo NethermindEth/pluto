@@ -5,12 +5,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
 use pluto_crypto::types::sig_to_eth2;
+pub use pluto_eth2api::versioned::{ProposalBlock, VersionedProposal};
 use pluto_eth2api::{
-    ConsensusVersion, ProduceBlockV3ResponseResponse,
-    spec::{
-        altair, bellatrix, capella, deneb, electra, phase0, serde_legacy_builder_version,
-        serde_legacy_data_version,
-    },
+    spec::{altair, deneb, phase0, serde_legacy_builder_version, serde_legacy_data_version},
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
@@ -54,12 +51,6 @@ pub enum SignedDataError {
     /// Invalid attestation wrapper JSON.
     #[error("unmarshal attestation")]
     AttestationJson,
-    /// A proposal response carried an unparsable block reward value.
-    #[error("invalid proposal block value: {0}")]
-    InvalidBlockValue(&'static str),
-    /// A versioned proposal response was missing the `block` field.
-    #[error("proposal response missing block field")]
-    MissingBlockField,
     /// Custom error.
     #[error("{0}")]
     Custom(Box<dyn std::error::Error + Send + Sync>),
@@ -1233,163 +1224,15 @@ impl VersionedAggregatedAttestation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncContribution(pub altair::SyncCommitteeContribution);
 
-/// Unsigned proposal block across all supported forks.
+/// JSON form of an unsigned [`VersionedProposal`] as exchanged between
+/// cluster nodes: `{version, block, blinded}`, mirroring charon's
+/// `VersionedProposal.UnmarshalJSON`. Shares the raw wrapper with
+/// [`VersionedSignedProposal`]. Block reward values are not part of the JSON
+/// form and default to zero (the validatorapi overrides them).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProposalBlock {
-    /// Phase0 beacon block.
-    Phase0(phase0::BeaconBlock),
-    /// Altair beacon block.
-    Altair(altair::BeaconBlock),
-    /// Bellatrix beacon block.
-    Bellatrix(bellatrix::BeaconBlock),
-    /// Bellatrix blinded beacon block.
-    BellatrixBlinded(bellatrix::BlindedBeaconBlock),
-    /// Capella beacon block.
-    Capella(capella::BeaconBlock),
-    /// Capella blinded beacon block.
-    CapellaBlinded(capella::BlindedBeaconBlock),
-    /// Deneb beacon block with KZG proofs and blobs.
-    Deneb {
-        /// Beacon block.
-        block: Box<deneb::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Deneb blinded beacon block.
-    DenebBlinded(deneb::BlindedBeaconBlock),
-    /// Electra beacon block with KZG proofs and blobs.
-    Electra {
-        /// Beacon block.
-        block: Box<electra::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Electra blinded beacon block.
-    ElectraBlinded(electra::BlindedBeaconBlock),
-    /// Fulu beacon block with KZG proofs and blobs (uses electra block type).
-    Fulu {
-        /// Beacon block.
-        block: Box<electra::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Fulu blinded beacon block (uses electra block type).
-    FuluBlinded(electra::BlindedBeaconBlock),
-}
+pub(crate) struct VersionedProposalJson(pub(crate) VersionedProposal);
 
-impl ProposalBlock {
-    /// Returns the fork version of this block.
-    pub fn version(&self) -> versioned::DataVersion {
-        match self {
-            Self::Phase0(_) => versioned::DataVersion::Phase0,
-            Self::Altair(_) => versioned::DataVersion::Altair,
-            Self::Bellatrix(_) | Self::BellatrixBlinded(_) => versioned::DataVersion::Bellatrix,
-            Self::Capella(_) | Self::CapellaBlinded(_) => versioned::DataVersion::Capella,
-            Self::Deneb { .. } | Self::DenebBlinded(_) => versioned::DataVersion::Deneb,
-            Self::Electra { .. } | Self::ElectraBlinded(_) => versioned::DataVersion::Electra,
-            Self::Fulu { .. } | Self::FuluBlinded(_) => versioned::DataVersion::Fulu,
-        }
-    }
-
-    /// Returns true if this is a blinded block.
-    pub fn is_blinded(&self) -> bool {
-        matches!(
-            self,
-            Self::BellatrixBlinded(_)
-                | Self::CapellaBlinded(_)
-                | Self::DenebBlinded(_)
-                | Self::ElectraBlinded(_)
-                | Self::FuluBlinded(_)
-        )
-    }
-
-    /// Returns the slot of this block.
-    pub fn slot(&self) -> phase0::Slot {
-        match self {
-            Self::Phase0(b) => b.slot,
-            Self::Altair(b) => b.slot,
-            Self::Bellatrix(b) => b.slot,
-            Self::BellatrixBlinded(b) => b.slot,
-            Self::Capella(b) => b.slot,
-            Self::CapellaBlinded(b) => b.slot,
-            Self::Deneb { block, .. } => block.slot,
-            Self::DenebBlinded(b) => b.slot,
-            Self::Electra { block, .. } => block.slot,
-            Self::ElectraBlinded(b) => b.slot,
-            Self::Fulu { block, .. } => block.slot,
-            Self::FuluBlinded(b) => b.slot,
-        }
-    }
-
-    /// Returns the tree-hash root of this block.
-    pub fn root(&self) -> phase0::Root {
-        match self {
-            Self::Phase0(b) => b.tree_hash_root().0,
-            Self::Altair(b) => b.tree_hash_root().0,
-            Self::Bellatrix(b) => b.tree_hash_root().0,
-            Self::BellatrixBlinded(b) => b.tree_hash_root().0,
-            Self::Capella(b) => b.tree_hash_root().0,
-            Self::CapellaBlinded(b) => b.tree_hash_root().0,
-            Self::Deneb { block, .. } => block.tree_hash_root().0,
-            Self::DenebBlinded(b) => b.tree_hash_root().0,
-            Self::Electra { block, .. } => block.tree_hash_root().0,
-            Self::ElectraBlinded(b) => b.tree_hash_root().0,
-            Self::Fulu { block, .. } => block.tree_hash_root().0,
-            Self::FuluBlinded(b) => b.tree_hash_root().0,
-        }
-    }
-}
-
-/// Unsigned versioned proposal across all supported forks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionedProposal {
-    /// Unsigned block payload.
-    pub block: ProposalBlock,
-    /// Consensus block reward, in Wei. The pipeline does not persist the
-    /// upstream v3 produce-block reward; the validatorapi `Proposal`
-    /// handler overrides this to `1` before returning so the value is
-    /// unified across nodes.
-    pub consensus_block_value: U256,
-    /// Execution payload value, in Wei. See
-    /// [`Self::consensus_block_value`] for the override rationale.
-    pub execution_payload_value: U256,
-}
-
-impl VersionedProposal {
-    /// Returns the fork version, derived from the block variant.
-    pub fn version(&self) -> versioned::DataVersion {
-        self.block.version()
-    }
-
-    /// Returns true if this is a blinded proposal, derived from the block
-    /// variant.
-    pub fn is_blinded(&self) -> bool {
-        self.block.is_blinded()
-    }
-
-    /// Returns the slot of the proposal block.
-    pub fn slot(&self) -> phase0::Slot {
-        self.block.slot()
-    }
-
-    /// Returns the tree-hash root of the proposal block.
-    pub fn root(&self) -> phase0::Root {
-        self.block.root()
-    }
-}
-
-impl<'de> Deserialize<'de> for VersionedProposal {
-    /// Mirrors charon's `VersionedProposal.UnmarshalJSON`: dispatches the raw
-    /// `block` JSON to the per-fork [`ProposalBlock`] variant selected by
-    /// `(version, blinded)`. Shares the `{version, block, blinded}` raw wrapper
-    /// with [`VersionedSignedProposal`]. Block reward values are not present in
-    /// the JSON form and default to zero (the validatorapi overrides them).
+impl<'de> Deserialize<'de> for VersionedProposalJson {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -1462,90 +1305,11 @@ impl<'de> Deserialize<'de> for VersionedProposal {
         }
         .map_err(serde::de::Error::custom)?;
 
-        Ok(VersionedProposal {
+        Ok(VersionedProposalJson(VersionedProposal {
             block,
             consensus_block_value: U256::ZERO,
             execution_payload_value: U256::ZERO,
-        })
-    }
-}
-
-impl TryFrom<&ProduceBlockV3ResponseResponse> for VersionedProposal {
-    type Error = SignedDataError;
-
-    /// Builds an unsigned proposal from a `produce_block_v3` response,
-    /// selecting the block variant by `(version, blinded)`.
-    fn try_from(resp: &ProduceBlockV3ResponseResponse) -> Result<Self, Self::Error> {
-        let data = serde_json::to_value(&resp.data)?;
-        let blinded = resp.execution_payload_blinded;
-
-        let block = match (&resp.version, blinded) {
-            (ConsensusVersion::Phase0, _) => ProposalBlock::Phase0(json_from(&data)?),
-            (ConsensusVersion::Altair, _) => ProposalBlock::Altair(json_from(&data)?),
-            (ConsensusVersion::Bellatrix, false) => ProposalBlock::Bellatrix(json_from(&data)?),
-            (ConsensusVersion::Bellatrix, true) => {
-                ProposalBlock::BellatrixBlinded(json_from(&data)?)
-            }
-            (ConsensusVersion::Capella, false) => ProposalBlock::Capella(json_from(&data)?),
-            (ConsensusVersion::Capella, true) => ProposalBlock::CapellaBlinded(json_from(&data)?),
-            (ConsensusVersion::Deneb, false) => ProposalBlock::Deneb {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Deneb, true) => ProposalBlock::DenebBlinded(json_from(&data)?),
-            (ConsensusVersion::Electra, false) => ProposalBlock::Electra {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Electra, true) => ProposalBlock::ElectraBlinded(json_from(&data)?),
-            (ConsensusVersion::Fulu, false) => ProposalBlock::Fulu {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Fulu, true) => ProposalBlock::FuluBlinded(json_from(&data)?),
-        };
-
-        let consensus_block_value = resp
-            .consensus_block_value
-            .parse()
-            .map_err(|_| SignedDataError::InvalidBlockValue("consensus_block_value"))?;
-        let execution_payload_value = resp
-            .execution_payload_value
-            .parse()
-            .map_err(|_| SignedDataError::InvalidBlockValue("execution_payload_value"))?;
-
-        Ok(VersionedProposal {
-            block,
-            consensus_block_value,
-            execution_payload_value,
-        })
-    }
-}
-
-/// Deserializes a JSON value into `T`.
-fn json_from<T: serde::de::DeserializeOwned>(
-    value: &serde_json::Value,
-) -> Result<T, SignedDataError> {
-    Ok(serde_json::from_value(value.clone())?)
-}
-
-/// Returns the `block` field of a Deneb+ versioned block contents object.
-fn block_field(value: &serde_json::Value) -> Result<&serde_json::Value, SignedDataError> {
-    value.get("block").ok_or(SignedDataError::MissingBlockField)
-}
-
-/// Deserializes the named field of `value` into `T`, defaulting to `T::default`
-/// when absent.
-fn json_from_field<T: serde::de::DeserializeOwned + Default>(
-    value: &serde_json::Value,
-    field: &str,
-) -> Result<T, SignedDataError> {
-    match value.get(field) {
-        Some(v) => Ok(serde_json::from_value(v.clone())?),
-        None => Ok(T::default()),
+        }))
     }
 }
 
@@ -3006,26 +2770,5 @@ mod tests {
             assert_eq!(Some(&data), wrapped.data());
             assert_eq!(Some(aggregation_bits.clone()), wrapped.aggregation_bits());
         }
-    }
-
-    #[test]
-    fn versioned_proposal_from_produce_block_response() {
-        // Electra block contents `{block, kzg_proofs, blobs}` from the golden
-        // fixture, wrapped as a `produce_block_v3` response.
-        let golden = load_signeddata_fixture("TestJSONSerialisation_VersionedProposal.json.golden");
-        let resp: ProduceBlockV3ResponseResponse = serde_json::from_value(serde_json::json!({
-            "version": "electra",
-            "execution_payload_blinded": false,
-            "execution_payload_value": "11",
-            "consensus_block_value": "22",
-            "data": golden["block"],
-        }))
-        .expect("deserialize produce_block_v3 response");
-
-        let proposal = VersionedProposal::try_from(&resp).expect("convert");
-        assert!(matches!(proposal.block, ProposalBlock::Electra { .. }));
-        assert_eq!(proposal.version(), versioned::DataVersion::Electra);
-        assert_eq!(proposal.execution_payload_value, U256::from(11));
-        assert_eq!(proposal.consensus_block_value, U256::from(22));
     }
 }

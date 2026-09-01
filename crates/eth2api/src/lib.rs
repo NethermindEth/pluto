@@ -6,10 +6,8 @@
 /// HTTP client for a single beacon node.
 pub mod client;
 
-/// Beacon API request and response types.
-#[allow(missing_docs)]
-#[allow(clippy::all)]
-#[rustfmt::skip]
+/// Client-level Beacon API types: request options, response envelopes and
+/// error bodies.
 pub mod types;
 
 pub use client::*;

@@ -13,22 +13,31 @@ use serde::{
 
 pub use pluto_crypto::types::{PublicKey as BlsPubKey, Signature as BlsSignature};
 pub use pluto_eth2api::{
-    GetAttesterDutiesResponseResponse as AttesterDutiesResponse,
-    GetAttesterDutiesResponseResponseDatum as AttesterDuty,
-    GetProposerDutiesResponseResponse as ProposerDutiesResponse,
-    GetProposerDutiesResponseResponseDatum as ProposerDuty,
-    GetStateValidatorsResponseResponseDatum as Validator,
-    GetSyncCommitteeDutiesResponseResponse as SyncCommitteeDutiesResponse,
-    GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
-    GetVersionResponseResponse as NodeVersionResponse,
-    GetVersionResponseResponseData as NodeVersionData,
+    AttesterDutiesResponse, ProposerDutiesResponse, SyncCommitteeDutiesResponse,
     spec::{
         altair::{SignedContributionAndProof, SyncCommitteeContribution, SyncCommitteeMessage},
         phase0::{self, Epoch, Root, Slot, ValidatorIndex},
     },
-    v1::{BeaconCommitteeSelection, SyncCommitteeSelection},
+    v1::{
+        AttesterDuty, BeaconCommitteeSelection, ProposerDuty, SyncCommitteeDuty,
+        SyncCommitteeSelection, Validator,
+    },
     versioned,
 };
+
+/// Response of the `node/version` endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVersionResponse {
+    /// Version payload.
+    pub data: NodeVersionData,
+}
+
+/// Payload of the `node/version` endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVersionData {
+    /// Client version string.
+    pub version: String,
+}
 
 /// Attestation data alias for the consensus-spec phase0 type.
 pub type AttestationData = phase0::AttestationData;
@@ -55,9 +64,8 @@ pub struct EthResponse<T> {
 pub struct AttesterDutiesOpts {
     /// Epoch to fetch duties for.
     pub epoch: Epoch,
-    /// Validator indices to fetch duties for. Carried as strings since the
-    /// upstream auto-generated client takes string-typed indices.
-    pub indices: Vec<String>,
+    /// Validator indices to fetch duties for.
+    pub indices: Vec<ValidatorIndex>,
 }
 
 /// Options for
@@ -74,9 +82,8 @@ pub struct ProposerDutiesOpts {
 pub struct SyncCommitteeDutiesOpts {
     /// Epoch to fetch duties for.
     pub epoch: Epoch,
-    /// Validator indices to fetch duties for. Carried as strings since the
-    /// upstream auto-generated client takes string-typed indices.
-    pub indices: Vec<String>,
+    /// Validator indices to fetch duties for.
+    pub indices: Vec<ValidatorIndex>,
 }
 
 /// Options for
@@ -207,10 +214,15 @@ pub struct SignedVoluntaryExit(
 /// `sync_committee_duties` endpoints.
 ///
 /// Accepts both numeric (`[1, 2]`) and string-encoded (`["1", "2"]`) JSON
-/// arrays. Indices are stored as decimal strings so they pass straight through
-/// to the auto-generated request builders.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct ValIndexes(pub Vec<String>);
+/// arrays and serializes as decimal strings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValIndexes(pub Vec<ValidatorIndex>);
+
+impl Serialize for ValIndexes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(u64::to_string))
+    }
+}
 
 /// Hard cap on the number of validator indices accepted per request. A real
 /// cluster has at most a few hundred validators; the cap is set generously
@@ -261,10 +273,9 @@ impl<'de> Deserialize<'de> for ValIndexes {
     }
 }
 
-/// One validator-index element. Accepts either a JSON number (formatted into
-/// a decimal string) or a JSON string (validated as a `u64` then kept
-/// verbatim). Single-pass; no untagged-enum buffering.
-struct Element(String);
+/// One validator-index element. Accepts either a JSON number or a decimal
+/// JSON string. Single-pass; no untagged-enum buffering.
+struct Element(ValidatorIndex);
 
 impl<'de> Deserialize<'de> for Element {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -281,18 +292,17 @@ impl<'de> Deserialize<'de> for Element {
             }
 
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(Element(v.to_string()))
+                Ok(Element(v))
             }
 
             fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
                 u64::try_from(v)
-                    .map(|n| Element(n.to_string()))
+                    .map(Element)
                     .map_err(|_| de::Error::custom("validator index must be non-negative"))
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                v.parse::<u64>().map_err(de::Error::custom)?;
-                Ok(Element(v.to_owned()))
+                v.parse::<u64>().map(Element).map_err(de::Error::custom)
             }
         }
 

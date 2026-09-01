@@ -7,35 +7,25 @@
 //! `DomainBeaconProposer`, and POST the signed block (or signed blinded block)
 //! back. Also ports `Register` for builder validator registrations using
 //! `DomainApplicationBuilder` over epoch 0.
-//!
-//! The Go code carries Phase0/Altair branches that the Pluto Rust client
-//! surface barely supports today; those branches return
-//! [`Error::UnsupportedVariant`] until typed support lands. The Bellatrix ->
-//! Fulu range — and their blinded variants — is implemented in full.
 
 use pluto_eth2api::{
-    BlockRequestBody, BlockRequestBodyObject, BlockRequestBodyObject2, BlockRequestBodyObject3,
-    BlockRequestBodyObject4, BlockRequestBodyObject5, ConsensusVersion,
-    DenebSignedBlockContentsSignedBlock, EthBeaconNodeApiClient,
-    GetBlindedBlockResponseResponseData, GetBlindedBlockResponseResponseDataObject,
-    GetBlindedBlockResponseResponseDataObject2, GetBlindedBlockResponseResponseDataObject3,
-    GetBlindedBlockResponseResponseDataObject4, GetProposerDutiesRequest,
-    GetProposerDutiesResponse, ProduceBlockV3Request, ProduceBlockV3Response,
-    ProduceBlockV3ResponseResponse, PublishBlindedBlockV2Request, PublishBlockV2Request,
-    PublishBlockV2Response, RegisterValidatorRequest, RegisterValidatorRequestBodyItem,
-    RegisterValidatorResponse, SignedBlockContentsSignedBlock, SignedValidatorRegistrationMessage,
+    EthBeaconNodeApiClient, ProduceBlockOpts,
     spec::{
-        BuilderVersion, bellatrix, capella, deneb, electra,
+        BuilderVersion, altair, bellatrix, capella, deneb, electra, fulu, phase0,
         phase0::{BLSPubKey, BLSSignature, Root, Slot},
     },
-    versioned::VersionedSignedValidatorRegistration,
+    v1,
+    versioned::{
+        ProposalBlock, SignedBlindedProposalBlock, SignedProposalBlock,
+        VersionedSignedBlindedProposal, VersionedSignedProposal,
+        VersionedSignedValidatorRegistration,
+    },
 };
 use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{DomainName, get_data_root},
     types::SignedEpoch,
 };
-use serde_json::Value;
 use tree_hash::TreeHash;
 
 use super::{
@@ -70,22 +60,17 @@ pub async fn propose_block(
 
     let epoch = epoch_from_slot(client, slot).await?;
 
-    let request = GetProposerDutiesRequest::builder()
-        .epoch(epoch.to_string())
-        .build()
-        .map_err(|err| Error::Malformed(format!("build proposer duties request: {err}")))?;
+    let duties = client
+        .get_proposer_duties(epoch)
+        .await
+        .map_err(|err| Error::Malformed(format!("proposer duties: {err:#}")))?
+        .data;
 
-    let duties = match client.get_proposer_duties(request).await {
-        Ok(GetProposerDutiesResponse::Ok(resp)) => resp.data,
-        Ok(_) => return Err(Error::Malformed("proposer duties response".to_string())),
-        Err(err) => return Err(Error::Malformed(format!("proposer duties: {err}"))),
-    };
-
-    let Some(duty) = duties.iter().find(|d| d.slot == slot.to_string()) else {
+    let Some(duty) = duties.iter().find(|d| d.slot == slot) else {
         // Go returns nil when this validator is not the slot proposer.
         return Ok(());
     };
-    let pubkey = parse_pubkey(&duty.pubkey)?;
+    let pubkey = duty.pubkey;
 
     // RANDAO reveal: tree-hash the eth2util `SignedEpoch{epoch, zero-sig}` and
     // sign it under `DomainRandao` at the slot's epoch.
@@ -101,59 +86,36 @@ pub async fn propose_block(
     let randao = signer.sign(&pubkey, &randao_sig_data)?;
 
     // Fetch the unsigned proposal from /eth/v3/validator/blocks/{slot}.
-    let proposal_request = ProduceBlockV3Request::builder()
-        .slot(slot.to_string())
-        .randao_reveal(format_signature(randao))
-        .build()
-        .map_err(|err| Error::Malformed(format!("build produce-block request: {err}")))?;
+    let proposal = client
+        .produce_block_v3(&ProduceBlockOpts {
+            slot,
+            randao_reveal: randao,
+            graffiti: None,
+            skip_randao_verification: false,
+            builder_boost_factor: None,
+        })
+        .await
+        .map_err(|err| Error::Malformed(format!("vmock beacon block proposal: {err:#}")))?;
 
-    let proposal_resp = match client.produce_block_v3(proposal_request).await {
-        Ok(ProduceBlockV3Response::Ok(resp)) => resp,
-        Ok(_) => {
-            return Err(Error::Malformed(
-                "produce-block-v3 non-success response".to_string(),
-            ));
-        }
-        Err(err) => {
-            return Err(Error::Malformed(format!(
-                "vmock beacon block proposal: {err}"
-            )));
-        }
-    };
+    let version = proposal.version();
+    let signature = sign_with_proposer(signer, &pubkey, client, epoch, proposal.root()).await?;
 
-    let version = proposal_resp.version.clone();
-    let blinded = proposal_resp.execution_payload_blinded;
-
-    if blinded {
-        let body = build_blinded_body(&proposal_resp, &pubkey, signer, client, epoch).await?;
-        let request = PublishBlindedBlockV2Request::builder()
-            .eth_consensus_version(version)
-            .body(body)
-            .build()
-            .map_err(|err| Error::Malformed(format!("build blinded-publish request: {err}")))?;
-
-        match client.publish_blinded_block_v2(request).await {
-            Ok(PublishBlockV2Response::Ok | PublishBlockV2Response::Accepted) => Ok(()),
-            Ok(_) => Err(Error::Malformed(
-                "publish-blinded-block-v2 unexpected response".to_string(),
-            )),
-            Err(err) => Err(Error::Malformed(format!("publish-blinded-block-v2: {err}"))),
-        }
-    } else {
-        let body = build_block_body(&proposal_resp, &pubkey, signer, client, epoch).await?;
-        let request = PublishBlockV2Request::builder()
-            .eth_consensus_version(version)
-            .body(body)
-            .build()
-            .map_err(|err| Error::Malformed(format!("build publish-block request: {err}")))?;
-
-        match client.publish_block_v2(request).await {
-            Ok(PublishBlockV2Response::Ok | PublishBlockV2Response::Accepted) => Ok(()),
-            Ok(_) => Err(Error::Malformed(
-                "publish-block-v2 unexpected response".to_string(),
-            )),
-            Err(err) => Err(Error::Malformed(format!("publish-block-v2: {err}"))),
-        }
+    match sign_proposal(proposal.block, signature) {
+        SignedBlock::Full(block) => client
+            .publish_block_v2(
+                &VersionedSignedProposal {
+                    version,
+                    blinded: false,
+                    block,
+                },
+                None,
+            )
+            .await
+            .map_err(|err| Error::Malformed(format!("publish-block-v2: {err:#}"))),
+        SignedBlock::Blinded(block) => client
+            .publish_blinded_block_v2(&VersionedSignedBlindedProposal { version, block }, None)
+            .await
+            .map_err(|err| Error::Malformed(format!("publish-blinded-block-v2: {err:#}"))),
     }
 }
 
@@ -186,169 +148,110 @@ pub async fn register(
                 .v1
                 .as_ref()
                 .ok_or(Error::UnsupportedVariant("missing v1 payload"))?;
-            let body_item = RegisterValidatorRequestBodyItem {
-                message: SignedValidatorRegistrationMessage {
-                    fee_recipient: format!("0x{}", hex::encode(inner.message.fee_recipient)),
-                    gas_limit: inner.message.gas_limit.to_string(),
-                    pubkey: format!("0x{}", hex::encode(inner.message.pubkey)),
-                    timestamp: inner.message.timestamp.to_string(),
-                },
-                signature: format_signature(sig),
+            let signed = v1::SignedValidatorRegistration {
+                message: inner.message.clone(),
+                signature: sig,
             };
-            let request = RegisterValidatorRequest::builder()
-                .body(vec![body_item])
-                .build()
-                .map_err(|err| Error::Malformed(format!("build register request: {err}")))?;
 
-            match client.register_validator(request).await {
-                Ok(RegisterValidatorResponse::Ok) => Ok(()),
-                Ok(_) => Err(Error::Malformed(
-                    "register-validator unexpected response".to_string(),
-                )),
-                Err(err) => Err(Error::Malformed(format!("register-validator: {err}"))),
-            }
+            client
+                .register_validator(&[signed])
+                .await
+                .map_err(|err| Error::Malformed(format!("register-validator: {err:#}")))
         }
         BuilderVersion::Unknown => Err(Error::UnsupportedVariant("registration version")),
     }
 }
 
-async fn build_block_body(
-    resp: &ProduceBlockV3ResponseResponse,
-    pubkey: &BLSPubKey,
-    signer: &super::SignFunc,
-    client: &EthBeaconNodeApiClient,
-    epoch: u64,
-) -> Result<BlockRequestBody> {
-    let block_value = serde_json::to_value(&resp.data)
-        .map_err(|err| Error::Malformed(format!("serialise produce-block data: {err}")))?;
-
-    match resp.version {
-        ConsensusVersion::Capella => {
-            let block: capella::BeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(BlockRequestBody::Object4(BlockRequestBodyObject4 {
-                message: json_to_value(&block)?,
-                signature: format_signature(signature),
-            }))
-        }
-        ConsensusVersion::Deneb => {
-            let inner = block_field(&block_value)?;
-            let block: deneb::BeaconBlock = json_from_value(inner)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(BlockRequestBody::Object3(BlockRequestBodyObject3 {
-                blobs: json_array_strings(&block_value, "blobs"),
-                kzg_proofs: json_array_strings(&block_value, "kzg_proofs"),
-                signed_block: DenebSignedBlockContentsSignedBlock {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
-            }))
-        }
-        ConsensusVersion::Electra => {
-            let inner = block_field(&block_value)?;
-            let block: electra::BeaconBlock = json_from_value(inner)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(BlockRequestBody::Object2(BlockRequestBodyObject2 {
-                blobs: json_array_strings(&block_value, "blobs"),
-                kzg_proofs: json_array_strings(&block_value, "kzg_proofs"),
-                signed_block: SignedBlockContentsSignedBlock {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
-            }))
-        }
-        ConsensusVersion::Fulu => {
-            // Fulu reuses the Electra BeaconBlock layout.
-            let inner = block_field(&block_value)?;
-            let block: electra::BeaconBlock = json_from_value(inner)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(BlockRequestBody::Object(BlockRequestBodyObject {
-                blobs: json_array_strings(&block_value, "blobs"),
-                kzg_proofs: json_array_strings(&block_value, "kzg_proofs"),
-                signed_block: SignedBlockContentsSignedBlock {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
-            }))
-        }
-        ConsensusVersion::Bellatrix => {
-            let block: bellatrix::BeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(BlockRequestBody::Object5(BlockRequestBodyObject5 {
-                message: json_to_value(&block)?,
-                signature: format_signature(signature),
-            }))
-        }
-        ConsensusVersion::Phase0 | ConsensusVersion::Altair => {
-            Err(Error::UnsupportedVariant("phase0/altair block"))
-        }
-    }
+/// A signed proposal, routed to the publish endpoint matching its shape.
+enum SignedBlock {
+    Full(SignedProposalBlock),
+    Blinded(SignedBlindedProposalBlock),
 }
 
-async fn build_blinded_body(
-    resp: &ProduceBlockV3ResponseResponse,
-    pubkey: &BLSPubKey,
-    signer: &super::SignFunc,
-    client: &EthBeaconNodeApiClient,
-    epoch: u64,
-) -> Result<GetBlindedBlockResponseResponseData> {
-    let block_value = serde_json::to_value(&resp.data)
-        .map_err(|err| Error::Malformed(format!("serialise produce-block data: {err}")))?;
-
-    match resp.version {
-        ConsensusVersion::Bellatrix => {
-            let block: bellatrix::BlindedBeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(GetBlindedBlockResponseResponseData::Object4(
-                GetBlindedBlockResponseResponseDataObject4 {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
+/// Attaches `signature` to an unsigned proposal block.
+fn sign_proposal(block: ProposalBlock, signature: BLSSignature) -> SignedBlock {
+    match block {
+        ProposalBlock::Phase0(message) => {
+            SignedBlock::Full(SignedProposalBlock::Phase0(phase0::SignedBeaconBlock {
+                message,
+                signature,
+            }))
+        }
+        ProposalBlock::Altair(message) => {
+            SignedBlock::Full(SignedProposalBlock::Altair(altair::SignedBeaconBlock {
+                message,
+                signature,
+            }))
+        }
+        ProposalBlock::Bellatrix(message) => SignedBlock::Full(SignedProposalBlock::Bellatrix(
+            bellatrix::SignedBeaconBlock { message, signature },
+        )),
+        ProposalBlock::Capella(message) => {
+            SignedBlock::Full(SignedProposalBlock::Capella(capella::SignedBeaconBlock {
+                message,
+                signature,
+            }))
+        }
+        ProposalBlock::Deneb {
+            block,
+            kzg_proofs,
+            blobs,
+        } => SignedBlock::Full(SignedProposalBlock::Deneb(deneb::SignedBlockContents {
+            signed_block: deneb::SignedBeaconBlock {
+                message: *block,
+                signature,
+            },
+            kzg_proofs,
+            blobs,
+        })),
+        ProposalBlock::Electra {
+            block,
+            kzg_proofs,
+            blobs,
+        } => SignedBlock::Full(SignedProposalBlock::Electra(electra::SignedBlockContents {
+            signed_block: electra::SignedBeaconBlock {
+                message: *block,
+                signature,
+            },
+            kzg_proofs,
+            blobs,
+        })),
+        ProposalBlock::Fulu {
+            block,
+            kzg_proofs,
+            blobs,
+        } => SignedBlock::Full(SignedProposalBlock::Fulu(fulu::SignedBlockContents {
+            signed_block: electra::SignedBeaconBlock {
+                message: *block,
+                signature,
+            },
+            kzg_proofs,
+            blobs,
+        })),
+        ProposalBlock::BellatrixBlinded(message) => {
+            SignedBlock::Blinded(SignedBlindedProposalBlock::Bellatrix(
+                bellatrix::SignedBlindedBeaconBlock { message, signature },
             ))
         }
-        ConsensusVersion::Capella => {
-            let block: capella::BlindedBeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(GetBlindedBlockResponseResponseData::Object3(
-                GetBlindedBlockResponseResponseDataObject3 {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
+        ProposalBlock::CapellaBlinded(message) => {
+            SignedBlock::Blinded(SignedBlindedProposalBlock::Capella(
+                capella::SignedBlindedBeaconBlock { message, signature },
             ))
         }
-        ConsensusVersion::Deneb => {
-            let block: deneb::BlindedBeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(GetBlindedBlockResponseResponseData::Object2(
-                GetBlindedBlockResponseResponseDataObject2 {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
+        ProposalBlock::DenebBlinded(message) => {
+            SignedBlock::Blinded(SignedBlindedProposalBlock::Deneb(
+                deneb::SignedBlindedBeaconBlock { message, signature },
             ))
         }
-        ConsensusVersion::Electra | ConsensusVersion::Fulu => {
-            // Go aliases Fulu blinded to Electra's blinded block type, so both
-            // map onto Pluto's Electra blinded variant.
-            let block: electra::BlindedBeaconBlock = json_from_value(&block_value)?;
-            let root = block.tree_hash_root().0;
-            let signature = sign_with_proposer(signer, pubkey, client, epoch, root).await?;
-            Ok(GetBlindedBlockResponseResponseData::Object(
-                GetBlindedBlockResponseResponseDataObject {
-                    message: json_to_value(&block)?,
-                    signature: format_signature(signature),
-                },
+        ProposalBlock::ElectraBlinded(message) => {
+            SignedBlock::Blinded(SignedBlindedProposalBlock::Electra(
+                electra::SignedBlindedBeaconBlock { message, signature },
             ))
         }
-        ConsensusVersion::Phase0 | ConsensusVersion::Altair => {
-            Err(Error::UnsupportedVariant("phase0/altair blinded block"))
+        ProposalBlock::FuluBlinded(message) => {
+            SignedBlock::Blinded(SignedBlindedProposalBlock::Fulu(
+                electra::SignedBlindedBeaconBlock { message, signature },
+            ))
         }
     }
 }
@@ -362,47 +265,6 @@ async fn sign_with_proposer(
 ) -> Result<BLSSignature> {
     let sig_data = get_data_root(client, DomainName::BeaconProposer, epoch, message_root).await?;
     Ok(signer.sign(pubkey, &sig_data)?)
-}
-
-fn parse_pubkey(s: &str) -> Result<BLSPubKey> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|err| Error::Malformed(err.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::Malformed(format!("pubkey length {} != 48", bytes.len())))
-}
-
-fn format_signature(sig: BLSSignature) -> String {
-    format!("0x{}", hex::encode(sig))
-}
-
-fn json_from_value<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T> {
-    serde_json::from_value(value.clone())
-        .map_err(|err| Error::Malformed(format!("decode block message: {err}")))
-}
-
-fn json_to_value<T: serde::Serialize>(value: &T) -> Result<Value> {
-    serde_json::to_value(value)
-        .map_err(|err| Error::Malformed(format!("encode signed block: {err}")))
-}
-
-fn block_field(value: &Value) -> Result<&Value> {
-    value.get("block").ok_or_else(|| {
-        Error::Malformed("missing `block` field in produce-block response".to_string())
-    })
-}
-
-fn json_array_strings(value: &Value, field: &str) -> Vec<String> {
-    value
-        .get(field)
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -465,24 +327,12 @@ mod tests {
     }
 
     /// Mounts a POST handler for the validators endpoint mirroring the GET
-    /// default served by [`BeaconMock`]. The generated client uses POST for
-    /// filtered validator queries; [`super::super::active_validators`] dials
-    /// that route. Priority `1` wins over any default.
+    /// default served by [`BeaconMock`]. The client uses POST for filtered
+    /// validator queries; [`super::super::active_validators`] dials that
+    /// route. Priority `1` wins over any default.
     async fn mount_post_validators(server: &wiremock::MockServer, set: &ValidatorSet) {
-        let data: Vec<Value> = set
-            .validators()
-            .into_iter()
-            .map(|validator| {
-                json!({
-                    "index": validator.index.to_string(),
-                    "balance": validator.balance.to_string(),
-                    "status": validator.status,
-                    "validator": validator.validator,
-                })
-            })
-            .collect();
         let body = json!({
-            "data": data,
+            "data": set.validators(),
             "execution_optimistic": false,
             "finalized": false,
         });

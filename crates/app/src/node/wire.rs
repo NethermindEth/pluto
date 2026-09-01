@@ -1272,15 +1272,14 @@ mod tests {
     use super::*;
     use pluto_core::types::SlotNumber;
     use pluto_eth2api::{
-        BlindedBlock400Response, GetStateValidatorsResponseResponse,
-        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+        ErrorBody, ValidatorsResponse,
+        spec::phase0,
+        v1::{Validator, ValidatorStatus},
     };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
-
-    const FAR_FUTURE_EPOCH: &str = "18446744073709551615";
 
     fn test_pubkey(seed: u8) -> BLSPubKey {
         let mut bytes = [0u8; 48];
@@ -1288,50 +1287,38 @@ mod tests {
         bytes
     }
 
-    fn format_pubkey(pubkey: &BLSPubKey) -> String {
-        format!("0x{}", hex::encode(pubkey))
-    }
-
-    fn test_datum(
-        index: u64,
-        pubkey: &BLSPubKey,
-        status: ValidatorStatus,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+    fn test_datum(index: u64, pubkey: &BLSPubKey, status: ValidatorStatus) -> Validator {
+        Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: format_pubkey(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: "0".to_string(),
-                exit_epoch: FAR_FUTURE_EPOCH.to_string(),
-                withdrawable_epoch: FAR_FUTURE_EPOCH.to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning `data`.
-    fn post_validators_ok(
-        state_id: impl AsRef<str>,
-        data: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> Mock {
+    fn post_validators_ok(state_id: impl AsRef<str>, data: Vec<Validator>) -> Mock {
         Mock::given(method("POST"))
             .and(path(format!(
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data,
-                },
-            ))
+                }),
+            )
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning 404, so
@@ -1342,13 +1329,11 @@ mod tests {
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
-                    code: 404.0,
-                    message: "State not found".to_string(),
-                    stacktraces: None,
-                }),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(ErrorBody {
+                code: Some(404),
+                message: "State not found".to_string(),
+                ..ErrorBody::default()
+            }))
     }
 
     fn test_cache(server: &MockServer, pubkeys: Vec<BLSPubKey>) -> ValidatorCache {

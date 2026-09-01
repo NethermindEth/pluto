@@ -23,19 +23,15 @@ use std::{
 };
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockRootRequest, GetBlockRootResponse,
-    GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse,
-    GetSyncCommitteeDutiesResponseResponseDatum, PrepareSyncCommitteeSubnetsRequest,
-    ProduceSyncCommitteeContributionRequest, ProduceSyncCommitteeContributionResponse,
-    PublishContributionAndProofsRequest, SubmitPoolSyncCommitteeSignaturesRequest,
-    SubmitSyncCommitteeSelectionsRequest, SubmitSyncCommitteeSelectionsResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
     spec::{
         altair::{
             ContributionAndProof, SignedContributionAndProof, SyncAggregatorSelectionData,
-            SyncCommitteeContribution, SyncCommitteeMessage,
+            SyncCommitteeMessage,
         },
-        phase0::{BLSPubKey, BLSSignature, Epoch, Root, Slot, ValidatorIndex},
+        phase0::{BLSPubKey, Epoch, Root, Slot, ValidatorIndex},
     },
+    v1::{SyncCommitteeSelection, SyncCommitteeSubscription},
 };
 use pluto_eth2util::{
     eth2exp::is_sync_comm_aggregator,
@@ -45,33 +41,14 @@ use pluto_eth2util::{
 use tracing::info;
 use tree_hash::TreeHash;
 
+pub use pluto_eth2api::v1::SyncCommitteeDuty;
+
 use super::{
     close_once::CloseOnce,
     error::{Error, Result},
     sign::SignFunc,
     validators::{ActiveValidators, active_validators},
 };
-
-/// Single sync-committee duty resolved for one of the local validators.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeDuty {
-    /// Validator BLS public key.
-    pub pubkey: BLSPubKey,
-    /// Validator registry index.
-    pub validator_index: ValidatorIndex,
-    /// The validator's positions in the sync committee.
-    pub validator_sync_committee_indices: Vec<u64>,
-}
-
-/// Aggregate sync-committee selection returned by the beacon node, post-DVT
-/// aggregation. Mirrors `eth2v1.SyncCommitteeSelection`.
-#[derive(Debug, Clone)]
-struct SyncCommitteeSelection {
-    validator_index: ValidatorIndex,
-    slot: Slot,
-    subcommittee_index: u64,
-    selection_proof: BLSSignature,
-}
 
 /// Mutable state guarded by a single [`Mutex`]. The Go `mutable` embedded
 /// struct.
@@ -290,62 +267,13 @@ async fn prepare_sync_comm_duties(
         return Ok(Vec::new());
     }
 
-    let body: Vec<String> = vals.indices().map(|idx| idx.to_string()).collect();
-    let request = GetSyncCommitteeDutiesRequest::builder()
-        .epoch(epoch.to_string())
-        .body(body)
-        .build()
-        .map_err(|e| Error::Malformed(format!("build sync committee duties request: {e}")))?;
-
+    let indices: Vec<ValidatorIndex> = vals.indices().collect();
     let response = client
-        .get_sync_committee_duties(request)
+        .get_sync_committee_duties(epoch, &indices)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-    let GetSyncCommitteeDutiesResponse::Ok(payload) = response else {
-        return Err(Error::BeaconNode(
-            EthBeaconNodeApiClientError::UnexpectedResponse,
-        ));
-    };
-
-    payload
-        .data
-        .into_iter()
-        .map(parse_sync_committee_duty)
-        .collect()
-}
-
-fn parse_sync_committee_duty(
-    raw: GetSyncCommitteeDutiesResponseResponseDatum,
-) -> Result<SyncCommitteeDuty> {
-    let pubkey = parse_pubkey(&raw.pubkey)?;
-    let validator_index = raw
-        .validator_index
-        .parse::<ValidatorIndex>()
-        .map_err(|_| Error::Malformed(format!("parse validator_index: {}", raw.validator_index)))?;
-    let validator_sync_committee_indices = raw
-        .validator_sync_committee_indices
-        .into_iter()
-        .map(|s| {
-            s.parse::<u64>()
-                .map_err(|_| Error::Malformed(format!("parse sync committee index: {s}")))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(SyncCommitteeDuty {
-        pubkey,
-        validator_index,
-        validator_sync_committee_indices,
-    })
-}
-
-fn parse_pubkey(s: &str) -> Result<BLSPubKey> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| Error::Malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::Malformed(format!("pubkey length {} != 48", bytes.len())))
+    Ok(response.data)
 }
 
 async fn subscribe_sync_comm_subnets(
@@ -357,29 +285,18 @@ async fn subscribe_sync_comm_subnets(
         return Ok(());
     }
 
-    let until_epoch = epoch.saturating_add(1).to_string();
-    let body: Vec<pluto_eth2api::SyncCommitteeSubscriptionRequestBodyItem> = duties
+    let until_epoch = epoch.saturating_add(1);
+    let subscriptions: Vec<SyncCommitteeSubscription> = duties
         .iter()
-        .map(
-            |duty| pluto_eth2api::SyncCommitteeSubscriptionRequestBodyItem {
-                sync_committee_indices: duty
-                    .validator_sync_committee_indices
-                    .iter()
-                    .map(u64::to_string)
-                    .collect(),
-                until_epoch: until_epoch.clone(),
-                validator_index: duty.validator_index.to_string(),
-            },
-        )
+        .map(|duty| SyncCommitteeSubscription {
+            validator_index: duty.validator_index,
+            sync_committee_indices: duty.validator_sync_committee_indices.clone(),
+            until_epoch,
+        })
         .collect();
 
-    let request = PrepareSyncCommitteeSubnetsRequest::builder()
-        .body(body)
-        .build()
-        .map_err(|e| Error::Malformed(format!("build sync committee subscriptions: {e}")))?;
-
     client
-        .prepare_sync_committee_subnets(request)
+        .prepare_sync_committee_subnets(&subscriptions)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
@@ -400,7 +317,7 @@ async fn prepare_sync_selections(
 
     let epoch = epoch_from_slot(client, slot).await?;
 
-    let mut partials: Vec<pluto_eth2api::SyncCommitteeSelectionRequestRequestBodyItem> = Vec::new();
+    let mut partials: Vec<SyncCommitteeSelection> = Vec::new();
     for duty in duties {
         let subcomm_idxs = get_subcommittees(client, duty).await?;
         for subcomm_idx in subcomm_idxs {
@@ -417,36 +334,22 @@ async fn prepare_sync_selections(
             )
             .await?;
             let sig = sign_func.sign(&duty.pubkey, &sig_data)?;
-            partials.push(
-                pluto_eth2api::SyncCommitteeSelectionRequestRequestBodyItem {
-                    validator_index: duty.validator_index.to_string(),
-                    slot: slot.to_string(),
-                    subcommittee_index: subcomm_idx.to_string(),
-                    selection_proof: hex_0x(sig),
-                },
-            );
+            partials.push(SyncCommitteeSelection {
+                validator_index: duty.validator_index,
+                slot,
+                subcommittee_index: subcomm_idx,
+                selection_proof: sig,
+            });
         }
     }
 
-    let request = SubmitSyncCommitteeSelectionsRequest::builder()
-        .body(partials)
-        .build()
-        .map_err(|e| Error::Malformed(format!("build sync committee selections: {e}")))?;
-
-    let response = client
-        .submit_sync_committee_selections(request)
+    let aggregated = client
+        .submit_sync_committee_selections(&partials)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-    let SubmitSyncCommitteeSelectionsResponse::Ok(payload) = response else {
-        return Err(Error::BeaconNode(
-            EthBeaconNodeApiClientError::UnexpectedResponse,
-        ));
-    };
-
     let mut selections = Vec::new();
-    for raw in payload.data {
-        let selection = parse_selection_wire(&raw)?;
+    for selection in aggregated {
         let is_aggregator = is_sync_comm_aggregator(client, selection.selection_proof)
             .await
             .map_err(|e| Error::Malformed(format!("is_sync_comm_aggregator: {e}")))?;
@@ -464,55 +367,6 @@ async fn prepare_sync_selections(
     Ok(selections)
 }
 
-fn parse_selection_wire(
-    raw: &pluto_eth2api::SyncCommitteeSelectionRequestRequestBodyItem,
-) -> Result<SyncCommitteeSelection> {
-    let validator_index = raw
-        .validator_index
-        .parse::<ValidatorIndex>()
-        .map_err(|_| Error::Malformed(format!("parse validator_index: {}", raw.validator_index)))?;
-    let slot = raw
-        .slot
-        .parse::<Slot>()
-        .map_err(|_| Error::Malformed(format!("parse slot: {}", raw.slot)))?;
-    let subcommittee_index = raw.subcommittee_index.parse::<u64>().map_err(|_| {
-        Error::Malformed(format!(
-            "parse subcommittee_index: {}",
-            raw.subcommittee_index
-        ))
-    })?;
-    let selection_proof = decode_bls_signature(&raw.selection_proof)?;
-
-    Ok(SyncCommitteeSelection {
-        validator_index,
-        slot,
-        subcommittee_index,
-        selection_proof,
-    })
-}
-
-fn decode_bls_signature(s: &str) -> Result<BLSSignature> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| Error::Malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::Malformed(format!("signature length {} != 96", bytes.len())))
-}
-
-fn decode_root(s: &str) -> Result<Root> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| Error::Malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::Malformed(format!("root length {} != 32", bytes.len())))
-}
-
-fn hex_0x(bytes: impl AsRef<[u8]>) -> String {
-    format!("0x{}", hex::encode(bytes.as_ref()))
-}
-
 /// Returns the subcommittee indices for `duty`. Mirrors Go's
 /// `getSubcommittees`: `idx / (SYNC_COMMITTEE_SIZE /
 /// SYNC_COMMITTEE_SUBNET_COUNT)`.
@@ -522,8 +376,12 @@ pub(crate) async fn get_subcommittees(
 ) -> Result<Vec<u64>> {
     let spec = client.fetch_spec().await.map_err(Error::BeaconNode)?;
 
-    let comm_size = spec_u64(&spec, "SYNC_COMMITTEE_SIZE")?;
-    let subnet_count = spec_u64(&spec, "SYNC_COMMITTEE_SUBNET_COUNT")?;
+    let comm_size = spec
+        .u64("SYNC_COMMITTEE_SIZE")
+        .ok_or_else(|| Error::Malformed("missing spec field SYNC_COMMITTEE_SIZE".to_string()))?;
+    let subnet_count = spec.u64("SYNC_COMMITTEE_SUBNET_COUNT").ok_or_else(|| {
+        Error::Malformed("missing spec field SYNC_COMMITTEE_SUBNET_COUNT".to_string())
+    })?;
 
     let divisor = comm_size
         .checked_div(subnet_count)
@@ -545,33 +403,13 @@ pub(crate) async fn get_subcommittees(
     Ok(subcommittees)
 }
 
-fn spec_u64(spec: &serde_json::Value, field: &str) -> Result<u64> {
-    spec.as_object()
-        .and_then(|o| o.get(field))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::Malformed(format!("missing spec field {field}")))?
-        .parse::<u64>()
-        .map_err(|_| Error::Malformed(format!("parse spec field {field}")))
-}
-
 async fn fetch_head_block_root(client: &EthBeaconNodeApiClient) -> Result<Root> {
-    let request = GetBlockRootRequest::builder()
-        .block_id("head".to_string())
-        .build()
-        .map_err(|e| Error::Malformed(format!("build block root request: {e}")))?;
-
     let response = client
-        .get_block_root(request)
+        .get_block_root("head")
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-    let GetBlockRootResponse::Ok(payload) = response else {
-        return Err(Error::BeaconNode(
-            EthBeaconNodeApiClientError::UnexpectedResponse,
-        ));
-    };
-
-    decode_root(&payload.data.root)
+    Ok(response.data)
 }
 
 async fn submit_sync_messages(
@@ -588,32 +426,19 @@ async fn submit_sync_messages(
     let epoch = epoch_from_slot(client, slot).await?;
     let sig_data = get_data_root(client, DomainName::SyncCommittee, epoch, block_root).await?;
 
-    let mut msgs: Vec<pluto_eth2api::SyncCommitteeRequestBodyItem> = Vec::new();
+    let mut msgs: Vec<SyncCommitteeMessage> = Vec::new();
     for duty in duties {
         let sig = sign_func.sign(&duty.pubkey, &sig_data)?;
-        // Build the altair value for SSZ/hash parity with Go, but the wire
-        // shape POSTed to the beacon node uses stringified fields.
-        let altair_msg = SyncCommitteeMessage {
+        msgs.push(SyncCommitteeMessage {
             slot,
             beacon_block_root: block_root,
             validator_index: duty.validator_index,
             signature: sig,
-        };
-        msgs.push(pluto_eth2api::SyncCommitteeRequestBodyItem {
-            slot: altair_msg.slot.to_string(),
-            beacon_block_root: hex_0x(altair_msg.beacon_block_root),
-            validator_index: altair_msg.validator_index.to_string(),
-            signature: hex_0x(altair_msg.signature),
         });
     }
 
-    let request = SubmitPoolSyncCommitteeSignaturesRequest::builder()
-        .body(msgs)
-        .build()
-        .map_err(|e| Error::Malformed(format!("build sync committee messages: {e}")))?;
-
     client
-        .submit_pool_sync_committee_signatures(request)
+        .submit_pool_sync_committee_signatures(&msgs)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
@@ -636,32 +461,18 @@ async fn agg_contributions(
 
     let epoch = epoch_from_slot(client, slot).await?;
 
-    let mut signed: Vec<pluto_eth2api::ContributionAndProofRequestBodyItem> = Vec::new();
+    let mut signed: Vec<SignedContributionAndProof> = Vec::new();
 
     for selection in selections {
         // Query BN to get sync committee contribution.
-        let request = ProduceSyncCommitteeContributionRequest::builder()
-            .slot(selection.slot.to_string())
-            .subcommittee_index(selection.subcommittee_index.to_string())
-            .beacon_block_root(hex_0x(block_root))
-            .build()
-            .map_err(|e| Error::Malformed(format!("build produce contribution: {e}")))?;
-
-        let response = client
-            .produce_sync_committee_contribution(request)
+        let contribution = client
+            .produce_sync_committee_contribution(
+                selection.slot,
+                selection.subcommittee_index,
+                block_root,
+            )
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let ProduceSyncCommitteeContributionResponse::Ok(payload) = response else {
-            return Err(Error::BeaconNode(
-                EthBeaconNodeApiClientError::UnexpectedResponse,
-            ));
-        };
-
-        let contrib_value = serde_json::to_value(&payload.data)
-            .map_err(|e| Error::Malformed(format!("serialise contribution: {e}")))?;
-        let contribution: SyncCommitteeContribution = serde_json::from_value(contrib_value)
-            .map_err(|e| Error::Malformed(format!("parse contribution: {e}")))?;
 
         let v_idx = selection.validator_index;
         let contrib_and_proof = ContributionAndProof {
@@ -680,42 +491,14 @@ async fn agg_contributions(
             get_data_root(client, DomainName::ContributionAndProof, epoch, proof_root).await?;
         let sig = sign_func.sign(&pubkey, &sig_data)?;
 
-        let signed_payload = SignedContributionAndProof {
+        signed.push(SignedContributionAndProof {
             message: contrib_and_proof,
             signature: sig,
-        };
-
-        signed.push(pluto_eth2api::ContributionAndProofRequestBodyItem {
-            message: pluto_eth2api::AltairSignedContributionAndProofMessage {
-                aggregator_index: signed_payload.message.aggregator_index.to_string(),
-                contribution: pluto_eth2api::Contribution {
-                    aggregation_bits: hex_0x(
-                        &signed_payload.message.contribution.aggregation_bits.bytes,
-                    ),
-                    beacon_block_root: hex_0x(
-                        signed_payload.message.contribution.beacon_block_root,
-                    ),
-                    signature: hex_0x(signed_payload.message.contribution.signature),
-                    slot: signed_payload.message.contribution.slot.to_string(),
-                    subcommittee_index: signed_payload
-                        .message
-                        .contribution
-                        .subcommittee_index
-                        .to_string(),
-                },
-                selection_proof: hex_0x(signed_payload.message.selection_proof),
-            },
-            signature: hex_0x(signed_payload.signature),
         });
     }
 
-    let request = PublishContributionAndProofsRequest::builder()
-        .body(signed)
-        .build()
-        .map_err(|e| Error::Malformed(format!("build contribution and proofs request: {e}")))?;
-
     client
-        .publish_contribution_and_proofs(request)
+        .publish_contribution_and_proofs(&signed)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 

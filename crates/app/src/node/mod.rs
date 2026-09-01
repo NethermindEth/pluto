@@ -421,7 +421,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
-        .get(&pluto_eth2api::ConsensusVersion::Electra)
+        .get(&pluto_eth2api::spec::DataVersion::Electra)
         .map(|schedule| schedule.epoch)
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);

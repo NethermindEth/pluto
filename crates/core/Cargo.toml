@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 alloy.workspace = true
+anyhow.workspace = true
 backon.workspace = true
 async-trait.workspace = true
 bon.workspace = true
@@ -42,7 +43,6 @@ tree_hash.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 clap.workspace = true
 rand.workspace = true
 prost.workspace = true

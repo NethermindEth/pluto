@@ -163,9 +163,9 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
     }
 
     if looks_like_json(data) {
-        // Reuses `VersionedProposal`'s `Deserialize` impl (shared per-fork JSON
-        // dispatch in `signeddata`).
-        return serde_json::from_slice(data).map_err(ParSigExCodecError::from);
+        return serde_json::from_slice::<crate::signeddata::VersionedProposalJson>(data)
+            .map(|proposal| proposal.0)
+            .map_err(ParSigExCodecError::from);
     }
 
     Err(ParSigExCodecError::UnsignedData(

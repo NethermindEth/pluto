@@ -6,84 +6,71 @@ use std::{
 };
 
 use pluto_eth2api::{
-    ProposalPreparation, ValidatorResponseValidator, ValidatorStatus,
-    spec::phase0::{BLSPubKey, ValidatorIndex},
+    spec::phase0::{self, BLSPubKey, ValidatorIndex},
+    v1::{ProposalPreparation, ValidatorStatus},
 };
 use serde_json::Value;
 
+pub use pluto_eth2api::v1::Validator;
+
 use super::{attestation::AttestationStore, proposal::ProposalPreparationStore};
 
-pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
-    "0x3132333435363738393031323334353637383930313233343536373839303132";
+pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: [u8; 32] = [
+    0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+    0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32,
+];
 
 /// Balance and effective balance (in gwei) for every simnet mock DV validator:
 /// `31.3 ETH`.
 pub(crate) const MOCK_DV_BALANCE_GWEI: u64 = 31_300_000_000;
 
-/// Minimal validator representation used by the beacon mock.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Validator {
-    /// Validator index in the beacon registry.
-    pub index: ValidatorIndex,
-    /// Current balance in gwei.
-    pub balance: u64,
-    /// Current validator status.
-    pub status: ValidatorStatus,
-    /// Validator details returned by the beacon API.
-    pub validator: ValidatorResponseValidator,
+/// Creates an active validator with the provided index and public key.
+///
+/// `exit_epoch` and `withdrawable_epoch` are `0` (the Go zero value), not
+/// `FAR_FUTURE_EPOCH`, matching the `ValidatorSetA` fixture.
+#[must_use]
+pub fn active_validator(index: ValidatorIndex, pubkey: BLSPubKey) -> Validator {
+    Validator {
+        index,
+        balance: index,
+        status: ValidatorStatus::ActiveOngoing,
+        validator: phase0::Validator {
+            activation_eligibility_epoch: index,
+            activation_epoch: index.checked_add(1).unwrap_or(index),
+            effective_balance: index,
+            exit_epoch: 0,
+            pubkey,
+            slashed: false,
+            withdrawable_epoch: 0,
+            withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS,
+        },
+    }
 }
 
-impl Validator {
-    /// Creates an active validator with the provided index and public key.
-    ///
-    /// `exit_epoch` and `withdrawable_epoch` are `"0"` (the Go zero value), not
-    /// `FAR_FUTURE_EPOCH`, matching the `ValidatorSetA` fixture.
-    #[must_use]
-    pub fn active(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
-        let pubkey = hex_0x(pubkey);
-
-        Self {
-            index,
-            balance: index,
-            status: ValidatorStatus::ActiveOngoing,
-            validator: ValidatorResponseValidator {
-                activation_eligibility_epoch: index.to_string(),
-                activation_epoch: index.checked_add(1).unwrap_or(index).to_string(),
-                effective_balance: index.to_string(),
-                exit_epoch: "0".to_string(),
-                pubkey,
-                slashed: false,
-                withdrawable_epoch: "0".to_string(),
-                withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS.to_string(),
-            },
-        }
-    }
-
-    /// Creates an active simnet DV validator: a fixed `31.3 ETH` balance and
-    /// effective balance, `active_ongoing` status, `exit_epoch`/
-    /// `withdrawable_epoch` of `u64::MAX` (`FAR_FUTURE_EPOCH`, i.e. "never"),
-    /// zero activation epochs, and the fixed 32-byte withdrawal credentials.
-    ///
-    /// Distinct from [`Validator::active`] (the `ValidatorSetA` fixture), which
-    /// derives balance/epochs from the index — the wrong shape for a running
-    /// simnet cluster.
-    #[must_use]
-    pub fn mock_dv(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
-        Self {
-            index,
-            balance: MOCK_DV_BALANCE_GWEI,
-            status: ValidatorStatus::ActiveOngoing,
-            validator: ValidatorResponseValidator {
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: "0".to_string(),
-                effective_balance: MOCK_DV_BALANCE_GWEI.to_string(),
-                exit_epoch: u64::MAX.to_string(),
-                pubkey: hex_0x(pubkey),
-                slashed: false,
-                withdrawable_epoch: u64::MAX.to_string(),
-                withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS.to_string(),
-            },
-        }
+/// Creates an active simnet DV validator: a fixed `31.3 ETH` balance and
+/// effective balance, `active_ongoing` status, `exit_epoch`/
+/// `withdrawable_epoch` of `u64::MAX` (`FAR_FUTURE_EPOCH`, i.e. "never"),
+/// zero activation epochs, and the fixed 32-byte withdrawal credentials.
+///
+/// Distinct from [`active_validator`] (the `ValidatorSetA` fixture), which
+/// derives balance/epochs from the index, the wrong shape for a running
+/// simnet cluster.
+#[must_use]
+pub fn mock_dv_validator(index: ValidatorIndex, pubkey: BLSPubKey) -> Validator {
+    Validator {
+        index,
+        balance: MOCK_DV_BALANCE_GWEI,
+        status: ValidatorStatus::ActiveOngoing,
+        validator: phase0::Validator {
+            activation_eligibility_epoch: 0,
+            activation_epoch: 0,
+            effective_balance: MOCK_DV_BALANCE_GWEI,
+            exit_epoch: u64::MAX,
+            pubkey,
+            slashed: false,
+            withdrawable_epoch: u64::MAX,
+            withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS,
+        },
     }
 }
 
@@ -112,14 +99,14 @@ impl ValidatorSet {
         ]
         .into_iter()
         .filter_map(|(index, pubkey)| {
-            parse_pubkey(pubkey).map(|pubkey| (index, Validator::active(index, pubkey)))
+            parse_pubkey(pubkey).map(|pubkey| (index, active_validator(index, pubkey)))
         })
         .collect()
     }
 
     /// Builds a validator set from distributed-validator root public keys:
     /// validators are indexed `0..n` in the order the pubkeys are given, each
-    /// built via [`Validator::mock_dv`].
+    /// built via [`mock_dv_validator`].
     #[must_use]
     pub fn mock_dvs(pubkeys: impl IntoIterator<Item = BLSPubKey>) -> Self {
         pubkeys
@@ -127,7 +114,7 @@ impl ValidatorSet {
             .enumerate()
             .map(|(i, pubkey)| {
                 let index = ValidatorIndex::try_from(i).unwrap_or(ValidatorIndex::MAX);
-                (index, Validator::mock_dv(index, pubkey))
+                (index, mock_dv_validator(index, pubkey))
             })
             .collect()
     }
@@ -154,23 +141,18 @@ impl ValidatorSet {
     /// A linear scan over the set, returning a clone of the match.
     #[must_use]
     pub fn by_public_key(&self, pubkey: &BLSPubKey) -> Option<Validator> {
-        let needle = hex_0x(pubkey);
         self.0
             .values()
-            .find(|validator| validator.validator.pubkey == needle)
+            .find(|validator| validator.validator.pubkey == *pubkey)
             .cloned()
     }
 
     /// Returns the BLS public keys of all validators in index order.
-    ///
-    /// Validators whose stored hex pubkey fails to parse back into a
-    /// `BLSPubKey` are silently skipped; all validators inserted via
-    /// `Validator::active` round-trip cleanly.
     #[must_use]
     pub fn public_keys(&self) -> Vec<BLSPubKey> {
         self.0
             .values()
-            .filter_map(|validator| parse_pubkey(&validator.validator.pubkey))
+            .map(|validator| validator.validator.pubkey)
             .collect()
     }
 
@@ -338,6 +320,14 @@ mod tests {
     }
 
     #[test]
+    fn default_withdrawal_credentials_match_wire_form() {
+        assert_eq!(
+            hex_0x(DEFAULT_WITHDRAWAL_CREDENTIALS),
+            "0x3132333435363738393031323334353637383930313233343536373839303132"
+        );
+    }
+
+    #[test]
     fn mock_dvs_matches_charon_create_mock_validators() {
         // Two arbitrary, distinct pubkeys; indexing is positional (0..n).
         let mut pk_a: BLSPubKey = [0u8; 48];
@@ -358,16 +348,16 @@ mod tests {
         let v = &validators[0];
         assert_eq!(v.balance, 31_300_000_000);
         assert_eq!(v.status, ValidatorStatus::ActiveOngoing);
-        assert_eq!(v.validator.effective_balance, "31300000000");
-        assert_eq!(v.validator.exit_epoch, "18446744073709551615");
-        assert_eq!(v.validator.withdrawable_epoch, "18446744073709551615");
-        assert_eq!(v.validator.activation_epoch, "0");
-        assert_eq!(v.validator.activation_eligibility_epoch, "0");
+        assert_eq!(v.validator.effective_balance, 31_300_000_000);
+        assert_eq!(v.validator.exit_epoch, u64::MAX);
+        assert_eq!(v.validator.withdrawable_epoch, u64::MAX);
+        assert_eq!(v.validator.activation_epoch, 0);
+        assert_eq!(v.validator.activation_eligibility_epoch, 0);
         assert!(!v.validator.slashed);
         assert_eq!(
             v.validator.withdrawal_credentials,
             DEFAULT_WITHDRAWAL_CREDENTIALS
         );
-        assert_eq!(v.validator.pubkey, hex_0x(pk_a));
+        assert_eq!(v.validator.pubkey, pk_a);
     }
 }

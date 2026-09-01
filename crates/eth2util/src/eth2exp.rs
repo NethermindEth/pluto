@@ -54,10 +54,7 @@ pub async fn is_att_aggregator(
     let spec = client.fetch_spec().await?;
 
     let aggs_per_comm = spec
-        .as_object()
-        .and_then(|o| o.get("TARGET_AGGREGATORS_PER_COMMITTEE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
+        .u64("TARGET_AGGREGATORS_PER_COMMITTEE")
         .ok_or(Eth2ExpError::InvalidTargetAggregatorsPerCommittee)?;
 
     let modulo = comm_len
@@ -77,24 +74,15 @@ pub async fn is_sync_comm_aggregator(
     let spec = client.fetch_spec().await?;
 
     let comm_size = spec
-        .as_object()
-        .and_then(|o| o.get("SYNC_COMMITTEE_SIZE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
+        .u64("SYNC_COMMITTEE_SIZE")
         .ok_or(Eth2ExpError::InvalidSyncCommitteeSize)?;
 
     let comm_subnet_count = spec
-        .as_object()
-        .and_then(|o| o.get("SYNC_COMMITTEE_SUBNET_COUNT"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
+        .u64("SYNC_COMMITTEE_SUBNET_COUNT")
         .ok_or(Eth2ExpError::InvalidSyncCommitteeSubnetCount)?;
 
     let aggs_per_comm = spec
-        .as_object()
-        .and_then(|o| o.get("TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
+        .u64("TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE")
         .ok_or(Eth2ExpError::InvalidTargetAggregatorsPerSyncSubcommittee)?;
 
     let modulo = comm_size

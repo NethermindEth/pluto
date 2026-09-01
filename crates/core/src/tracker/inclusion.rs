@@ -18,12 +18,10 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockV2Request, GetBlockV2Response,
-    versioned,
-};
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, versioned};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
+use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
 
@@ -699,22 +697,13 @@ impl InclusionChecker {
     /// proposed, which is a normal outcome rather than an error — the same
     /// distinction charon draws via `is404Error`.
     async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
-        let request = GetBlockV2Request::builder()
-            .block_id(slot.to_string())
-            .build()
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
-
-        match self
-            .eth2_cl
-            .get_block_v2(request)
-            .await
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?
-        {
-            GetBlockV2Response::Ok(_) | GetBlockV2Response::OkBinary(_) => Ok(true),
-            GetBlockV2Response::NotFound(_) => Ok(false),
-            other => Err(InclusionCheckerError::UnexpectedResponse(format!(
-                "{other:?}"
-            ))),
+        match self.eth2_cl.get_block_v2(&slot.to_string()).await {
+            Ok(_) => Ok(true),
+            Err(err) => match HttpError::from_error(&err) {
+                Some(http) if http.status == StatusCode::NOT_FOUND => Ok(false),
+                Some(http) => Err(InclusionCheckerError::UnexpectedResponse(http.to_string())),
+                None => Err(InclusionCheckerError::Request(err.into())),
+            },
         }
     }
 
@@ -764,8 +753,8 @@ impl InclusionChecker {
 /// retried on the next tick.
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
-    /// The beacon-node request failed or could not be built. Boxed because the
-    /// generated client surfaces `anyhow::Error`, which `pluto-core` avoids.
+    /// The beacon-node request failed. Boxed because the client surfaces
+    /// `anyhow::Error`, which `pluto-core` avoids.
     #[error("beacon node request failed: {0}")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The beacon node returned a status the checker does not handle.

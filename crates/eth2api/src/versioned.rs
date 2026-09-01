@@ -1,5 +1,6 @@
 //! Versioned wrappers and version enums used by signeddata flows.
 
+use alloy::primitives::U256;
 use serde::{Deserialize, Serialize};
 use tree_hash::TreeHash;
 
@@ -8,6 +9,202 @@ use crate::{
     spec::{altair, bellatrix, capella, deneb, electra, fulu, phase0},
     v1,
 };
+
+/// Unsigned proposal block across all supported forks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalBlock {
+    /// Phase0 beacon block.
+    Phase0(phase0::BeaconBlock),
+    /// Altair beacon block.
+    Altair(altair::BeaconBlock),
+    /// Bellatrix beacon block.
+    Bellatrix(bellatrix::BeaconBlock),
+    /// Bellatrix blinded beacon block.
+    BellatrixBlinded(bellatrix::BlindedBeaconBlock),
+    /// Capella beacon block.
+    Capella(capella::BeaconBlock),
+    /// Capella blinded beacon block.
+    CapellaBlinded(capella::BlindedBeaconBlock),
+    /// Deneb beacon block with KZG proofs and blobs.
+    Deneb {
+        /// Beacon block.
+        block: Box<deneb::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Deneb blinded beacon block.
+    DenebBlinded(deneb::BlindedBeaconBlock),
+    /// Electra beacon block with KZG proofs and blobs.
+    Electra {
+        /// Beacon block.
+        block: Box<electra::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Electra blinded beacon block.
+    ElectraBlinded(electra::BlindedBeaconBlock),
+    /// Fulu beacon block with KZG proofs and blobs (uses electra block type).
+    Fulu {
+        /// Beacon block.
+        block: Box<electra::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Fulu blinded beacon block (uses electra block type).
+    FuluBlinded(electra::BlindedBeaconBlock),
+}
+
+impl ProposalBlock {
+    /// Returns the fork version of this block.
+    pub fn version(&self) -> DataVersion {
+        match self {
+            Self::Phase0(_) => DataVersion::Phase0,
+            Self::Altair(_) => DataVersion::Altair,
+            Self::Bellatrix(_) | Self::BellatrixBlinded(_) => DataVersion::Bellatrix,
+            Self::Capella(_) | Self::CapellaBlinded(_) => DataVersion::Capella,
+            Self::Deneb { .. } | Self::DenebBlinded(_) => DataVersion::Deneb,
+            Self::Electra { .. } | Self::ElectraBlinded(_) => DataVersion::Electra,
+            Self::Fulu { .. } | Self::FuluBlinded(_) => DataVersion::Fulu,
+        }
+    }
+
+    /// Returns true if this is a blinded block.
+    pub fn is_blinded(&self) -> bool {
+        matches!(
+            self,
+            Self::BellatrixBlinded(_)
+                | Self::CapellaBlinded(_)
+                | Self::DenebBlinded(_)
+                | Self::ElectraBlinded(_)
+                | Self::FuluBlinded(_)
+        )
+    }
+
+    /// Returns the slot of this block.
+    pub fn slot(&self) -> phase0::Slot {
+        match self {
+            Self::Phase0(b) => b.slot,
+            Self::Altair(b) => b.slot,
+            Self::Bellatrix(b) => b.slot,
+            Self::BellatrixBlinded(b) => b.slot,
+            Self::Capella(b) => b.slot,
+            Self::CapellaBlinded(b) => b.slot,
+            Self::Deneb { block, .. } => block.slot,
+            Self::DenebBlinded(b) => b.slot,
+            Self::Electra { block, .. } => block.slot,
+            Self::ElectraBlinded(b) => b.slot,
+            Self::Fulu { block, .. } => block.slot,
+            Self::FuluBlinded(b) => b.slot,
+        }
+    }
+
+    /// Returns the tree-hash root of this block.
+    pub fn root(&self) -> phase0::Root {
+        match self {
+            Self::Phase0(b) => b.tree_hash_root().0,
+            Self::Altair(b) => b.tree_hash_root().0,
+            Self::Bellatrix(b) => b.tree_hash_root().0,
+            Self::BellatrixBlinded(b) => b.tree_hash_root().0,
+            Self::Capella(b) => b.tree_hash_root().0,
+            Self::CapellaBlinded(b) => b.tree_hash_root().0,
+            Self::Deneb { block, .. } => block.tree_hash_root().0,
+            Self::DenebBlinded(b) => b.tree_hash_root().0,
+            Self::Electra { block, .. } => block.tree_hash_root().0,
+            Self::ElectraBlinded(b) => b.tree_hash_root().0,
+            Self::Fulu { block, .. } => block.tree_hash_root().0,
+            Self::FuluBlinded(b) => b.tree_hash_root().0,
+        }
+    }
+}
+
+/// Unsigned versioned proposal across all supported forks, as produced by
+/// `GET /eth/v3/validator/blocks/{slot}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedProposal {
+    /// Unsigned block payload.
+    pub block: ProposalBlock,
+    /// Consensus block reward, in Wei.
+    pub consensus_block_value: U256,
+    /// Execution payload value, in Wei.
+    pub execution_payload_value: U256,
+}
+
+impl VersionedProposal {
+    /// Returns the fork version, derived from the block variant.
+    pub fn version(&self) -> DataVersion {
+        self.block.version()
+    }
+
+    /// Returns true if this is a blinded proposal, derived from the block
+    /// variant.
+    pub fn is_blinded(&self) -> bool {
+        self.block.is_blinded()
+    }
+
+    /// Returns the slot of the proposal block.
+    pub fn slot(&self) -> phase0::Slot {
+        self.block.slot()
+    }
+
+    /// Returns the tree-hash root of the proposal block.
+    pub fn root(&self) -> phase0::Root {
+        self.block.root()
+    }
+}
+
+/// Signed beacon block across all supported forks, as returned by
+/// `GET /eth/v2/beacon/blocks/{block_id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum SignedBeaconBlock {
+    /// Phase0 signed block.
+    Phase0(phase0::SignedBeaconBlock),
+    /// Altair signed block.
+    Altair(altair::SignedBeaconBlock),
+    /// Bellatrix signed block.
+    Bellatrix(bellatrix::SignedBeaconBlock),
+    /// Capella signed block.
+    Capella(capella::SignedBeaconBlock),
+    /// Deneb signed block.
+    Deneb(deneb::SignedBeaconBlock),
+    /// Electra signed block.
+    Electra(electra::SignedBeaconBlock),
+    /// Fulu signed block (uses the electra block type).
+    Fulu(electra::SignedBeaconBlock),
+}
+
+impl SignedBeaconBlock {
+    /// Returns the fork version of this block.
+    pub fn version(&self) -> DataVersion {
+        match self {
+            Self::Phase0(_) => DataVersion::Phase0,
+            Self::Altair(_) => DataVersion::Altair,
+            Self::Bellatrix(_) => DataVersion::Bellatrix,
+            Self::Capella(_) => DataVersion::Capella,
+            Self::Deneb(_) => DataVersion::Deneb,
+            Self::Electra(_) => DataVersion::Electra,
+            Self::Fulu(_) => DataVersion::Fulu,
+        }
+    }
+
+    /// Returns the slot of this block.
+    pub fn slot(&self) -> phase0::Slot {
+        match self {
+            Self::Phase0(b) => b.message.slot,
+            Self::Altair(b) => b.message.slot,
+            Self::Bellatrix(b) => b.message.slot,
+            Self::Capella(b) => b.message.slot,
+            Self::Deneb(b) => b.message.slot,
+            Self::Electra(b) | Self::Fulu(b) => b.message.slot,
+        }
+    }
+}
 
 /// Graffiti string used to mark synthetic blocks that must never be submitted.
 pub const SYNTHETIC_BLOCK_GRAFFITI: &str = "SYNTHETIC BLOCK: DO NOT SUBMIT";

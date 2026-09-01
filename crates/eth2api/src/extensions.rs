@@ -1,10 +1,7 @@
 use crate::{
-    BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
-    GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
-    GetGenesisResponseResponseData, GetProposerDutiesRequest, GetProposerDutiesResponse,
-    GetSpecRequest, GetSpecResponse, PrepareBeaconProposerRequest,
-    PrepareBeaconProposerRequestBodyItem, PrepareBeaconProposerResponse, ValidatorStatus,
-    spec::{bellatrix, phase0},
+    EthBeaconNodeApiClient, EventTopic, Spec,
+    spec::{DataVersion, phase0},
+    v1,
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
@@ -77,28 +74,15 @@ pub struct BeaconNodeEvent {
     pub data: String,
 }
 
-/// A single proposal preparation submitted to the beacon node
-/// (`prepare_beacon_proposer`), associating a validator index with the fee
-/// recipient the node should use when building blocks for it.
-///
-/// Mirrors go-eth2-client's `eth2v1.ProposalPreparation`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposalPreparation {
-    /// Index of the validator the preparation applies to.
-    pub validator_index: phase0::ValidatorIndex,
-    /// Execution-layer address that should receive block rewards.
-    pub fee_recipient: bellatrix::ExecutionAddress,
-}
-
 // Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
 // break equal-epoch ties (the latest fork wins), so keep it chronological.
-const FORKS: [ConsensusVersion; 6] = [
-    ConsensusVersion::Altair,
-    ConsensusVersion::Bellatrix,
-    ConsensusVersion::Capella,
-    ConsensusVersion::Deneb,
-    ConsensusVersion::Electra,
-    ConsensusVersion::Fulu,
+const FORKS: [DataVersion; 6] = [
+    DataVersion::Altair,
+    DataVersion::Bellatrix,
+    DataVersion::Capella,
+    DataVersion::Deneb,
+    DataVersion::Electra,
+    DataVersion::Fulu,
 ];
 
 /// The schedule of given fork, containing the fork version and the epoch at
@@ -111,88 +95,25 @@ pub struct ForkSchedule {
     pub epoch: phase0::Epoch,
 }
 
-/// A proposer duty with its fields decoded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposerDuty {
-    /// The proposer's BLS public key.
-    pub pubkey: phase0::BLSPubKey,
-    /// Index of the proposer in the validator registry.
-    pub validator_index: phase0::ValidatorIndex,
-    /// The slot at which the validator must propose a block.
-    pub slot: phase0::Slot,
+fn spec_u64(spec: &Spec, key: &str) -> Result<u64, EthBeaconNodeApiClientError> {
+    spec.u64(key)
+        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing or invalid {key}")))
 }
 
-fn required_str_field<'a>(
-    value: &'a serde_json::Value,
-    field: &str,
-) -> Result<&'a str, EthBeaconNodeApiClientError> {
-    value
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing {field}")))
-}
-
-fn parse_u64_field(
-    value: &serde_json::Value,
-    field: &str,
-) -> Result<u64, EthBeaconNodeApiClientError> {
-    required_str_field(value, field)?
-        .parse::<u64>()
-        .map_err(|_| EthBeaconNodeApiClientError::ParseError(format!("parse {field}")))
-}
-
-pub(crate) fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
-    value: &str,
-    step: F,
-) -> Result<[u8; N], EthBeaconNodeApiClientError> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    let bytes = hex::decode(value).map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))?;
-
-    bytes
-        .try_into()
-        .map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))
-}
-
-fn parse_genesis_fork_version_and_validators_root(
-    genesis_data: &GetGenesisResponseResponseData,
-) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
-    let fork_version = decode_fixed_hex(&genesis_data.genesis_fork_version, || {
-        "decode genesis_fork_version".to_string()
-    })?;
-    let validators_root = decode_fixed_hex(&genesis_data.genesis_validators_root, || {
-        "decode genesis_validators_root".to_string()
-    })?;
-
-    Ok((fork_version, validators_root))
+fn spec_version(spec: &Spec, key: &str) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
+    spec.version(key)
+        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing or invalid {key}")))
 }
 
 fn fork_schedule_from_spec(
-    spec_data: &serde_json::Value,
-) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
-    fn fetch_fork(
-        fork: &ConsensusVersion,
-        spec_data: &serde_json::Value,
-    ) -> Result<ForkSchedule, EthBeaconNodeApiClientError> {
-        let version_field = format!("{}_FORK_VERSION", fork.to_string().to_uppercase());
-        let version = spec_data
-            .as_object()
-            .and_then(|o| o.get(&version_field))
-            .and_then(|f| f.as_str())
-            .ok_or_else(|| {
-                EthBeaconNodeApiClientError::ParseError(format!("missing {version_field}"))
-            })
-            .and_then(|value| decode_fixed_hex(value, || format!("decode {version_field}")))?;
-
-        let epoch_field = format!("{}_FORK_EPOCH", fork.to_string().to_uppercase());
-        let epoch = parse_u64_field(spec_data, &epoch_field)?;
-
-        Ok(ForkSchedule { version, epoch })
-    }
-
+    spec: &Spec,
+) -> Result<HashMap<DataVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
     let mut result = HashMap::new();
     for fork in FORKS {
-        let fork_schedule = fetch_fork(&fork, spec_data)?;
-        result.insert(fork, fork_schedule);
+        let name = fork.as_str().to_uppercase();
+        let version = spec_version(spec, &format!("{name}_FORK_VERSION"))?;
+        let epoch = spec_u64(spec, &format!("{name}_FORK_EPOCH"))?;
+        result.insert(fork, ForkSchedule { version, epoch });
     }
 
     Ok(result)
@@ -235,23 +156,24 @@ pub fn compute_builder_domain(
 
 /// Resolves the domain type from the beacon spec.
 pub fn resolve_domain_type(
-    spec_data: &serde_json::Value,
+    spec: &Spec,
     spec_key: &str,
 ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
-    let raw = spec_data
-        .as_object()
-        .and_then(|o| o.get(spec_key))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| EthBeaconNodeApiClientError::DomainTypeNotFound(spec_key.to_string()))?;
+    if spec.get(spec_key).is_none() {
+        return Err(EthBeaconNodeApiClientError::DomainTypeNotFound(
+            spec_key.to_string(),
+        ));
+    }
 
-    decode_fixed_hex(raw, || format!("decode {spec_key}"))
+    spec.bytes(spec_key)
+        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("decode {spec_key}")))
 }
 
 /// Resolves the active fork version at the given epoch.
 pub fn resolve_fork_version(
     epoch: phase0::Epoch,
     genesis_fork_version: phase0::Version,
-    fork_schedule: &HashMap<ConsensusVersion, ForkSchedule>,
+    fork_schedule: &HashMap<DataVersion, ForkSchedule>,
 ) -> phase0::Version {
     let mut active_version = genesis_fork_version;
     for fork in FORKS {
@@ -278,7 +200,7 @@ pub fn resolve_fork_version(
 /// static fork schedule unchanged), and cross-client signature verification
 /// only works when both sides derive the fork version the same way.
 fn fork_version_from_schedule(
-    schedule: &[BeaconStateFork],
+    schedule: &[phase0::Fork],
     epoch: phase0::Epoch,
 ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
     let mut current = schedule.first().ok_or_else(|| {
@@ -286,18 +208,13 @@ fn fork_version_from_schedule(
     })?;
 
     for fork in schedule {
-        let fork_epoch = fork.epoch.parse::<u64>().map_err(|_| {
-            EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
-        })?;
-        if fork_epoch > epoch {
+        if fork.epoch > epoch {
             break;
         }
         current = fork;
     }
 
-    decode_fixed_hex(&current.current_version, || {
-        "decode fork schedule current_version".to_string()
-    })
+    Ok(current.current_version)
 }
 
 /// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
@@ -308,25 +225,13 @@ fn fork_version_from_schedule(
 /// custom networks working. The genesis fallback is defensive: a spec without
 /// a Capella version already fails while the schedule is built.
 fn voluntary_exit_fork_version(
-    spec_data: &serde_json::Value,
+    spec: &Spec,
     genesis_fork_version: phase0::Version,
 ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-    Ok(fork_schedule_from_spec(spec_data)?
-        .get(&ConsensusVersion::Capella)
+    Ok(fork_schedule_from_spec(spec)?
+        .get(&DataVersion::Capella)
         .map(|fork| fork.version)
         .unwrap_or(genesis_fork_version))
-}
-
-impl ValidatorStatus {
-    /// Returns true if the validator is in one of the active states.
-    pub fn is_active(&self) -> bool {
-        matches!(
-            self,
-            ValidatorStatus::ActiveOngoing
-                | ValidatorStatus::ActiveExiting
-                | ValidatorStatus::ActiveSlashed
-        )
-    }
 }
 
 /// Cached static chain config for one beacon endpoint: spec, genesis, and
@@ -340,19 +245,19 @@ impl ValidatorStatus {
 /// retries); a successful response is cached as-is, so a malformed 200 body
 /// persists until restart.
 ///
-/// TODO(#563): interim process-global cache — the generated client cannot
-/// hold state. Moves into the client when eth2api is redesigned.
+/// TODO(#563): interim process-global cache. Moves into the client when the
+/// client owns its state.
 #[derive(Default)]
 struct ChainConfigCache {
-    spec: OnceCell<Arc<serde_json::Value>>,
-    genesis: OnceCell<Arc<GetGenesisResponseResponseData>>,
-    fork_schedule: OnceCell<Arc<Vec<BeaconStateFork>>>,
+    spec: OnceCell<Arc<Spec>>,
+    genesis: OnceCell<Arc<v1::Genesis>>,
+    fork_schedule: OnceCell<Arc<Vec<phase0::Fork>>>,
 }
 
 /// Keyed by endpoint, so every client for one beacon node (e.g. the
 /// scheduling and submission clients) shares the same entries.
 ///
-/// TODO(#563): removed with the eth2api redesign.
+/// TODO(#563): removed once the client owns its state.
 static CONFIG_CACHES: LazyLock<Mutex<HashMap<Url, Arc<ChainConfigCache>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -377,31 +282,25 @@ pub fn purge_chain_config_cache(base_url: &Url) {
 }
 
 impl EthBeaconNodeApiClient {
-    async fn fetch_spec_data(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+    async fn fetch_spec_data(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
         let cache = config_cache_for(&self.base_url);
         cache
             .spec
             .get_or_try_init(|| async {
-                match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
-                    GetSpecResponse::Ok(spec) => Ok(Arc::new(spec.data)),
-                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                }
+                let spec = crate::instrument("spec", self.get_spec()).await?;
+                Ok(Arc::new(spec))
             })
             .await
             .map(Arc::clone)
     }
 
-    async fn fetch_genesis_data(
-        &self,
-    ) -> Result<Arc<GetGenesisResponseResponseData>, EthBeaconNodeApiClientError> {
+    async fn fetch_genesis_data(&self) -> Result<Arc<v1::Genesis>, EthBeaconNodeApiClientError> {
         let cache = config_cache_for(&self.base_url);
         cache
             .genesis
             .get_or_try_init(|| async {
-                match crate::instrument("genesis", self.get_genesis(GetGenesisRequest {})).await? {
-                    GetGenesisResponse::Ok(genesis) => Ok(Arc::new(genesis.data)),
-                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                }
+                let genesis = crate::instrument("genesis", self.get_genesis()).await?;
+                Ok(Arc::new(genesis))
             })
             .await
             .map(Arc::clone)
@@ -411,21 +310,16 @@ impl EthBeaconNodeApiClient {
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
 
-        genesis
-            .genesis_time
-            .parse()
-            .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
-            .and_then(|timestamp| {
-                DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
-                    EthBeaconNodeApiClientError::ParseError(
-                        "convert genesis_time to timestamp".into(),
-                    )
-                })
+        i64::try_from(genesis.genesis_time)
+            .ok()
+            .and_then(|timestamp| DateTime::from_timestamp(timestamp, 0))
+            .ok_or_else(|| {
+                EthBeaconNodeApiClientError::ParseError("convert genesis_time to timestamp".into())
             })
     }
 
-    /// Fetches the raw chain spec as a JSON object (cached per endpoint).
-    pub async fn fetch_spec(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+    /// Fetches the chain spec (cached per endpoint).
+    pub async fn fetch_spec(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
         self.fetch_spec_data().await
     }
 
@@ -435,8 +329,8 @@ impl EthBeaconNodeApiClient {
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
 
-        let slot_duration = time::Duration::from_secs(parse_u64_field(&spec, "SECONDS_PER_SLOT")?);
-        let slots_per_epoch = parse_u64_field(&spec, "SLOTS_PER_EPOCH")?;
+        let slot_duration = time::Duration::from_secs(spec_u64(&spec, "SECONDS_PER_SLOT")?);
+        let slots_per_epoch = spec_u64(&spec, "SLOTS_PER_EPOCH")?;
 
         if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
@@ -448,65 +342,41 @@ impl EthBeaconNodeApiClient {
     /// Fetches the proposer duties for `epoch`, keeping only the duties that
     /// belong to `indices`. An empty `indices` returns them all.
     ///
-    /// The endpoint takes no validator parameter — it always answers with the
-    /// proposer of every slot in the epoch — so narrowing it is the client's
+    /// The endpoint takes no validator parameter (it always answers with the
+    /// proposer of every slot in the epoch), so narrowing it is the client's
     /// job.
     pub async fn fetch_proposer_duties(
         &self,
         epoch: phase0::Epoch,
         slots_per_epoch: u64,
         indices: &HashSet<phase0::ValidatorIndex>,
-    ) -> Result<Vec<ProposerDuty>, EthBeaconNodeApiClientError> {
+    ) -> Result<Vec<v1::ProposerDuty>, EthBeaconNodeApiClientError> {
         if slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
         }
 
-        let request = GetProposerDutiesRequest::builder()
-            .epoch(epoch.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+        let duties = crate::instrument("proposer_duties", self.get_proposer_duties(epoch))
+            .await?
+            .data;
 
-        let duties =
-            match crate::instrument("proposer_duties", self.get_proposer_duties(request)).await? {
-                GetProposerDutiesResponse::Ok(response) => response.data,
-                _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-            };
-
-        // Validate every duty before dropping any: filtering first would
-        // silently discard a malformed duty that happens to belong to a
-        // validator we did not ask about.
-        let mut validated = Vec::with_capacity(duties.len());
-        for duty in duties {
-            let validator_index = duty
-                .validator_index
-                .parse::<phase0::ValidatorIndex>()
-                .map_err(|_| {
-                    EthBeaconNodeApiClientError::ParseError("proposer duty validator_index".into())
-                })?;
-            let slot = duty.slot.parse::<phase0::Slot>().map_err(|_| {
-                EthBeaconNodeApiClientError::ParseError("proposer duty slot".into())
-            })?;
-            let pubkey =
-                decode_fixed_hex(&duty.pubkey, || "decode proposer duty pubkey".to_string())?;
-
-            // Reject duties outside the requested epoch. Comparing epochs
-            // avoids the slot-bound multiplication overflowing on a bogus
-            // epoch.
-            let duty_epoch = slot
+        // Reject duties outside the requested epoch before dropping any:
+        // filtering first would silently discard a bogus duty that happens to
+        // belong to a validator we did not ask about. Comparing epochs avoids
+        // the slot-bound multiplication overflowing on a bogus epoch.
+        for duty in &duties {
+            let duty_epoch = duty
+                .slot
                 .checked_div(slots_per_epoch)
                 .ok_or(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch)?;
             if duty_epoch != epoch {
-                return Err(EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot, epoch });
+                return Err(EthBeaconNodeApiClientError::DutySlotOutsideEpoch {
+                    slot: duty.slot,
+                    epoch,
+                });
             }
-
-            validated.push(ProposerDuty {
-                pubkey,
-                validator_index,
-                slot,
-            });
         }
 
-        Ok(validated
+        Ok(duties
             .into_iter()
             .filter(|duty| indices.is_empty() || indices.contains(&duty.validator_index))
             .collect())
@@ -515,7 +385,7 @@ impl EthBeaconNodeApiClient {
     /// Fetches the fork schedule for all known forks.
     pub async fn fetch_fork_config(
         &self,
-    ) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
+    ) -> Result<HashMap<DataVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
         fork_schedule_from_spec(&spec)
     }
@@ -535,11 +405,10 @@ impl EthBeaconNodeApiClient {
         domain_type: phase0::DomainType,
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        let (genesis_fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
 
         Ok(compute_domain(
             domain_type,
-            genesis_fork_version,
+            genesis.genesis_fork_version,
             phase0::Root::default(),
         ))
     }
@@ -548,62 +417,45 @@ impl EthBeaconNodeApiClient {
     pub async fn fetch_genesis_validators_root(
         &self,
     ) -> Result<phase0::Root, EthBeaconNodeApiClientError> {
-        let genesis = self.fetch_genesis_data().await?;
-        let (_, validators_root) = parse_genesis_fork_version_and_validators_root(&genesis)?;
-
-        Ok(validators_root)
+        Ok(self.fetch_genesis_data().await?.genesis_validators_root)
     }
 
     /// Fetches the genesis fork version from the beacon node.
     pub async fn fetch_genesis_fork_version(
         &self,
     ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-        let genesis = self.fetch_genesis_data().await?;
-        let (fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
-
-        Ok(fork_version)
+        Ok(self.fetch_genesis_data().await?.genesis_fork_version)
     }
 
     /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
     /// (cached per endpoint).
     async fn fetch_fork_schedule_data(
         &self,
-    ) -> Result<Arc<Vec<BeaconStateFork>>, EthBeaconNodeApiClientError> {
+    ) -> Result<Arc<Vec<phase0::Fork>>, EthBeaconNodeApiClientError> {
         let cache = config_cache_for(&self.base_url);
         cache
             .fork_schedule
             .get_or_try_init(|| async {
-                match crate::instrument(
-                    "fork_schedule",
-                    self.get_fork_schedule(GetForkScheduleRequest {}),
-                )
-                .await?
-                {
-                    GetForkScheduleResponse::Ok(resp) => Ok(Arc::new(resp.data)),
-                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                }
+                let schedule = crate::instrument("fork_schedule", self.get_fork_schedule()).await?;
+                Ok(Arc::new(schedule))
             })
             .await
             .map(Arc::clone)
     }
 
     /// Fetches the `current_version` of every entry in the beacon node's fork
-    /// schedule (`/eth/v1/config/fork_schedule`), decoded and returned in the
-    /// order provided by the endpoint (oldest-to-newest per spec). The first
-    /// entry is the genesis fork version, which identifies the beacon node's
-    /// network.
+    /// schedule (`/eth/v1/config/fork_schedule`), in the order provided by the
+    /// endpoint (oldest-to-newest per spec). The first entry is the genesis
+    /// fork version, which identifies the beacon node's network.
     pub async fn fetch_fork_schedule_versions(
         &self,
     ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
-        self.fetch_fork_schedule_data()
+        Ok(self
+            .fetch_fork_schedule_data()
             .await?
             .iter()
-            .map(|fork| {
-                decode_fixed_hex(&fork.current_version, || {
-                    "decode fork schedule current_version".to_string()
-                })
-            })
-            .collect()
+            .map(|fork| fork.current_version)
+            .collect())
     }
 
     /// Fetches the resolved beacon domain for the provided domain type and
@@ -618,12 +470,10 @@ impl EthBeaconNodeApiClient {
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
         let genesis = self.fetch_genesis_data().await?;
-        let (genesis_fork_version, genesis_validators_root) =
-            parse_genesis_fork_version_and_validators_root(&genesis)?;
         let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
 
         let fork_version = if domain_type == voluntary_exit_domain_type {
-            voluntary_exit_fork_version(&spec, genesis_fork_version)?
+            voluntary_exit_fork_version(&spec, genesis.genesis_fork_version)?
         } else {
             let schedule = self.fetch_fork_schedule_data().await?;
             fork_version_from_schedule(&schedule, epoch)?
@@ -632,7 +482,7 @@ impl EthBeaconNodeApiClient {
         Ok(compute_domain(
             domain_type,
             fork_version,
-            genesis_validators_root,
+            genesis.genesis_validators_root,
         ))
     }
 
@@ -644,7 +494,7 @@ impl EthBeaconNodeApiClient {
     /// deserialize the payload themselves.
     pub async fn event_stream(
         &self,
-        topics: &[EventstreamRequestQueryTopic],
+        topics: &[EventTopic],
     ) -> Result<
         impl Stream<Item = Result<BeaconNodeEvent, EthBeaconNodeApiClientError>> + Send,
         EthBeaconNodeApiClientError,
@@ -661,9 +511,9 @@ impl EthBeaconNodeApiClient {
             .push("events");
 
         // Topics are sent as repeated `topics=<value>` query pairs.
-        let query: Vec<(&str, String)> = topics
+        let query: Vec<(&str, &str)> = topics
             .iter()
-            .map(|topic| ("topics", topic.to_string()))
+            .map(|topic| ("topics", topic.as_str()))
             .collect();
 
         let response = self
@@ -696,29 +546,16 @@ impl EthBeaconNodeApiClient {
     /// `SubmitProposalPreparations`.
     pub async fn submit_proposal_preparations(
         &self,
-        preparations: &[ProposalPreparation],
+        preparations: &[v1::ProposalPreparation],
     ) -> Result<(), EthBeaconNodeApiClientError> {
-        let body = preparations
-            .iter()
-            .map(|preparation| PrepareBeaconProposerRequestBodyItem {
-                validator_index: preparation.validator_index.to_string(),
-                fee_recipient: format!("0x{}", hex::encode(preparation.fee_recipient)),
-            })
-            .collect();
-
-        match self
-            .prepare_beacon_proposer(PrepareBeaconProposerRequest { body })
-            .await?
-        {
-            PrepareBeaconProposerResponse::Ok => Ok(()),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+        Ok(self.prepare_beacon_proposer(preparations).await?)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HttpError;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -754,7 +591,7 @@ mod tests {
     }
 
     fn cache_spec_body() -> serde_json::Value {
-        let mut spec = spec_fixture();
+        let mut spec = spec_fixture_json();
         spec["SECONDS_PER_SLOT"] = json!("12");
         spec["SLOTS_PER_EPOCH"] = json!("32");
         spec["DOMAIN_BEACON_ATTESTER"] = json!("0x01000000");
@@ -770,7 +607,7 @@ mod tests {
     }
 
     /// Every config-derived lookup after the first is served from the
-    /// process-global cache — including from a second client for the same
+    /// process-global cache, including from a second client for the same
     /// endpoint (the submission client in production). Enforced by the
     /// `.expect(1)` mocks on drop.
     #[tokio::test]
@@ -871,7 +708,7 @@ mod tests {
         purge_chain_config_cache(&client.base_url);
     }
 
-    fn spec_fixture() -> serde_json::Value {
+    fn spec_fixture_json() -> serde_json::Value {
         json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
@@ -891,10 +728,13 @@ mod tests {
         })
     }
 
+    fn spec_fixture() -> Spec {
+        serde_json::from_value(spec_fixture_json()).expect("spec fixture")
+    }
+
     #[test]
     fn resolve_fork_version_uses_genesis_version_before_first_fork() {
-        let spec = spec_fixture();
-        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
+        let fork_schedule = fork_schedule_from_spec(&spec_fixture()).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
 
         assert_eq!(
@@ -905,8 +745,7 @@ mod tests {
 
     #[test]
     fn resolve_fork_version_uses_latest_active_fork_version() {
-        let spec = spec_fixture();
-        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
+        let fork_schedule = fork_schedule_from_spec(&spec_fixture()).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
 
         assert_eq!(
@@ -917,7 +756,7 @@ mod tests {
 
     #[test]
     fn resolve_fork_version_breaks_equal_epoch_ties_by_fork_order() {
-        let spec = json!({
+        let spec: Spec = serde_json::from_value(json!({
             "ALTAIR_FORK_VERSION": "0x01020304",
             "ALTAIR_FORK_EPOCH": "0",
             "BELLATRIX_FORK_VERSION": "0x02030405",
@@ -930,7 +769,8 @@ mod tests {
             "ELECTRA_FORK_EPOCH": "2048",
             "FULU_FORK_VERSION": "0x06070809",
             "FULU_FORK_EPOCH": u64::MAX.to_string(),
-        });
+        }))
+        .unwrap();
         let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
 
@@ -938,6 +778,16 @@ mod tests {
             resolve_fork_version(0, genesis_fork_version, &fork_schedule),
             [0x04, 0x05, 0x06, 0x07]
         );
+    }
+
+    #[test]
+    fn fork_schedule_from_spec_reports_missing_keys() {
+        let spec: Spec =
+            serde_json::from_value(json!({ "ALTAIR_FORK_VERSION": "0x01020304" })).unwrap();
+        assert!(matches!(
+            fork_schedule_from_spec(&spec),
+            Err(EthBeaconNodeApiClientError::ParseError(key)) if key.contains("ALTAIR_FORK_EPOCH")
+        ));
     }
 
     #[test]
@@ -956,30 +806,43 @@ mod tests {
 
     #[test]
     fn voluntary_exit_fork_version_pins_capella() {
-        let spec = spec_fixture();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
 
         assert_eq!(
-            voluntary_exit_fork_version(&spec, genesis_fork_version).unwrap(),
+            voluntary_exit_fork_version(&spec_fixture(), genesis_fork_version).unwrap(),
             [0x03, 0x04, 0x05, 0x06]
         );
+    }
+
+    #[test]
+    fn resolve_domain_type_distinguishes_missing_from_malformed() {
+        let spec: Spec =
+            serde_json::from_value(json!({ "DOMAIN_BEACON_ATTESTER": "0xzz" })).unwrap();
+        assert!(matches!(
+            resolve_domain_type(&spec, "DOMAIN_BEACON_ATTESTER"),
+            Err(EthBeaconNodeApiClientError::ParseError(_))
+        ));
+        assert!(matches!(
+            resolve_domain_type(&spec, "DOMAIN_MISSING"),
+            Err(EthBeaconNodeApiClientError::DomainTypeNotFound(_))
+        ));
     }
 
     /// Fork-schedule entries as served by Charon's beaconmock static.json:
     /// versions differ from its (overridden) spec keys and the last entries
     /// activate at capella=256 / deneb=29696.
-    fn schedule_fixture() -> Vec<BeaconStateFork> {
-        let entry = |prev: &str, cur: &str, epoch: &str| BeaconStateFork {
-            previous_version: prev.to_string(),
-            current_version: cur.to_string(),
-            epoch: epoch.to_string(),
+    fn schedule_fixture() -> Vec<phase0::Fork> {
+        let entry = |prev: [u8; 4], cur: [u8; 4], epoch: u64| phase0::Fork {
+            previous_version: prev,
+            current_version: cur,
+            epoch,
         };
         vec![
-            entry("0x01017000", "0x01017000", "0"),
-            entry("0x01017000", "0x02017000", "0"),
-            entry("0x02017000", "0x03017000", "0"),
-            entry("0x03017000", "0x04017000", "256"),
-            entry("0x04017000", "0x05017000", "29696"),
+            entry([0x01, 0x01, 0x70, 0x00], [0x01, 0x01, 0x70, 0x00], 0),
+            entry([0x01, 0x01, 0x70, 0x00], [0x02, 0x01, 0x70, 0x00], 0),
+            entry([0x02, 0x01, 0x70, 0x00], [0x03, 0x01, 0x70, 0x00], 0),
+            entry([0x03, 0x01, 0x70, 0x00], [0x04, 0x01, 0x70, 0x00], 256),
+            entry([0x04, 0x01, 0x70, 0x00], [0x05, 0x01, 0x70, 0x00], 29696),
         ]
     }
 
@@ -1013,12 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_preserves_topic_and_raw_data() {
-        use crate::EventstreamRequestQueryTopic;
         use tokio_stream::StreamExt;
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
 
         let server = MockServer::start().await;
 
@@ -1033,10 +891,7 @@ mod tests {
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
         let stream = client
-            .event_stream(&[
-                EventstreamRequestQueryTopic::Head,
-                EventstreamRequestQueryTopic::ChainReorg,
-            ])
+            .event_stream(&[EventTopic::Head, EventTopic::ChainReorg])
             .await
             .expect("open stream");
         let mut stream = std::pin::pin!(stream);
@@ -1052,6 +907,12 @@ mod tests {
             .expect("ok event");
         assert_eq!(second.topic, "chain_reorg");
         assert_eq!(second.data, r#"{"slot":"20","depth":"2"}"#);
+
+        let received = server.received_requests().await.expect("recording");
+        assert_eq!(
+            received[0].url.query(),
+            Some("topics=head&topics=chain_reorg")
+        );
     }
 
     /// Slots per epoch used by the proposer-duty tests.
@@ -1067,12 +928,7 @@ mod tests {
     }
 
     /// Serves `data` from the epoch-0 proposer-duties endpoint.
-    async fn serve_proposer_duties(data: Vec<serde_json::Value>) -> wiremock::MockServer {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-
+    async fn serve_proposer_duties(data: Vec<serde_json::Value>) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/eth/v1/validator/duties/proposer/0"))
@@ -1088,7 +944,7 @@ mod tests {
     }
 
     /// An epoch of duties, one per slot, for validators `0..count`.
-    async fn proposer_duties_server(count: u64) -> wiremock::MockServer {
+    async fn proposer_duties_server(count: u64) -> MockServer {
         serve_proposer_duties((0..count).map(|i| proposer_duty(i, i)).collect()).await
     }
 
@@ -1145,9 +1001,12 @@ mod tests {
             .await
             .expect_err("malformed duty should fail the response");
 
+        let EthBeaconNodeApiClientError::RequestError(err) = err else {
+            panic!("expected request error, got {err:?}");
+        };
         assert!(
-            matches!(err, EthBeaconNodeApiClientError::ParseError(_)),
-            "expected parse error, got {err:?}"
+            format!("{err:#}").contains("data[1].pubkey"),
+            "error does not name the field: {err:#}"
         );
     }
 
@@ -1173,10 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_proposal_preparations_posts_expected_body() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{body_json, method, path},
-        };
+        use wiremock::matchers::body_json;
 
         let server = MockServer::start().await;
 
@@ -1200,11 +1056,11 @@ mod tests {
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
         client
             .submit_proposal_preparations(&[
-                ProposalPreparation {
+                v1::ProposalPreparation {
                     validator_index: 1,
                     fee_recipient: [0x01; 20],
                 },
-                ProposalPreparation {
+                v1::ProposalPreparation {
                     validator_index: 42,
                     fee_recipient: [0x2a; 20],
                 },
@@ -1217,11 +1073,6 @@ mod tests {
 
     #[tokio::test]
     async fn submit_proposal_preparations_surfaces_error_status() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -1235,16 +1086,18 @@ mod tests {
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
         let error = client
-            .submit_proposal_preparations(&[ProposalPreparation {
+            .submit_proposal_preparations(&[v1::ProposalPreparation {
                 validator_index: 1,
                 fee_recipient: [0x01; 20],
             }])
             .await
             .expect_err("a 500 response must surface as an error");
 
-        assert!(matches!(
-            error,
-            EthBeaconNodeApiClientError::UnexpectedResponse
-        ));
+        let EthBeaconNodeApiClientError::RequestError(error) = error else {
+            panic!("expected request error, got {error:?}");
+        };
+        let http = HttpError::from_error(&error).expect("HTTP error");
+        assert_eq!(http.status.as_u16(), 500);
+        assert_eq!(http.body.message, "internal error");
     }
 }

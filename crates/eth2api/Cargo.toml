@@ -9,12 +9,8 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-bon.workspace = true
 eventsource-stream.workspace = true
-http.workspace = true
-oas3-gen-support.workspace = true
-regex.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["json", "query", "stream"] }
 serde_json.workspace = true
 serde_path_to_error.workspace = true
 serde_with.workspace = true
@@ -22,7 +18,6 @@ serde.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 hex.workspace = true
-validator.workspace = true
 ssz.workspace = true
 ssz_derive.workspace = true
 tree_hash.workspace = true

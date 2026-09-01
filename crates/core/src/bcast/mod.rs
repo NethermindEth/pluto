@@ -8,9 +8,9 @@ use std::{any::Any, error::Error as StdError};
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
-    GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
+    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient, data_version_is_before_electra,
     spec::{altair, phase0},
+    v1::{self, ValidatorStatus},
     versioned,
 };
 use tree_hash::TreeHash;
@@ -147,16 +147,12 @@ pub struct CompleteValidator {
     pub activation_epoch: phase0::Epoch,
 }
 
-impl TryFrom<&GetStateValidatorsResponseResponseDatum> for CompleteValidator {
-    type Error = std::num::ParseIntError;
-
-    fn try_from(
-        datum: &GetStateValidatorsResponseResponseDatum,
-    ) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            status: datum.status.clone(),
-            activation_epoch: datum.validator.activation_epoch.parse()?,
-        })
+impl From<&v1::Validator> for CompleteValidator {
+    fn from(validator: &v1::Validator) -> Self {
+        Self {
+            status: validator.status,
+            activation_epoch: validator.validator.activation_epoch,
+        }
     }
 }
 
@@ -677,10 +673,7 @@ async fn resolve_active_validators_indices(
     let mut indices = Vec::new();
 
     for (index, datum) in validators.iter() {
-        let validator =
-            CompleteValidator::try_from(datum).map_err(|_| Error::InvalidValidatorField {
-                context: "activation epoch",
-            })?;
+        let validator = CompleteValidator::from(datum);
         if !validator.status.is_active() && validator.activation_epoch != epoch {
             continue;
         }
@@ -803,7 +796,7 @@ mod tests {
     };
 
     use pluto_eth2api::{
-        GetStateValidatorsResponseResponse, ValidatorResponseValidator,
+        ValidatorsResponse,
         spec::{bellatrix, electra, phase0},
         v1,
         valcache::ValidatorCache,
@@ -833,40 +826,36 @@ mod tests {
         pubkey: &phase0::BLSPubKey,
         status: ValidatorStatus,
         activation_epoch: u64,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+    ) -> v1::Validator {
+        v1::Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: hex0x(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: activation_epoch.to_string(),
-                exit_epoch: "18446744073709551615".to_string(),
-                withdrawable_epoch: "18446744073709551615".to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
     /// Builds a [`BeaconNodeClient`] whose validator cache is backed by the
     /// `head` validators endpoint returning `datums`.
-    async fn cached_client(
-        beacon: &BeaconMock,
-        datums: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> BeaconNodeClient {
+    async fn cached_client(beacon: &BeaconMock, datums: Vec<v1::Validator>) -> BeaconNodeClient {
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data: datums,
-                },
-            ))
+                }),
+            )
             .with_priority(1)
             .mount(beacon.server())
             .await;

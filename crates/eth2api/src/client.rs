@@ -1,16 +1,21 @@
 //! HTTP client for a single beacon node.
 //!
-//! One method per Beacon API endpoint Pluto uses. Each method takes the
-//! endpoint's request struct and returns its response enum: every status the
-//! API documents maps to a variant (`Ok`, `BadRequest`, ...), any other status
-//! maps to `Unknown` with the body discarded, and only request validation,
-//! transport and body decoding failures surface as `Err`.
+//! One method per Beacon API endpoint Pluto uses. Methods take typed
+//! parameters, exchange JSON, and return the decoded payload: the `data`
+//! value for endpoints whose envelope carries nothing else, a named envelope
+//! struct where the node adds metadata. A non-2xx status is an `Err` wrapping
+//! [`HttpError`]; transport and decoding failures are plain errors.
 
-use crate::types::*;
+use crate::{
+    spec::{DataVersion, altair, deneb, electra, phase0},
+    types::*,
+    v1, versioned,
+};
+use alloy::primitives::U256;
 use anyhow::Context;
-use reqwest::{Client, Response, Url, header::CONTENT_TYPE};
-use serde::de::DeserializeOwned;
-use validator::Validate;
+use reqwest::{Client, RequestBuilder, Response, Url, header::ACCEPT};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::value::RawValue;
 
 /// Client for one beacon node.
 #[derive(Debug, Clone)]
@@ -21,50 +26,285 @@ pub struct EthBeaconNodeApiClient {
     pub base_url: Url,
 }
 
-/// Body of a 2xx response from an endpoint that can answer JSON or SSZ.
-enum SuccessBody<T> {
-    Json(T),
-    Binary(Vec<u8>),
-    /// A content type the client does not decode; the body has been read and
-    /// discarded.
-    Unsupported,
+/// `{ "data": .. }`, the envelope of endpoints that return nothing else.
+#[derive(Deserialize)]
+struct Data<T> {
+    data: T,
 }
 
-/// Decodes a JSON body, naming the offending field path on failure.
-async fn json_body<T: DeserializeOwned>(response: Response) -> anyhow::Result<T> {
-    let body = response.text().await.context("reading response body")?;
-    let mut deserializer = serde_json::Deserializer::from_str(&body);
+/// `{ "version": .., "data": .. }`, the envelope of endpoints whose payload
+/// shape depends on the fork.
+#[derive(Deserialize)]
+struct Versioned<'a> {
+    version: DataVersion,
+    #[serde(default)]
+    execution_optimistic: bool,
+    #[serde(default)]
+    finalized: bool,
+    #[serde(borrow)]
+    data: &'a RawValue,
+}
+
+/// Envelope of `GET /eth/v3/validator/blocks/{slot}`.
+#[derive(Deserialize)]
+struct Proposal<'a> {
+    version: DataVersion,
+    #[serde(default)]
+    execution_payload_blinded: bool,
+    #[serde(default, with = "crate::spec::serde_utils::u256_dec_serde")]
+    execution_payload_value: U256,
+    #[serde(default, with = "crate::spec::serde_utils::u256_dec_serde")]
+    consensus_block_value: U256,
+    #[serde(borrow)]
+    data: &'a RawValue,
+}
+
+/// Deneb and later unsigned block contents.
+#[derive(Deserialize)]
+struct BlockContents<B> {
+    block: B,
+    #[serde(default)]
+    kzg_proofs: Vec<deneb::KZGProof>,
+    #[serde(default)]
+    blobs: Vec<deneb::Blob>,
+}
+
+#[derive(Deserialize)]
+struct NodeVersion {
+    version: String,
+}
+
+/// Returns `response` for a 2xx status and an [`HttpError`] otherwise.
+async fn success(response: Response) -> anyhow::Result<Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let text = text(response).await?;
+    let body = serde_json::from_str(&text).unwrap_or_else(|_| ErrorBody {
+        message: text,
+        ..ErrorBody::default()
+    });
+    Err(HttpError { status, body }.into())
+}
+
+async fn text(response: Response) -> anyhow::Result<String> {
+    response.text().await.context("reading response body")
+}
+
+/// Decodes JSON, naming the offending field path on failure.
+fn decode<'a, T: Deserialize<'a>>(body: &'a str) -> anyhow::Result<T> {
+    let mut deserializer = serde_json::Deserializer::from_str(body);
     serde_path_to_error::deserialize(&mut deserializer).context("decoding JSON response body")
 }
 
-/// Reads and discards the body of a response with no typed payload.
-async fn drain(response: Response) -> anyhow::Result<()> {
-    response.bytes().await.context("reading response body")?;
+/// Decodes the JSON body of a 2xx response.
+async fn json<T: DeserializeOwned>(response: Response) -> anyhow::Result<T> {
+    let body = text(success(response).await?).await?;
+    decode(&body)
+}
+
+/// Decodes the `data` field of a 2xx response.
+async fn data<T: DeserializeOwned>(response: Response) -> anyhow::Result<T> {
+    Ok(json::<Data<T>>(response).await?.data)
+}
+
+/// Checks the status of a response without a payload.
+async fn empty(response: Response) -> anyhow::Result<()> {
+    success(response)
+        .await?
+        .bytes()
+        .await
+        .context("reading response body")?;
     Ok(())
 }
 
-/// Decodes a 2xx body by `Content-Type`: JSON when the type mentions `json`
-/// or the header is absent, raw bytes for `application/octet-stream`.
-async fn json_or_binary_body<T: DeserializeOwned>(
-    response: Response,
-) -> anyhow::Result<SuccessBody<T>> {
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/json")
-        .to_owned();
+/// Returns the `Eth-Consensus-Version` header value for `version`.
+fn consensus_version(version: DataVersion) -> anyhow::Result<&'static str> {
+    anyhow::ensure!(
+        version != DataVersion::Unknown,
+        "payload has no consensus version"
+    );
+    Ok(version.as_str())
+}
 
-    if content_type.contains("json") {
-        return Ok(SuccessBody::Json(json_body(response).await?));
-    }
-    if content_type.starts_with("application/octet-stream") {
-        let bytes = response.bytes().await.context("reading response body")?;
-        return Ok(SuccessBody::Binary(bytes.to_vec()));
+/// Returns the version shared by every element of `versions`.
+fn common_version(mut versions: impl Iterator<Item = DataVersion>) -> anyhow::Result<&'static str> {
+    let first = versions
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty payload list"))?;
+    anyhow::ensure!(
+        versions.all(|version| version == first),
+        "payloads carry different consensus versions"
+    );
+    consensus_version(first)
+}
+
+fn decode_proposal_block(
+    version: DataVersion,
+    blinded: bool,
+    body: &str,
+) -> anyhow::Result<versioned::ProposalBlock> {
+    use versioned::ProposalBlock;
+
+    fn contents<B: DeserializeOwned>(
+        body: &str,
+    ) -> anyhow::Result<(Box<B>, Vec<deneb::KZGProof>, Vec<deneb::Blob>)> {
+        let contents: BlockContents<B> = decode(body)?;
+        Ok((
+            Box::new(contents.block),
+            contents.kzg_proofs,
+            contents.blobs,
+        ))
     }
 
-    drain(response).await?;
-    Ok(SuccessBody::Unsupported)
+    Ok(match (version, blinded) {
+        (DataVersion::Phase0, false) => ProposalBlock::Phase0(decode(body)?),
+        (DataVersion::Altair, false) => ProposalBlock::Altair(decode(body)?),
+        (DataVersion::Bellatrix, false) => ProposalBlock::Bellatrix(decode(body)?),
+        (DataVersion::Bellatrix, true) => ProposalBlock::BellatrixBlinded(decode(body)?),
+        (DataVersion::Capella, false) => ProposalBlock::Capella(decode(body)?),
+        (DataVersion::Capella, true) => ProposalBlock::CapellaBlinded(decode(body)?),
+        (DataVersion::Deneb, false) => {
+            let (block, kzg_proofs, blobs) = contents(body)?;
+            ProposalBlock::Deneb {
+                block,
+                kzg_proofs,
+                blobs,
+            }
+        }
+        (DataVersion::Deneb, true) => ProposalBlock::DenebBlinded(decode(body)?),
+        (DataVersion::Electra, false) => {
+            let (block, kzg_proofs, blobs) = contents(body)?;
+            ProposalBlock::Electra {
+                block,
+                kzg_proofs,
+                blobs,
+            }
+        }
+        (DataVersion::Electra, true) => ProposalBlock::ElectraBlinded(decode(body)?),
+        (DataVersion::Fulu, false) => {
+            let (block, kzg_proofs, blobs) = contents(body)?;
+            ProposalBlock::Fulu {
+                block,
+                kzg_proofs,
+                blobs,
+            }
+        }
+        (DataVersion::Fulu, true) => ProposalBlock::FuluBlinded(decode(body)?),
+        (DataVersion::Phase0 | DataVersion::Altair, true) => {
+            anyhow::bail!("{version} proposal cannot be blinded")
+        }
+        (DataVersion::Unknown, _) => anyhow::bail!("proposal has an unknown consensus version"),
+    })
+}
+
+fn decode_signed_block(
+    version: DataVersion,
+    body: &str,
+) -> anyhow::Result<versioned::SignedBeaconBlock> {
+    use versioned::SignedBeaconBlock;
+
+    Ok(match version {
+        DataVersion::Phase0 => SignedBeaconBlock::Phase0(decode(body)?),
+        DataVersion::Altair => SignedBeaconBlock::Altair(decode(body)?),
+        DataVersion::Bellatrix => SignedBeaconBlock::Bellatrix(decode(body)?),
+        DataVersion::Capella => SignedBeaconBlock::Capella(decode(body)?),
+        DataVersion::Deneb => SignedBeaconBlock::Deneb(decode(body)?),
+        DataVersion::Electra => SignedBeaconBlock::Electra(decode(body)?),
+        DataVersion::Fulu => SignedBeaconBlock::Fulu(decode(body)?),
+        DataVersion::Unknown => anyhow::bail!("block has an unknown consensus version"),
+    })
+}
+
+fn decode_attestation(
+    version: DataVersion,
+    body: &str,
+) -> anyhow::Result<versioned::AttestationPayload> {
+    use versioned::AttestationPayload;
+
+    Ok(match version {
+        DataVersion::Phase0 => AttestationPayload::Phase0(decode(body)?),
+        DataVersion::Altair => AttestationPayload::Altair(decode(body)?),
+        DataVersion::Bellatrix => AttestationPayload::Bellatrix(decode(body)?),
+        DataVersion::Capella => AttestationPayload::Capella(decode(body)?),
+        DataVersion::Deneb => AttestationPayload::Deneb(decode(body)?),
+        DataVersion::Electra => AttestationPayload::Electra(decode(body)?),
+        DataVersion::Fulu => AttestationPayload::Fulu(decode(body)?),
+        DataVersion::Unknown => anyhow::bail!("attestation has an unknown consensus version"),
+    })
+}
+
+/// Position of the lowest set bit, i.e. the committee index a single-committee
+/// `committee_bits` vector denotes.
+fn first_set_bit(bytes: &[u8]) -> Option<u64> {
+    let (byte_index, byte) = bytes.iter().enumerate().find(|(_, byte)| **byte != 0)?;
+    u64::try_from(byte_index)
+        .ok()?
+        .checked_mul(8)?
+        .checked_add(u64::from(byte.trailing_zeros()))
+}
+
+/// Body of `POST /eth/v2/beacon/pool/attestations`, whose element shape
+/// changes at Electra.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum PoolAttestations<'a> {
+    Legacy(Vec<&'a phase0::Attestation>),
+    Single(Vec<electra::SingleAttestation>),
+}
+
+fn pool_attestations(
+    version: DataVersion,
+    attestations: &[versioned::VersionedAttestation],
+) -> anyhow::Result<PoolAttestations<'_>> {
+    use versioned::AttestationPayload;
+
+    if crate::data_version_is_before_electra(version) {
+        let items = attestations
+            .iter()
+            .map(|attestation| match attestation.attestation.as_ref() {
+                Some(
+                    AttestationPayload::Phase0(payload)
+                    | AttestationPayload::Altair(payload)
+                    | AttestationPayload::Bellatrix(payload)
+                    | AttestationPayload::Capella(payload)
+                    | AttestationPayload::Deneb(payload),
+                ) => Ok(payload),
+                Some(AttestationPayload::Electra(_) | AttestationPayload::Fulu(_)) => {
+                    anyhow::bail!("electra attestation in a pre-electra submission")
+                }
+                None => anyhow::bail!("attestation has no payload"),
+            })
+            .collect::<anyhow::Result<_>>()?;
+        return Ok(PoolAttestations::Legacy(items));
+    }
+
+    let items = attestations
+        .iter()
+        .map(|attestation| {
+            let payload = match attestation.attestation.as_ref() {
+                Some(AttestationPayload::Electra(payload) | AttestationPayload::Fulu(payload)) => {
+                    payload
+                }
+                Some(_) => anyhow::bail!("pre-electra attestation in an electra submission"),
+                None => anyhow::bail!("attestation has no payload"),
+            };
+            let attester_index = attestation
+                .validator_index
+                .ok_or_else(|| anyhow::anyhow!("attestation has no validator index"))?;
+            let committee_index = first_set_bit(&payload.committee_bits.bytes)
+                .ok_or_else(|| anyhow::anyhow!("attestation has no committee bit set"))?;
+            Ok(electra::SingleAttestation {
+                committee_index,
+                attester_index,
+                data: payload.data.clone(),
+                signature: payload.signature,
+            })
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(PoolAttestations::Single(items))
 }
 
 impl EthBeaconNodeApiClient {
@@ -91,817 +331,588 @@ impl EthBeaconNodeApiClient {
         Ok(url)
     }
 
+    fn get(&self, segments: &[&str]) -> anyhow::Result<RequestBuilder> {
+        Ok(self
+            .client
+            .get(self.url(segments)?)
+            .header(ACCEPT, "application/json"))
+    }
+
+    fn post(&self, segments: &[&str]) -> anyhow::Result<RequestBuilder> {
+        Ok(self.client.post(self.url(segments)?))
+    }
+
     /// `GET /eth/v1/beacon/genesis`: genesis time, validators root and fork
     /// version.
-    pub async fn get_genesis(
-        &self,
-        request: GetGenesisRequest,
-    ) -> anyhow::Result<GetGenesisResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "beacon", "genesis"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetGenesisResponse::Ok(json_body(response).await?),
-            404 => GetGenesisResponse::NotFound(json_body(response).await?),
-            500 => GetGenesisResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetGenesisResponse::Unknown
-            }
-        })
+    pub async fn get_genesis(&self) -> anyhow::Result<v1::Genesis> {
+        data(
+            self.get(&["eth", "v1", "beacon", "genesis"])?
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/beacon/blocks/{block_id}/root`: the root of a block.
-    pub async fn get_block_root(
-        &self,
-        request: GetBlockRootRequest,
-    ) -> anyhow::Result<GetBlockRootResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&[
-            "eth",
-            "v1",
-            "beacon",
-            "blocks",
-            &request.path.block_id,
-            "root",
-        ])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetBlockRootResponse::Ok(json_body(response).await?),
-            400 => GetBlockRootResponse::BadRequest(json_body(response).await?),
-            404 => GetBlockRootResponse::NotFound(json_body(response).await?),
-            500 => GetBlockRootResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetBlockRootResponse::Unknown
-            }
-        })
+    pub async fn get_block_root(&self, block_id: &str) -> anyhow::Result<BlockRootResponse> {
+        json(
+            self.get(&["eth", "v1", "beacon", "blocks", block_id, "root"])?
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/beacon/headers/{block_id}`: the signed header of a block.
-    pub async fn get_block_header(
-        &self,
-        request: GetBlockHeaderRequest,
-    ) -> anyhow::Result<GetBlockHeaderResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "beacon", "headers", &request.path.block_id])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetBlockHeaderResponse::Ok(json_body(response).await?),
-            400 => GetBlockHeaderResponse::BadRequest(json_body(response).await?),
-            404 => GetBlockHeaderResponse::NotFound(json_body(response).await?),
-            500 => GetBlockHeaderResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetBlockHeaderResponse::Unknown
-            }
-        })
+    pub async fn get_block_header(&self, block_id: &str) -> anyhow::Result<BlockHeaderResponse> {
+        json(
+            self.get(&["eth", "v1", "beacon", "headers", block_id])?
+                .send()
+                .await?,
+        )
+        .await
     }
 
-    /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block, as JSON
-    /// or SSZ depending on the node's `Content-Type`.
-    pub async fn get_block_v2(
-        &self,
-        request: GetBlockV2Request,
-    ) -> anyhow::Result<GetBlockV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "beacon", "blocks", &request.path.block_id])?;
-        let response = self.client.get(url).send().await?;
+    /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block.
+    pub async fn get_block_v2(&self, block_id: &str) -> anyhow::Result<SignedBlockResponse> {
+        let response = self
+            .get(&["eth", "v2", "beacon", "blocks", block_id])?
+            .send()
+            .await?;
+        let body = text(success(response).await?).await?;
+        let envelope: Versioned<'_> = decode(&body)?;
 
-        Ok(match response.status().as_u16() {
-            200..=299 => match json_or_binary_body(response).await? {
-                SuccessBody::Json(data) => GetBlockV2Response::Ok(data),
-                SuccessBody::Binary(bytes) => GetBlockV2Response::OkBinary(bytes),
-                SuccessBody::Unsupported => GetBlockV2Response::Unknown,
-            },
-            400 => GetBlockV2Response::BadRequest(json_body(response).await?),
-            404 => GetBlockV2Response::NotFound(json_body(response).await?),
-            406 => GetBlockV2Response::NotAcceptable(json_body(response).await?),
-            500 => GetBlockV2Response::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetBlockV2Response::Unknown
-            }
+        Ok(SignedBlockResponse {
+            version: envelope.version,
+            execution_optimistic: envelope.execution_optimistic,
+            finalized: envelope.finalized,
+            data: decode_signed_block(envelope.version, envelope.data.get())?,
         })
     }
 
     /// `POST /eth/v1/beacon/states/{state_id}/validators`: validators of a
-    /// state, filtered by the ids and statuses in the body.
+    /// state, narrowed by `filter`.
     pub async fn post_state_validators(
         &self,
-        request: PostStateValidatorsRequest,
-    ) -> anyhow::Result<PostStateValidatorsResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&[
-            "eth",
-            "v1",
-            "beacon",
-            "states",
-            &request.path.state_id,
-            "validators",
-        ])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => PostStateValidatorsResponse::Ok(json_body(response).await?),
-            400 => PostStateValidatorsResponse::BadRequest(json_body(response).await?),
-            404 => PostStateValidatorsResponse::NotFound(json_body(response).await?),
-            500 => PostStateValidatorsResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                PostStateValidatorsResponse::Unknown
-            }
-        })
+        state_id: &str,
+        filter: &ValidatorsFilter,
+    ) -> anyhow::Result<ValidatorsResponse> {
+        json(
+            self.post(&["eth", "v1", "beacon", "states", state_id, "validators"])?
+                .json(filter)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v2/beacon/blocks`: publishes a signed block (with blobs from
-    /// Deneb on), tagged with its consensus version.
+    /// Deneb on).
     pub async fn publish_block_v2(
         &self,
-        request: PublishBlockV2Request,
-    ) -> anyhow::Result<PublishBlockV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "beacon", "blocks"])?;
-        let response = self
-            .client
-            .post(url)
-            .query(&request.query)
-            .header(
-                ETH_CONSENSUS_VERSION,
-                request.header.eth_consensus_version.to_string(),
-            )
-            .json(&request.body)
-            .send()
-            .await?;
-
-        parse_publish_block_response(response).await
+        proposal: &versioned::VersionedSignedProposal,
+        broadcast_validation: Option<BroadcastValidation>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !proposal.blinded,
+            "blinded proposal on the unblinded publish endpoint"
+        );
+        let mut request = self
+            .post(&["eth", "v2", "beacon", "blocks"])?
+            .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
+            .json(&proposal.block);
+        if let Some(validation) = broadcast_validation {
+            request = request.query(&[("broadcast_validation", validation.as_str())]);
+        }
+        empty(request.send().await?).await
     }
 
-    /// `POST /eth/v2/beacon/blinded_blocks`: publishes a signed blinded
-    /// block, tagged with its consensus version.
+    /// `POST /eth/v2/beacon/blinded_blocks`: publishes a signed blinded block.
     pub async fn publish_blinded_block_v2(
         &self,
-        request: PublishBlindedBlockV2Request,
-    ) -> anyhow::Result<PublishBlockV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "beacon", "blinded_blocks"])?;
-        let response = self
-            .client
-            .post(url)
-            .query(&request.query)
-            .header(
-                ETH_CONSENSUS_VERSION,
-                request.header.eth_consensus_version.to_string(),
-            )
-            .json(&request.body)
-            .send()
-            .await?;
-
-        parse_publish_block_response(response).await
+        proposal: &versioned::VersionedSignedBlindedProposal,
+        broadcast_validation: Option<BroadcastValidation>,
+    ) -> anyhow::Result<()> {
+        let mut request = self
+            .post(&["eth", "v2", "beacon", "blinded_blocks"])?
+            .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
+            .json(&proposal.block);
+        if let Some(validation) = broadcast_validation {
+            request = request.query(&[("broadcast_validation", validation.as_str())]);
+        }
+        empty(request.send().await?).await
     }
 
-    /// `POST /eth/v2/beacon/pool/attestations`: submits signed attestations,
-    /// tagged with their consensus version.
+    /// `POST /eth/v2/beacon/pool/attestations`: submits signed attestations.
+    /// From Electra on the node expects single attestations, so each payload
+    /// is sent with its validator index and the committee its bits denote.
     pub async fn submit_pool_attestations_v2(
         &self,
-        request: SubmitPoolAttestationsV2Request,
-    ) -> anyhow::Result<SubmitPoolAttestationsV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "beacon", "pool", "attestations"])?;
+        attestations: &[versioned::VersionedAttestation],
+    ) -> anyhow::Result<()> {
+        let version = attestations
+            .first()
+            .map_or(DataVersion::Phase0, |attestation| attestation.version);
+        let body = pool_attestations(version, attestations)?;
         let response = self
-            .client
-            .post(url)
-            .header(
-                ETH_CONSENSUS_VERSION,
-                request.header.eth_consensus_version.to_string(),
-            )
-            .json(&request.body)
+            .post(&["eth", "v2", "beacon", "pool", "attestations"])?
+            .header(ETH_CONSENSUS_VERSION, consensus_version(version)?)
+            .json(&body)
             .send()
             .await?;
-
-        parse_submit_pool_attestations_response(response).await
+        empty(response).await
     }
 
     /// `POST /eth/v1/beacon/pool/sync_committees`: submits sync committee
     /// messages.
     pub async fn submit_pool_sync_committee_signatures(
         &self,
-        request: SubmitPoolSyncCommitteeSignaturesRequest,
-    ) -> anyhow::Result<PublishContributionAndProofsResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "beacon", "pool", "sync_committees"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        parse_publish_contribution_and_proofs_response(response).await
+        messages: &[altair::SyncCommitteeMessage],
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "beacon", "pool", "sync_committees"])?
+                .json(messages)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/beacon/pool/voluntary_exits`: submits a signed voluntary
     /// exit.
     pub async fn submit_pool_voluntary_exit(
         &self,
-        request: SubmitPoolVoluntaryExitRequest,
-    ) -> anyhow::Result<SubmitPoolVoluntaryExitResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "beacon", "pool", "voluntary_exits"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => {
-                drain(response).await?;
-                SubmitPoolVoluntaryExitResponse::Ok
-            }
-            400 => SubmitPoolVoluntaryExitResponse::BadRequest(json_body(response).await?),
-            500 => SubmitPoolVoluntaryExitResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                SubmitPoolVoluntaryExitResponse::Unknown
-            }
-        })
+        exit: &phase0::SignedVoluntaryExit,
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "beacon", "pool", "voluntary_exits"])?
+                .json(exit)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/config/fork_schedule`: every fork the node knows about.
-    pub async fn get_fork_schedule(
-        &self,
-        request: GetForkScheduleRequest,
-    ) -> anyhow::Result<GetForkScheduleResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "config", "fork_schedule"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetForkScheduleResponse::Ok(json_body(response).await?),
-            500 => GetForkScheduleResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetForkScheduleResponse::Unknown
-            }
-        })
+    pub async fn get_fork_schedule(&self) -> anyhow::Result<Vec<phase0::Fork>> {
+        data(
+            self.get(&["eth", "v1", "config", "fork_schedule"])?
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/config/spec`: the chain constants, presets and
     /// configuration.
-    pub async fn get_spec(&self, request: GetSpecRequest) -> anyhow::Result<GetSpecResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "config", "spec"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetSpecResponse::Ok(json_body(response).await?),
-            500 => GetSpecResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetSpecResponse::Unknown
-            }
-        })
+    pub async fn get_spec(&self) -> anyhow::Result<Spec> {
+        data(self.get(&["eth", "v1", "config", "spec"])?.send().await?).await
     }
 
     /// `GET /eth/v1/node/peer_count`: the node's peer counts by connection
     /// state.
-    pub async fn get_peer_count(
-        &self,
-        request: GetPeerCountRequest,
-    ) -> anyhow::Result<GetPeerCountResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "node", "peer_count"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetPeerCountResponse::Ok(json_body(response).await?),
-            500 => GetPeerCountResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetPeerCountResponse::Unknown
-            }
-        })
+    pub async fn get_peer_count(&self) -> anyhow::Result<v1::PeerCount> {
+        data(
+            self.get(&["eth", "v1", "node", "peer_count"])?
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/node/syncing`: the node's sync status.
-    pub async fn get_syncing_status(
-        &self,
-        request: GetSyncingStatusRequest,
-    ) -> anyhow::Result<GetSyncingStatusResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "node", "syncing"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetSyncingStatusResponse::Ok(json_body(response).await?),
-            500 => GetSyncingStatusResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetSyncingStatusResponse::Unknown
-            }
-        })
+    pub async fn get_syncing_status(&self) -> anyhow::Result<v1::SyncState> {
+        data(self.get(&["eth", "v1", "node", "syncing"])?.send().await?).await
     }
 
     /// `GET /eth/v1/node/version`: the node's client version string.
-    pub async fn get_node_version(
-        &self,
-        request: GetNodeVersionRequest,
-    ) -> anyhow::Result<GetNodeVersionResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "node", "version"])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetNodeVersionResponse::Ok(json_body(response).await?),
-            500 => GetNodeVersionResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetNodeVersionResponse::Unknown
-            }
-        })
+    pub async fn get_node_version(&self) -> anyhow::Result<String> {
+        let version: NodeVersion =
+            data(self.get(&["eth", "v1", "node", "version"])?.send().await?).await?;
+        Ok(version.version)
     }
 
     /// `GET /eth/v1/validator/attestation_data`: unsigned attestation data
-    /// for a slot and committee index, as JSON or SSZ depending on the node's
-    /// `Content-Type`.
+    /// for a slot and committee index.
     pub async fn produce_attestation_data(
         &self,
-        request: ProduceAttestationDataRequest,
-    ) -> anyhow::Result<ProduceAttestationDataResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "attestation_data"])?;
-        let response = self.client.get(url).query(&request.query).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => match json_or_binary_body(response).await? {
-                SuccessBody::Json(data) => ProduceAttestationDataResponse::Ok(data),
-                SuccessBody::Binary(bytes) => ProduceAttestationDataResponse::OkBinary(bytes),
-                SuccessBody::Unsupported => ProduceAttestationDataResponse::Unknown,
-            },
-            400 => ProduceAttestationDataResponse::BadRequest(json_body(response).await?),
-            406 => ProduceAttestationDataResponse::NotAcceptable(json_body(response).await?),
-            500 => ProduceAttestationDataResponse::InternalServerError(json_body(response).await?),
-            503 => ProduceAttestationDataResponse::ServiceUnavailable(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                ProduceAttestationDataResponse::Unknown
-            }
-        })
+        slot: phase0::Slot,
+        committee_index: u64,
+    ) -> anyhow::Result<phase0::AttestationData> {
+        data(
+            self.get(&["eth", "v1", "validator", "attestation_data"])?
+                .query(&[
+                    ("slot", slot.to_string()),
+                    ("committee_index", committee_index.to_string()),
+                ])
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/beacon_committee_selections`: exchanges
     /// partial beacon committee selection proofs for aggregated ones.
     pub async fn submit_beacon_committee_selections(
         &self,
-        request: SubmitBeaconCommitteeSelectionsRequest,
-    ) -> anyhow::Result<SubmitBeaconCommitteeSelectionsResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "beacon_committee_selections"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => SubmitBeaconCommitteeSelectionsResponse::Ok(json_body(response).await?),
-            400 => SubmitBeaconCommitteeSelectionsResponse::BadRequest(json_body(response).await?),
-            500 => SubmitBeaconCommitteeSelectionsResponse::InternalServerError(
-                json_body(response).await?,
-            ),
-            501 => {
-                SubmitBeaconCommitteeSelectionsResponse::NotImplemented(json_body(response).await?)
-            }
-            503 => SubmitBeaconCommitteeSelectionsResponse::ServiceUnavailable(
-                json_body(response).await?,
-            ),
-            _ => {
-                drain(response).await?;
-                SubmitBeaconCommitteeSelectionsResponse::Unknown
-            }
-        })
+        selections: &[v1::BeaconCommitteeSelection],
+    ) -> anyhow::Result<Vec<v1::BeaconCommitteeSelection>> {
+        data(
+            self.post(&["eth", "v1", "validator", "beacon_committee_selections"])?
+                .json(selections)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/contribution_and_proofs`: submits signed sync
     /// committee contributions and proofs.
     pub async fn publish_contribution_and_proofs(
         &self,
-        request: PublishContributionAndProofsRequest,
-    ) -> anyhow::Result<PublishContributionAndProofsResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "contribution_and_proofs"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        parse_publish_contribution_and_proofs_response(response).await
+        contributions: &[altair::SignedContributionAndProof],
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "validator", "contribution_and_proofs"])?
+                .json(contributions)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/duties/attester/{epoch}`: attester duties of
-    /// the validator indices in the body.
+    /// `indices`.
     pub async fn get_attester_duties(
         &self,
-        request: GetAttesterDutiesRequest,
-    ) -> anyhow::Result<GetAttesterDutiesResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&[
-            "eth",
-            "v1",
-            "validator",
-            "duties",
-            "attester",
-            &request.path.epoch,
-        ])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetAttesterDutiesResponse::Ok(json_body(response).await?),
-            400 => GetAttesterDutiesResponse::BadRequest(json_body(response).await?),
-            500 => GetAttesterDutiesResponse::InternalServerError(json_body(response).await?),
-            503 => GetAttesterDutiesResponse::ServiceUnavailable(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetAttesterDutiesResponse::Unknown
-            }
-        })
+        epoch: phase0::Epoch,
+        indices: &[phase0::ValidatorIndex],
+    ) -> anyhow::Result<AttesterDutiesResponse> {
+        json(
+            self.post(&[
+                "eth",
+                "v1",
+                "validator",
+                "duties",
+                "attester",
+                &epoch.to_string(),
+            ])?
+            .json(&decimal_strings(indices))
+            .send()
+            .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/validator/duties/proposer/{epoch}`: the proposer of every
     /// slot in an epoch.
     pub async fn get_proposer_duties(
         &self,
-        request: GetProposerDutiesRequest,
-    ) -> anyhow::Result<GetProposerDutiesResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&[
-            "eth",
-            "v1",
-            "validator",
-            "duties",
-            "proposer",
-            &request.path.epoch,
-        ])?;
-        let response = self.client.get(url).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetProposerDutiesResponse::Ok(json_body(response).await?),
-            400 => GetProposerDutiesResponse::BadRequest(json_body(response).await?),
-            500 => GetProposerDutiesResponse::InternalServerError(json_body(response).await?),
-            503 => GetProposerDutiesResponse::ServiceUnavailable(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetProposerDutiesResponse::Unknown
-            }
-        })
+        epoch: phase0::Epoch,
+    ) -> anyhow::Result<ProposerDutiesResponse> {
+        json(
+            self.get(&[
+                "eth",
+                "v1",
+                "validator",
+                "duties",
+                "proposer",
+                &epoch.to_string(),
+            ])?
+            .send()
+            .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/duties/sync/{epoch}`: sync committee duties of
-    /// the validator indices in the body.
+    /// `indices`.
     pub async fn get_sync_committee_duties(
         &self,
-        request: GetSyncCommitteeDutiesRequest,
-    ) -> anyhow::Result<GetSyncCommitteeDutiesResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&[
-            "eth",
-            "v1",
-            "validator",
-            "duties",
-            "sync",
-            &request.path.epoch,
-        ])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => GetSyncCommitteeDutiesResponse::Ok(json_body(response).await?),
-            400 => GetSyncCommitteeDutiesResponse::BadRequest(json_body(response).await?),
-            500 => GetSyncCommitteeDutiesResponse::InternalServerError(json_body(response).await?),
-            503 => GetSyncCommitteeDutiesResponse::ServiceUnavailable(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                GetSyncCommitteeDutiesResponse::Unknown
-            }
-        })
+        epoch: phase0::Epoch,
+        indices: &[phase0::ValidatorIndex],
+    ) -> anyhow::Result<SyncCommitteeDutiesResponse> {
+        json(
+            self.post(&[
+                "eth",
+                "v1",
+                "validator",
+                "duties",
+                "sync",
+                &epoch.to_string(),
+            ])?
+            .json(&decimal_strings(indices))
+            .send()
+            .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/prepare_beacon_proposer`: tells the node which
     /// fee recipient to build blocks with for each validator.
     pub async fn prepare_beacon_proposer(
         &self,
-        request: PrepareBeaconProposerRequest,
-    ) -> anyhow::Result<PrepareBeaconProposerResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "prepare_beacon_proposer"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        parse_prepare_beacon_proposer_response(response).await
+        preparations: &[v1::ProposalPreparation],
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "validator", "prepare_beacon_proposer"])?
+                .json(preparations)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/register_validator`: forwards signed builder
     /// registrations to the node.
     pub async fn register_validator(
         &self,
-        request: RegisterValidatorRequest,
-    ) -> anyhow::Result<RegisterValidatorResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "register_validator"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => {
-                drain(response).await?;
-                RegisterValidatorResponse::Ok
-            }
-            400 => RegisterValidatorResponse::BadRequest(json_body(response).await?),
-            415 => RegisterValidatorResponse::UnsupportedMediaType(json_body(response).await?),
-            500 => RegisterValidatorResponse::InternalServerError(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                RegisterValidatorResponse::Unknown
-            }
-        })
+        registrations: &[v1::SignedValidatorRegistration],
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "validator", "register_validator"])?
+                .json(registrations)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/validator/sync_committee_contribution`: the aggregated
     /// sync committee contribution for a slot, subcommittee and block root.
     pub async fn produce_sync_committee_contribution(
         &self,
-        request: ProduceSyncCommitteeContributionRequest,
-    ) -> anyhow::Result<ProduceSyncCommitteeContributionResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "sync_committee_contribution"])?;
-        let response = self.client.get(url).query(&request.query).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => ProduceSyncCommitteeContributionResponse::Ok(json_body(response).await?),
-            400 => ProduceSyncCommitteeContributionResponse::BadRequest(json_body(response).await?),
-            404 => ProduceSyncCommitteeContributionResponse::NotFound(json_body(response).await?),
-            500 => ProduceSyncCommitteeContributionResponse::InternalServerError(
-                json_body(response).await?,
-            ),
-            503 => ProduceSyncCommitteeContributionResponse::ServiceUnavailable(
-                json_body(response).await?,
-            ),
-            _ => {
-                drain(response).await?;
-                ProduceSyncCommitteeContributionResponse::Unknown
-            }
-        })
+        slot: phase0::Slot,
+        subcommittee_index: u64,
+        beacon_block_root: phase0::Root,
+    ) -> anyhow::Result<altair::SyncCommitteeContribution> {
+        data(
+            self.get(&["eth", "v1", "validator", "sync_committee_contribution"])?
+                .query(&[
+                    ("slot", slot.to_string()),
+                    ("subcommittee_index", subcommittee_index.to_string()),
+                    (
+                        "beacon_block_root",
+                        pluto_ssz::to_0x_hex(&beacon_block_root),
+                    ),
+                ])
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/sync_committee_selections`: exchanges partial
     /// sync committee selection proofs for aggregated ones.
     pub async fn submit_sync_committee_selections(
         &self,
-        request: SubmitSyncCommitteeSelectionsRequest,
-    ) -> anyhow::Result<SubmitSyncCommitteeSelectionsResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "sync_committee_selections"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        Ok(match response.status().as_u16() {
-            200..=299 => SubmitSyncCommitteeSelectionsResponse::Ok(json_body(response).await?),
-            400 => SubmitSyncCommitteeSelectionsResponse::BadRequest(json_body(response).await?),
-            500 => SubmitSyncCommitteeSelectionsResponse::InternalServerError(
-                json_body(response).await?,
-            ),
-            501 => {
-                SubmitSyncCommitteeSelectionsResponse::NotImplemented(json_body(response).await?)
-            }
-            503 => SubmitSyncCommitteeSelectionsResponse::ServiceUnavailable(
-                json_body(response).await?,
-            ),
-            _ => {
-                drain(response).await?;
-                SubmitSyncCommitteeSelectionsResponse::Unknown
-            }
-        })
+        selections: &[v1::SyncCommitteeSelection],
+    ) -> anyhow::Result<Vec<v1::SyncCommitteeSelection>> {
+        data(
+            self.post(&["eth", "v1", "validator", "sync_committee_selections"])?
+                .json(selections)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `POST /eth/v1/validator/sync_committee_subscriptions`: subscribes the
     /// node to sync committee subnets.
     pub async fn prepare_sync_committee_subnets(
         &self,
-        request: PrepareSyncCommitteeSubnetsRequest,
-    ) -> anyhow::Result<PrepareBeaconProposerResponse> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v1", "validator", "sync_committee_subscriptions"])?;
-        let response = self.client.post(url).json(&request.body).send().await?;
-
-        parse_prepare_beacon_proposer_response(response).await
+        subscriptions: &[v1::SyncCommitteeSubscription],
+    ) -> anyhow::Result<()> {
+        empty(
+            self.post(&["eth", "v1", "validator", "sync_committee_subscriptions"])?
+                .json(subscriptions)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v2/validator/aggregate_attestation`: the aggregate
-    /// attestation for a slot, committee index and attestation data root, as
-    /// JSON or SSZ depending on the node's `Content-Type`.
+    /// attestation for a slot, committee index and attestation data root.
     pub async fn get_aggregated_attestation_v2(
         &self,
-        request: GetAggregatedAttestationV2Request,
-    ) -> anyhow::Result<GetAggregatedAttestationV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "validator", "aggregate_attestation"])?;
-        let response = self.client.get(url).query(&request.query).send().await?;
+        slot: phase0::Slot,
+        committee_index: u64,
+        attestation_data_root: phase0::Root,
+    ) -> anyhow::Result<versioned::VersionedAttestation> {
+        let response = self
+            .get(&["eth", "v2", "validator", "aggregate_attestation"])?
+            .query(&[
+                (
+                    "attestation_data_root",
+                    pluto_ssz::to_0x_hex(&attestation_data_root),
+                ),
+                ("slot", slot.to_string()),
+                ("committee_index", committee_index.to_string()),
+            ])
+            .send()
+            .await?;
+        let body = text(success(response).await?).await?;
+        let envelope: Versioned<'_> = decode(&body)?;
 
-        Ok(match response.status().as_u16() {
-            200..=299 => match json_or_binary_body(response).await? {
-                SuccessBody::Json(data) => GetAggregatedAttestationV2Response::Ok(data),
-                SuccessBody::Binary(bytes) => GetAggregatedAttestationV2Response::OkBinary(bytes),
-                SuccessBody::Unsupported => GetAggregatedAttestationV2Response::Unknown,
-            },
-            400 => GetAggregatedAttestationV2Response::BadRequest(json_body(response).await?),
-            404 => GetAggregatedAttestationV2Response::NotFound(json_body(response).await?),
-            406 => GetAggregatedAttestationV2Response::NotAcceptable(json_body(response).await?),
-            500 => {
-                GetAggregatedAttestationV2Response::InternalServerError(json_body(response).await?)
-            }
-            _ => {
-                drain(response).await?;
-                GetAggregatedAttestationV2Response::Unknown
-            }
+        Ok(versioned::VersionedAttestation {
+            version: envelope.version,
+            validator_index: None,
+            attestation: Some(decode_attestation(envelope.version, envelope.data.get())?),
         })
     }
 
     /// `POST /eth/v2/validator/aggregate_and_proofs`: submits signed
-    /// aggregate-and-proof messages, tagged with their consensus version.
+    /// aggregate-and-proof messages, which must all share one consensus
+    /// version.
     pub async fn publish_aggregate_and_proofs_v2(
         &self,
-        request: PublishAggregateAndProofsV2Request,
-    ) -> anyhow::Result<SubmitPoolAttestationsV2Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v2", "validator", "aggregate_and_proofs"])?;
-        let response = self
-            .client
-            .post(url)
-            .header(
-                ETH_CONSENSUS_VERSION,
-                request.header.eth_consensus_version.to_string(),
-            )
-            .json(&request.body)
-            .send()
-            .await?;
-
-        parse_submit_pool_attestations_response(response).await
+        aggregates: &[versioned::VersionedSignedAggregateAndProof],
+    ) -> anyhow::Result<()> {
+        let version = common_version(aggregates.iter().map(|aggregate| aggregate.version))?;
+        let body: Vec<_> = aggregates
+            .iter()
+            .map(|aggregate| &aggregate.aggregate_and_proof)
+            .collect();
+        empty(
+            self.post(&["eth", "v2", "validator", "aggregate_and_proofs"])?
+                .header(ETH_CONSENSUS_VERSION, version)
+                .json(&body)
+                .send()
+                .await?,
+        )
+        .await
     }
 
-    /// `GET /eth/v3/validator/blocks/{slot}`: an unsigned block (blinded or
-    /// not) for the slot, as JSON or SSZ depending on the node's
-    /// `Content-Type`.
+    /// `GET /eth/v3/validator/blocks/{slot}`: an unsigned block, blinded or
+    /// not, for the slot.
     pub async fn produce_block_v3(
         &self,
-        request: ProduceBlockV3Request,
-    ) -> anyhow::Result<ProduceBlockV3Response> {
-        request.validate().context("parameter validation")?;
-        let url = self.url(&["eth", "v3", "validator", "blocks", &request.path.slot])?;
-        let response = self.client.get(url).query(&request.query).send().await?;
+        opts: &ProduceBlockOpts,
+    ) -> anyhow::Result<versioned::VersionedProposal> {
+        let mut query = vec![("randao_reveal", pluto_ssz::to_0x_hex(&opts.randao_reveal))];
+        if let Some(graffiti) = &opts.graffiti {
+            query.push(("graffiti", pluto_ssz::to_0x_hex(graffiti)));
+        }
+        if opts.skip_randao_verification {
+            query.push(("skip_randao_verification", String::new()));
+        }
+        if let Some(factor) = opts.builder_boost_factor {
+            query.push(("builder_boost_factor", factor.to_string()));
+        }
 
-        Ok(match response.status().as_u16() {
-            200..=299 => match json_or_binary_body(response).await? {
-                SuccessBody::Json(data) => ProduceBlockV3Response::Ok(data),
-                SuccessBody::Binary(bytes) => ProduceBlockV3Response::OkBinary(bytes),
-                SuccessBody::Unsupported => ProduceBlockV3Response::Unknown,
-            },
-            400 => ProduceBlockV3Response::BadRequest(json_body(response).await?),
-            406 => ProduceBlockV3Response::NotAcceptable(json_body(response).await?),
-            500 => ProduceBlockV3Response::InternalServerError(json_body(response).await?),
-            503 => ProduceBlockV3Response::ServiceUnavailable(json_body(response).await?),
-            _ => {
-                drain(response).await?;
-                ProduceBlockV3Response::Unknown
-            }
+        let response = self
+            .get(&["eth", "v3", "validator", "blocks", &opts.slot.to_string()])?
+            .query(&query)
+            .send()
+            .await?;
+        let body = text(success(response).await?).await?;
+        let envelope: Proposal<'_> = decode(&body)?;
+
+        Ok(versioned::VersionedProposal {
+            block: decode_proposal_block(
+                envelope.version,
+                envelope.execution_payload_blinded,
+                envelope.data.get(),
+            )?,
+            consensus_block_value: envelope.consensus_block_value,
+            execution_payload_value: envelope.execution_payload_value,
         })
     }
 }
 
-/// Response mapping shared by the block and blinded-block publish endpoints.
-async fn parse_publish_block_response(
-    response: Response,
-) -> anyhow::Result<PublishBlockV2Response> {
-    Ok(match response.status().as_u16() {
-        202 => {
-            drain(response).await?;
-            PublishBlockV2Response::Accepted
-        }
-        200..=299 => {
-            drain(response).await?;
-            PublishBlockV2Response::Ok
-        }
-        400 => PublishBlockV2Response::BadRequest(json_body(response).await?),
-        415 => PublishBlockV2Response::UnsupportedMediaType(json_body(response).await?),
-        500 => PublishBlockV2Response::InternalServerError(json_body(response).await?),
-        503 => PublishBlockV2Response::ServiceUnavailable(json_body(response).await?),
-        _ => {
-            drain(response).await?;
-            PublishBlockV2Response::Unknown
-        }
-    })
-}
-
-/// Response mapping shared by the attestation and aggregate-and-proof
-/// submit endpoints.
-async fn parse_submit_pool_attestations_response(
-    response: Response,
-) -> anyhow::Result<SubmitPoolAttestationsV2Response> {
-    Ok(match response.status().as_u16() {
-        200..=299 => {
-            drain(response).await?;
-            SubmitPoolAttestationsV2Response::Ok
-        }
-        400 => SubmitPoolAttestationsV2Response::BadRequest(json_body(response).await?),
-        415 => SubmitPoolAttestationsV2Response::UnsupportedMediaType(json_body(response).await?),
-        500 => SubmitPoolAttestationsV2Response::InternalServerError(json_body(response).await?),
-        _ => {
-            drain(response).await?;
-            SubmitPoolAttestationsV2Response::Unknown
-        }
-    })
-}
-
-/// Response mapping shared by the sync committee message and contribution
-/// submit endpoints.
-async fn parse_publish_contribution_and_proofs_response(
-    response: Response,
-) -> anyhow::Result<PublishContributionAndProofsResponse> {
-    Ok(match response.status().as_u16() {
-        200..=299 => {
-            drain(response).await?;
-            PublishContributionAndProofsResponse::Ok
-        }
-        400 => PublishContributionAndProofsResponse::BadRequest(json_body(response).await?),
-        500 => {
-            PublishContributionAndProofsResponse::InternalServerError(json_body(response).await?)
-        }
-        _ => {
-            drain(response).await?;
-            PublishContributionAndProofsResponse::Unknown
-        }
-    })
-}
-
-/// Response mapping shared by the proposer preparation and sync committee
-/// subscription endpoints.
-async fn parse_prepare_beacon_proposer_response(
-    response: Response,
-) -> anyhow::Result<PrepareBeaconProposerResponse> {
-    Ok(match response.status().as_u16() {
-        200..=299 => {
-            drain(response).await?;
-            PrepareBeaconProposerResponse::Ok
-        }
-        400 => PrepareBeaconProposerResponse::BadRequest(json_body(response).await?),
-        500 => PrepareBeaconProposerResponse::InternalServerError(json_body(response).await?),
-        _ => {
-            drain(response).await?;
-            PrepareBeaconProposerResponse::Unknown
-        }
-    })
+/// Validator indices as the API's array of decimal strings.
+fn decimal_strings(indices: &[phase0::ValidatorIndex]) -> Vec<String> {
+    indices.iter().map(u64::to_string).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures;
+    use pluto_ssz::{BitList, BitVector};
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{any, method, path},
     };
 
-    /// A status no endpoint documents, so every method maps it to `Unknown`.
+    /// A status no endpoint documents.
     const UNDOCUMENTED_STATUS: u16 = 418;
 
-    fn signature() -> String {
-        format!("0x{}", "ab".repeat(96))
-    }
+    const SIGNATURE: phase0::BLSSignature = [0xab; 96];
+    const ROOT: phase0::Root = [0xcd; 32];
 
-    fn root() -> String {
-        format!("0x{}", "cd".repeat(32))
+    fn hex(bytes: &[u8]) -> String {
+        pluto_ssz::to_0x_hex(bytes)
     }
 
     fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {
         EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL")
     }
 
-    fn signed_block_body() -> BlockRequestBody {
-        BlockRequestBody::Object7(GetBlindedBlockResponseResponseDataObject6 {
-            message: json!({}),
-            signature: signature(),
-        })
-    }
-
-    fn publish_block_request() -> PublishBlockV2Request {
-        PublishBlockV2Request {
-            query: PublishBlockV2RequestQuery {
-                broadcast_validation: Some(BroadcastValidation::Gossip),
-            },
-            header: PublishBlockV2RequestHeader {
-                eth_consensus_version: ConsensusVersion::Electra,
-            },
-            body: signed_block_body(),
+    fn signed_altair_block() -> altair::SignedBeaconBlock {
+        altair::SignedBeaconBlock {
+            message: test_fixtures::altair_beacon_block_fixture(),
+            signature: SIGNATURE,
         }
     }
 
-    fn produce_block_request() -> ProduceBlockV3Request {
-        ProduceBlockV3Request {
-            path: ProduceBlockV3RequestPath { slot: "7".into() },
-            query: ProduceBlockV3RequestQuery {
-                randao_reveal: signature(),
-                graffiti: None,
-                skip_randao_verification: None,
-                builder_boost_factor: None,
+    fn signed_proposal() -> versioned::VersionedSignedProposal {
+        versioned::VersionedSignedProposal {
+            version: DataVersion::Altair,
+            blinded: false,
+            block: versioned::SignedProposalBlock::Altair(signed_altair_block()),
+        }
+    }
+
+    fn attestation_data() -> phase0::AttestationData {
+        phase0::AttestationData {
+            slot: 12,
+            index: 3,
+            beacon_block_root: [1; 32],
+            source: phase0::Checkpoint {
+                epoch: 2,
+                root: [2; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 3,
+                root: [3; 32],
             },
         }
     }
 
-    /// Every endpoint sends the documented method, path, query and headers,
-    /// and maps an undocumented status to its `Unknown` variant.
+    fn electra_attestation(committee: usize) -> versioned::VersionedAttestation {
+        versioned::VersionedAttestation {
+            version: DataVersion::Electra,
+            validator_index: Some(99),
+            attestation: Some(versioned::AttestationPayload::Electra(
+                electra::Attestation {
+                    aggregation_bits: BitList::with_bits(8, &[0]),
+                    data: attestation_data(),
+                    signature: [4; 96],
+                    committee_bits: BitVector::with_bits(&[committee]),
+                },
+            )),
+        }
+    }
+
+    fn produce_block_opts() -> ProduceBlockOpts {
+        ProduceBlockOpts {
+            slot: 7,
+            randao_reveal: SIGNATURE,
+            graffiti: None,
+            skip_randao_verification: false,
+            builder_boost_factor: None,
+        }
+    }
+
+    fn http_error(error: &anyhow::Error) -> &HttpError {
+        HttpError::from_error(error).unwrap_or_else(|| panic!("not an HTTP error: {error:#}"))
+    }
+
+    /// Every endpoint sends the documented method, path, query, headers and
+    /// body, and surfaces an undocumented status as an [`HttpError`].
     #[tokio::test]
     async fn requests_have_the_documented_shape() {
         let server = MockServer::start().await;
@@ -911,338 +922,379 @@ mod tests {
             .await;
         let client = test_client(&server);
 
-        let contribution_query =
-            format!("slot=1&subcommittee_index=0&beacon_block_root={}", root());
-        let aggregate_query = format!("attestation_data_root={}&slot=1&committee_index=2", root());
-        let block_query = format!("randao_reveal={}", signature());
+        let contribution_query = format!(
+            "slot=1&subcommittee_index=0&beacon_block_root={}",
+            hex(&ROOT)
+        );
+        let aggregate_query = format!(
+            "attestation_data_root={}&slot=1&committee_index=2",
+            hex(&ROOT)
+        );
+        let block_query = format!("randao_reveal={}", hex(&SIGNATURE));
+        let selection = v1::BeaconCommitteeSelection {
+            slot: 1,
+            validator_index: 2,
+            selection_proof: SIGNATURE,
+        };
+        let sync_selection = v1::SyncCommitteeSelection {
+            slot: 1,
+            validator_index: 2,
+            subcommittee_index: 3,
+            selection_proof: SIGNATURE,
+        };
+        let exit = phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 1,
+                validator_index: 2,
+            },
+            signature: SIGNATURE,
+        };
+        let preparation = v1::ProposalPreparation {
+            validator_index: 1,
+            fee_recipient: [0x11; 20],
+        };
+        let subscription = v1::SyncCommitteeSubscription {
+            validator_index: 1,
+            sync_committee_indices: vec![5],
+            until_epoch: 9,
+        };
+        let filter = ValidatorsFilter {
+            ids: vec![ValidatorId::Index(1)],
+            statuses: Vec::new(),
+        };
 
-        // (method, path, query, consensus version header), in call order.
-        let mut expected: Vec<(&str, &str, Option<&str>, Option<&str>)> = Vec::new();
+        // (method, path, query, consensus version header, JSON body), in
+        // call order.
+        type ExpectedRequest<'a> = (
+            &'a str,
+            &'a str,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<serde_json::Value>,
+        );
+        let mut expected: Vec<ExpectedRequest<'_>> = Vec::new();
         macro_rules! check {
-            ($call:expr, $unknown:path, $method:literal, $path:literal, $query:expr, $version:expr) => {{
-                let response = $call.await.expect("request succeeds");
-                assert!(
-                    matches!(response, $unknown),
-                    "{} answered {response:?}",
+            ($call:expr, $method:literal, $path:literal, $query:expr, $version:expr, $body:expr) => {{
+                let error = $call.await.expect_err("undocumented status is an error");
+                assert_eq!(
+                    http_error(&error).status.as_u16(),
+                    UNDOCUMENTED_STATUS,
+                    "{}",
                     $path
                 );
-                expected.push(($method, $path, $query, $version));
+                expected.push(($method, $path, $query, $version, $body));
             }};
         }
 
         check!(
-            client.get_genesis(GetGenesisRequest {}),
-            GetGenesisResponse::Unknown,
+            client.get_genesis(),
             "GET",
             "/eth/v1/beacon/genesis",
             None,
+            None,
             None
         );
         check!(
-            client.get_block_root(GetBlockRootRequest {
-                path: GetBlockRootRequestPath {
-                    block_id: "head".into(),
-                },
-            }),
-            GetBlockRootResponse::Unknown,
+            client.get_block_root("head"),
             "GET",
             "/eth/v1/beacon/blocks/head/root",
             None,
+            None,
             None
         );
         check!(
-            client.get_block_header(GetBlockHeaderRequest {
-                path: GetBlockHeaderRequestPath {
-                    block_id: "finalized".into(),
-                },
-            }),
-            GetBlockHeaderResponse::Unknown,
+            client.get_block_header("finalized"),
             "GET",
             "/eth/v1/beacon/headers/finalized",
             None,
+            None,
             None
         );
         check!(
-            client.get_block_v2(GetBlockV2Request {
-                path: GetBlockV2RequestPath {
-                    block_id: "42".into(),
-                },
-            }),
-            GetBlockV2Response::Unknown,
+            client.get_block_v2("42"),
             "GET",
             "/eth/v2/beacon/blocks/42",
             None,
+            None,
             None
         );
         check!(
-            client.post_state_validators(PostStateValidatorsRequest {
-                path: PostStateValidatorsRequestPath {
-                    state_id: "head".into(),
-                },
-                body: ValidatorRequestBody::default(),
-            }),
-            PostStateValidatorsResponse::Unknown,
+            client.post_state_validators("head", &filter),
             "POST",
             "/eth/v1/beacon/states/head/validators",
             None,
-            None
+            None,
+            Some(json!({ "ids": ["1"] }))
         );
         check!(
-            client.publish_block_v2(publish_block_request()),
-            PublishBlockV2Response::Unknown,
+            client.publish_block_v2(&signed_proposal(), Some(BroadcastValidation::Gossip)),
             "POST",
             "/eth/v2/beacon/blocks",
             Some("broadcast_validation=gossip"),
-            Some("electra")
+            Some("altair"),
+            Some(json!(signed_altair_block()))
         );
         check!(
-            client.publish_blinded_block_v2(PublishBlindedBlockV2Request {
-                query: PublishBlindedBlockV2RequestQuery {
-                    broadcast_validation: None,
+            client.publish_blinded_block_v2(
+                &versioned::VersionedSignedBlindedProposal {
+                    version: DataVersion::Deneb,
+                    block: versioned::SignedBlindedProposalBlock::Deneb(
+                        deneb::SignedBlindedBeaconBlock {
+                            message: test_fixtures::deneb_blinded_beacon_block_fixture(),
+                            signature: SIGNATURE,
+                        },
+                    ),
                 },
-                header: PublishBlindedBlockV2RequestHeader {
-                    eth_consensus_version: ConsensusVersion::Deneb,
-                },
-                body: GetBlindedBlockResponseResponseData::Object(
-                    GetBlindedBlockResponseResponseDataObject {
-                        message: json!({}),
-                        signature: signature(),
-                    },
-                ),
-            }),
-            PublishBlockV2Response::Unknown,
+                None,
+            ),
             "POST",
             "/eth/v2/beacon/blinded_blocks",
             None,
-            Some("deneb")
+            Some("deneb"),
+            Some(json!({
+                "message": test_fixtures::deneb_blinded_beacon_block_fixture(),
+                "signature": hex(&SIGNATURE),
+            }))
         );
         check!(
-            client.submit_pool_attestations_v2(SubmitPoolAttestationsV2Request {
-                header: SubmitPoolAttestationsV2RequestHeader {
-                    eth_consensus_version: ConsensusVersion::Fulu,
-                },
-                body: AttestationRequestBody2::Array(Vec::new()),
-            }),
-            SubmitPoolAttestationsV2Response::Unknown,
+            client.submit_pool_attestations_v2(&[electra_attestation(3)]),
             "POST",
             "/eth/v2/beacon/pool/attestations",
             None,
-            Some("fulu")
+            Some("electra"),
+            Some(json!([{
+                "committee_index": "3",
+                "attester_index": "99",
+                "data": attestation_data(),
+                "signature": hex(&[4; 96]),
+            }]))
         );
         check!(
-            client.submit_pool_sync_committee_signatures(
-                SubmitPoolSyncCommitteeSignaturesRequest { body: Vec::new() }
-            ),
-            PublishContributionAndProofsResponse::Unknown,
+            client.submit_pool_sync_committee_signatures(&[altair::SyncCommitteeMessage {
+                slot: 1,
+                beacon_block_root: ROOT,
+                validator_index: 2,
+                signature: SIGNATURE,
+            }]),
             "POST",
             "/eth/v1/beacon/pool/sync_committees",
             None,
-            None
+            None,
+            Some(json!([{
+                "slot": "1",
+                "beacon_block_root": hex(&ROOT),
+                "validator_index": "2",
+                "signature": hex(&SIGNATURE),
+            }]))
         );
         check!(
-            client.submit_pool_voluntary_exit(SubmitPoolVoluntaryExitRequest {
-                body: GetPoolVoluntaryExitsResponseResponseDatum {
-                    message: Phase0SignedVoluntaryExitMessage {
-                        epoch: "1".into(),
-                        validator_index: "2".into(),
-                    },
-                    signature: signature(),
-                },
-            }),
-            SubmitPoolVoluntaryExitResponse::Unknown,
+            client.submit_pool_voluntary_exit(&exit),
             "POST",
             "/eth/v1/beacon/pool/voluntary_exits",
             None,
-            None
+            None,
+            Some(json!({
+                "message": { "epoch": "1", "validator_index": "2" },
+                "signature": hex(&SIGNATURE),
+            }))
         );
         check!(
-            client.get_fork_schedule(GetForkScheduleRequest {}),
-            GetForkScheduleResponse::Unknown,
+            client.get_fork_schedule(),
             "GET",
             "/eth/v1/config/fork_schedule",
             None,
+            None,
             None
         );
         check!(
-            client.get_spec(GetSpecRequest {}),
-            GetSpecResponse::Unknown,
+            client.get_spec(),
             "GET",
             "/eth/v1/config/spec",
             None,
+            None,
             None
         );
         check!(
-            client.get_peer_count(GetPeerCountRequest {}),
-            GetPeerCountResponse::Unknown,
+            client.get_peer_count(),
             "GET",
             "/eth/v1/node/peer_count",
             None,
+            None,
             None
         );
         check!(
-            client.get_syncing_status(GetSyncingStatusRequest {}),
-            GetSyncingStatusResponse::Unknown,
+            client.get_syncing_status(),
             "GET",
             "/eth/v1/node/syncing",
             None,
+            None,
             None
         );
         check!(
-            client.get_node_version(GetNodeVersionRequest {}),
-            GetNodeVersionResponse::Unknown,
+            client.get_node_version(),
             "GET",
             "/eth/v1/node/version",
             None,
+            None,
             None
         );
         check!(
-            client.produce_attestation_data(ProduceAttestationDataRequest {
-                query: ProduceAttestationDataRequestQuery {
-                    slot: "1".into(),
-                    committee_index: "2".into(),
-                },
-            }),
-            ProduceAttestationDataResponse::Unknown,
+            client.produce_attestation_data(1, 2),
             "GET",
             "/eth/v1/validator/attestation_data",
             Some("slot=1&committee_index=2"),
+            None,
             None
         );
         check!(
-            client.submit_beacon_committee_selections(SubmitBeaconCommitteeSelectionsRequest {
-                body: Vec::new(),
-            }),
-            SubmitBeaconCommitteeSelectionsResponse::Unknown,
+            client.submit_beacon_committee_selections(&[selection]),
             "POST",
             "/eth/v1/validator/beacon_committee_selections",
             None,
-            None
+            None,
+            Some(json!([{
+                "slot": "1",
+                "validator_index": "2",
+                "selection_proof": hex(&SIGNATURE),
+            }]))
         );
         check!(
-            client.publish_contribution_and_proofs(PublishContributionAndProofsRequest {
-                body: Vec::new(),
-            }),
-            PublishContributionAndProofsResponse::Unknown,
+            client.publish_contribution_and_proofs(&[]),
             "POST",
             "/eth/v1/validator/contribution_and_proofs",
             None,
-            None
+            None,
+            Some(json!([]))
         );
         check!(
-            client.get_attester_duties(GetAttesterDutiesRequest {
-                path: GetAttesterDutiesRequestPath { epoch: "3".into() },
-                body: vec!["1".into()],
-            }),
-            GetAttesterDutiesResponse::Unknown,
+            client.get_attester_duties(3, &[1, 20]),
             "POST",
             "/eth/v1/validator/duties/attester/3",
             None,
-            None
+            None,
+            Some(json!(["1", "20"]))
         );
         check!(
-            client.get_proposer_duties(GetProposerDutiesRequest {
-                path: GetProposerDutiesRequestPath { epoch: "3".into() },
-            }),
-            GetProposerDutiesResponse::Unknown,
+            client.get_proposer_duties(3),
             "GET",
             "/eth/v1/validator/duties/proposer/3",
             None,
+            None,
             None
         );
         check!(
-            client.get_sync_committee_duties(GetSyncCommitteeDutiesRequest {
-                path: GetSyncCommitteeDutiesRequestPath { epoch: "3".into() },
-                body: Vec::new(),
-            }),
-            GetSyncCommitteeDutiesResponse::Unknown,
+            client.get_sync_committee_duties(3, &[]),
             "POST",
             "/eth/v1/validator/duties/sync/3",
             None,
-            None
+            None,
+            Some(json!([]))
         );
         check!(
-            client.prepare_beacon_proposer(PrepareBeaconProposerRequest { body: Vec::new() }),
-            PrepareBeaconProposerResponse::Unknown,
+            client.prepare_beacon_proposer(&[preparation]),
             "POST",
             "/eth/v1/validator/prepare_beacon_proposer",
             None,
-            None
+            None,
+            Some(json!([{
+                "validator_index": "1",
+                "fee_recipient": hex(&[0x11; 20]),
+            }]))
         );
         check!(
-            client.register_validator(RegisterValidatorRequest { body: Vec::new() }),
-            RegisterValidatorResponse::Unknown,
+            client.register_validator(&[]),
             "POST",
             "/eth/v1/validator/register_validator",
             None,
-            None
+            None,
+            Some(json!([]))
         );
         check!(
-            client.produce_sync_committee_contribution(ProduceSyncCommitteeContributionRequest {
-                query: ProduceSyncCommitteeContributionRequestQuery {
-                    slot: "1".into(),
-                    subcommittee_index: "0".into(),
-                    beacon_block_root: root(),
-                },
-            }),
-            ProduceSyncCommitteeContributionResponse::Unknown,
+            client.produce_sync_committee_contribution(1, 0, ROOT),
             "GET",
             "/eth/v1/validator/sync_committee_contribution",
             Some(contribution_query.as_str()),
+            None,
             None
         );
         check!(
-            client.submit_sync_committee_selections(SubmitSyncCommitteeSelectionsRequest {
-                body: Vec::new(),
-            }),
-            SubmitSyncCommitteeSelectionsResponse::Unknown,
+            client.submit_sync_committee_selections(&[sync_selection]),
             "POST",
             "/eth/v1/validator/sync_committee_selections",
             None,
-            None
+            None,
+            Some(json!([{
+                "slot": "1",
+                "validator_index": "2",
+                "subcommittee_index": "3",
+                "selection_proof": hex(&SIGNATURE),
+            }]))
         );
         check!(
-            client.prepare_sync_committee_subnets(PrepareSyncCommitteeSubnetsRequest {
-                body: Vec::new(),
-            }),
-            PrepareBeaconProposerResponse::Unknown,
+            client.prepare_sync_committee_subnets(&[subscription]),
             "POST",
             "/eth/v1/validator/sync_committee_subscriptions",
             None,
-            None
+            None,
+            Some(json!([{
+                "validator_index": "1",
+                "sync_committee_indices": ["5"],
+                "until_epoch": "9",
+            }]))
         );
         check!(
-            client.get_aggregated_attestation_v2(GetAggregatedAttestationV2Request {
-                query: GetAggregatedAttestationV2RequestQuery {
-                    attestation_data_root: root(),
-                    slot: "1".into(),
-                    committee_index: "2".into(),
-                },
-            }),
-            GetAggregatedAttestationV2Response::Unknown,
+            client.get_aggregated_attestation_v2(1, 2, ROOT),
             "GET",
             "/eth/v2/validator/aggregate_attestation",
             Some(aggregate_query.as_str()),
+            None,
             None
         );
         check!(
-            client.publish_aggregate_and_proofs_v2(PublishAggregateAndProofsV2Request {
-                header: PublishAggregateAndProofsV2RequestHeader {
-                    eth_consensus_version: ConsensusVersion::Electra,
-                },
-                body: AggregateAndProofRequestBody::Array(Vec::new()),
-            }),
-            SubmitPoolAttestationsV2Response::Unknown,
+            client.publish_aggregate_and_proofs_v2(&[
+                versioned::VersionedSignedAggregateAndProof {
+                    version: DataVersion::Electra,
+                    aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Electra(
+                        electra::SignedAggregateAndProof {
+                            message: electra::AggregateAndProof {
+                                aggregator_index: 5,
+                                aggregate: electra::Attestation {
+                                    aggregation_bits: BitList::with_bits(8, &[0]),
+                                    data: attestation_data(),
+                                    signature: [4; 96],
+                                    committee_bits: BitVector::with_bits(&[3]),
+                                },
+                                selection_proof: SIGNATURE,
+                            },
+                            signature: SIGNATURE,
+                        },
+                    ),
+                }
+            ]),
             "POST",
             "/eth/v2/validator/aggregate_and_proofs",
             None,
-            Some("electra")
+            Some("electra"),
+            Some(json!([{
+                "message": {
+                    "aggregator_index": "5",
+                    "aggregate": {
+                        "aggregation_bits": hex(&BitList::<8>::with_bits(8, &[0]).to_ssz_bytes()),
+                        "data": attestation_data(),
+                        "signature": hex(&[4; 96]),
+                        "committee_bits": hex(&BitVector::<64>::with_bits(&[3]).bytes),
+                    },
+                    "selection_proof": hex(&SIGNATURE),
+                },
+                "signature": hex(&SIGNATURE),
+            }]))
         );
         check!(
-            client.produce_block_v3(produce_block_request()),
-            ProduceBlockV3Response::Unknown,
+            client.produce_block_v3(&produce_block_opts()),
             "GET",
             "/eth/v3/validator/blocks/7",
             Some(block_query.as_str()),
+            None,
             None
         );
 
@@ -1251,7 +1303,7 @@ mod tests {
             .await
             .expect("request recording is enabled");
         assert_eq!(received.len(), expected.len());
-        for (request, (method, path, query, version)) in received.iter().zip(expected) {
+        for (request, (method, path, query, version, body)) in received.iter().zip(expected) {
             assert_eq!(request.method.as_str(), method, "{path}");
             assert_eq!(request.url.path(), path);
             assert_eq!(request.url.query(), query, "{path}");
@@ -1262,14 +1314,20 @@ mod tests {
                     .map(|value| value.to_str().expect("ASCII header"))
             };
             assert_eq!(header("eth-consensus-version"), version, "{path}");
-            if method == "POST" {
+            if method == "GET" {
+                assert_eq!(header("accept"), Some("application/json"), "{path}");
+            }
+            if let Some(body) = body {
                 assert_eq!(header("content-type"), Some("application/json"), "{path}");
+                let sent: serde_json::Value =
+                    serde_json::from_slice(&request.body).expect("JSON body");
+                assert_eq!(sent, body, "{path}");
             }
         }
     }
 
     #[tokio::test]
-    async fn json_success_maps_to_ok() {
+    async fn data_envelope_is_unwrapped() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/eth/v1/config/spec"))
@@ -1278,20 +1336,24 @@ mod tests {
             )
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/node/version"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "data": { "version": "Lighthouse/v8" } })),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server);
 
-        let GetSpecResponse::Ok(spec) = test_client(&server)
-            .get_spec(GetSpecRequest {})
-            .await
-            .expect("request succeeds")
-        else {
-            panic!("expected Ok");
-        };
-        assert_eq!(spec.data["SLOTS"], "32");
+        let spec = client.get_spec().await.expect("request succeeds");
+        assert_eq!(spec.u64("SLOTS"), Some(32));
+        assert_eq!(client.get_node_version().await.unwrap(), "Lighthouse/v8");
     }
 
-    /// JSON-only endpoints decode a 2xx body whatever the `Content-Type`.
+    /// A 2xx body decodes whatever the `Content-Type`.
     #[tokio::test]
-    async fn json_success_ignores_content_type() {
+    async fn success_ignores_content_type() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/eth/v1/config/spec"))
@@ -1299,161 +1361,170 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = test_client(&server)
-            .get_spec(GetSpecRequest {})
+        test_client(&server)
+            .get_spec()
             .await
             .expect("request succeeds");
-        assert!(matches!(response, GetSpecResponse::Ok(_)), "{response:?}");
     }
 
     #[tokio::test]
-    async fn documented_error_statuses_map_to_typed_variants() {
+    async fn error_status_carries_the_decoded_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/eth/v1/validator/duties/attester/3"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_json(json!({ "code": 400, "message": "bad epoch" })),
-            )
+            .and(path("/eth/v2/beacon/pool/attestations"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "code": 400,
+                "message": "some failed",
+                "failures": [{ "index": 0, "message": "bad signature" }],
+            })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path("/eth/v1/config/spec"))
-            .respond_with(
-                ResponseTemplate::new(500).set_body_json(json!({ "code": 500, "message": "boom" })),
-            )
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream exploded"))
             .mount(&server)
             .await;
         let client = test_client(&server);
 
-        let GetAttesterDutiesResponse::BadRequest(error) = client
-            .get_attester_duties(GetAttesterDutiesRequest {
-                path: GetAttesterDutiesRequestPath { epoch: "3".into() },
-                body: Vec::new(),
+        let error = client
+            .submit_pool_attestations_v2(&[electra_attestation(1)])
+            .await
+            .expect_err("400 is an error");
+        let http = http_error(&error);
+        assert_eq!(http.status.as_u16(), 400);
+        assert_eq!(http.body.code, Some(400));
+        assert_eq!(http.body.message, "some failed");
+        assert_eq!(http.body.failures[0].message, "bad signature");
+
+        let error = client.get_spec().await.expect_err("500 is an error");
+        let http = http_error(&error);
+        assert_eq!(http.status.as_u16(), 500);
+        assert_eq!(http.body.message, "upstream exploded");
+        assert!(error.to_string().contains("500"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn produce_block_v3_decodes_by_version_and_blinded_flag() {
+        let server = MockServer::start().await;
+        let deneb_block = test_fixtures::deneb_beacon_block_fixture();
+        Mock::given(method("GET"))
+            .and(path("/eth/v3/validator/blocks/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "deneb",
+                "execution_payload_blinded": false,
+                "execution_payload_value": "12345",
+                "consensus_block_value": "678",
+                "data": { "block": deneb_block, "kzg_proofs": [], "blobs": [] },
+            })))
+            .mount(&server)
+            .await;
+        let electra_blinded = test_fixtures::electra_blinded_beacon_block_fixture();
+        Mock::given(method("GET"))
+            .and(path("/eth/v3/validator/blocks/8"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "electra",
+                "execution_payload_blinded": true,
+                "execution_payload_value": "1",
+                "consensus_block_value": "2",
+                "data": electra_blinded,
+            })))
+            .mount(&server)
+            .await;
+        let client = test_client(&server);
+
+        let proposal = client
+            .produce_block_v3(&produce_block_opts())
+            .await
+            .expect("deneb proposal");
+        assert_eq!(proposal.execution_payload_value, U256::from(12345));
+        assert_eq!(proposal.consensus_block_value, U256::from(678));
+        assert!(!proposal.is_blinded());
+        let versioned::ProposalBlock::Deneb { block, blobs, .. } = proposal.block else {
+            panic!("expected deneb block contents, got {proposal:?}");
+        };
+        assert_eq!(*block, deneb_block);
+        assert!(blobs.is_empty());
+
+        let proposal = client
+            .produce_block_v3(&ProduceBlockOpts {
+                slot: 8,
+                ..produce_block_opts()
             })
             .await
-            .expect("request succeeds")
-        else {
-            panic!("expected BadRequest");
-        };
-        assert_eq!(error.message, "bad epoch");
-
-        let GetSpecResponse::InternalServerError(error) = client
-            .get_spec(GetSpecRequest {})
-            .await
-            .expect("request succeeds")
-        else {
-            panic!("expected InternalServerError");
-        };
-        assert_eq!(error.message, "boom");
-    }
-
-    #[tokio::test]
-    async fn binary_success_maps_to_ok_binary() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/eth/v3/validator/blocks/7"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_raw(vec![1, 2, 3], "application/octet-stream"),
-            )
-            .mount(&server)
-            .await;
-
-        let response = test_client(&server)
-            .produce_block_v3(produce_block_request())
-            .await
-            .expect("request succeeds");
-        assert!(
-            matches!(response, ProduceBlockV3Response::OkBinary(ref bytes) if bytes == &[1, 2, 3]),
-            "{response:?}"
+            .expect("electra blinded proposal");
+        assert_eq!(
+            proposal.block,
+            versioned::ProposalBlock::ElectraBlinded(electra_blinded)
         );
     }
 
     #[tokio::test]
-    async fn binary_capable_success_with_foreign_content_type_is_unknown() {
+    async fn get_aggregated_attestation_v2_decodes_by_version() {
         let server = MockServer::start().await;
+        let phase0_attestation = phase0::Attestation {
+            aggregation_bits: BitList::with_bits(8, &[1]),
+            data: attestation_data(),
+            signature: SIGNATURE,
+        };
         Mock::given(method("GET"))
-            .and(path("/eth/v3/validator/blocks/7"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("block", "text/plain"))
-            .mount(&server)
-            .await;
-
-        let response = test_client(&server)
-            .produce_block_v3(produce_block_request())
-            .await
-            .expect("request succeeds");
-        assert!(
-            matches!(response, ProduceBlockV3Response::Unknown),
-            "{response:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn publish_block_distinguishes_accepted_from_ok() {
-        for (status, accepted) in [(200, false), (202, true)] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/eth/v2/beacon/blocks"))
-                .respond_with(ResponseTemplate::new(status))
-                .mount(&server)
-                .await;
-
-            let response = test_client(&server)
-                .publish_block_v2(publish_block_request())
-                .await
-                .expect("request succeeds");
-            assert_eq!(
-                matches!(response, PublishBlockV2Response::Accepted),
-                accepted,
-                "status {status} answered {response:?}"
-            );
-            assert_eq!(
-                matches!(response, PublishBlockV2Response::Ok),
-                !accepted,
-                "status {status} answered {response:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn malformed_success_body_names_the_failing_field() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/eth/v1/beacon/genesis"))
+            .and(path("/eth/v2/validator/aggregate_attestation"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "genesis_time": 1606824023,
-                    "genesis_validators_root": root(),
-                    "genesis_fork_version": "0x00000000",
-                }
+                "version": "capella",
+                "data": phase0_attestation,
             })))
             .mount(&server)
             .await;
 
-        let error = test_client(&server)
-            .get_genesis(GetGenesisRequest {})
+        let attestation = test_client(&server)
+            .get_aggregated_attestation_v2(1, 2, ROOT)
             .await
-            .expect_err("a non-string genesis_time must fail decoding");
-        assert!(
-            format!("{error:#}").contains("data.genesis_time"),
-            "error does not name the field: {error:#}"
+            .expect("request succeeds");
+        assert_eq!(attestation.version, DataVersion::Capella);
+        assert_eq!(
+            attestation.attestation,
+            Some(versioned::AttestationPayload::Capella(phase0_attestation))
         );
     }
 
     #[tokio::test]
-    async fn invalid_request_is_rejected_before_sending() {
+    async fn get_block_v2_decodes_by_version() {
         let server = MockServer::start().await;
-        let mut request = produce_block_request();
-        request.query.randao_reveal = "not-a-signature".into();
+        let block = signed_altair_block();
+        Mock::given(method("GET"))
+            .and(path("/eth/v2/beacon/blocks/head"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "altair",
+                "execution_optimistic": false,
+                "finalized": true,
+                "data": block,
+            })))
+            .mount(&server)
+            .await;
 
-        let error = test_client(&server)
-            .produce_block_v3(request)
+        let response = test_client(&server)
+            .get_block_v2("head")
             .await
-            .expect_err("validation must fail");
-        assert!(
-            format!("{error:#}").contains("parameter validation"),
-            "{error:#}"
-        );
+            .expect("request succeeds");
+        assert!(response.finalized);
+        assert_eq!(response.data, versioned::SignedBeaconBlock::Altair(block));
+    }
+
+    #[tokio::test]
+    async fn publish_block_v2_rejects_blinded_proposals_before_sending() {
+        let server = MockServer::start().await;
+        let proposal = versioned::VersionedSignedProposal {
+            version: DataVersion::Deneb,
+            blinded: true,
+            block: versioned::SignedProposalBlock::DenebBlinded(deneb::SignedBlindedBeaconBlock {
+                message: test_fixtures::deneb_blinded_beacon_block_fixture(),
+                signature: SIGNATURE,
+            }),
+        };
+
+        test_client(&server)
+            .publish_block_v2(&proposal, None)
+            .await
+            .expect_err("blinded proposal must be rejected");
         assert!(
             server
                 .received_requests()
@@ -1464,13 +1535,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_block_v2_accepts_any_2xx() {
+        for status in [200, 202] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/eth/v2/beacon/blocks"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            test_client(&server)
+                .publish_block_v2(&signed_proposal(), None)
+                .await
+                .unwrap_or_else(|error| panic!("status {status}: {error:#}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_pool_attestations_v2_sends_legacy_shape_before_electra() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/eth/v2/beacon/pool/attestations"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let attestation = phase0::Attestation {
+            aggregation_bits: BitList::with_bits(8, &[1]),
+            data: attestation_data(),
+            signature: SIGNATURE,
+        };
+
+        test_client(&server)
+            .submit_pool_attestations_v2(&[versioned::VersionedAttestation {
+                version: DataVersion::Deneb,
+                validator_index: Some(1),
+                attestation: Some(versioned::AttestationPayload::Deneb(attestation.clone())),
+            }])
+            .await
+            .expect("request succeeds");
+
+        let received = server.received_requests().await.expect("recording");
+        assert_eq!(
+            received[0].headers.get("eth-consensus-version").unwrap(),
+            "deneb"
+        );
+        let sent: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(sent, json!([attestation]));
+    }
+
+    #[tokio::test]
+    async fn publish_aggregate_and_proofs_v2_rejects_mixed_versions() {
+        let server = MockServer::start().await;
+        let aggregate = |version| versioned::VersionedSignedAggregateAndProof {
+            version,
+            aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Deneb(
+                phase0::SignedAggregateAndProof {
+                    message: phase0::AggregateAndProof {
+                        aggregator_index: 1,
+                        aggregate: phase0::Attestation {
+                            aggregation_bits: BitList::with_bits(8, &[1]),
+                            data: attestation_data(),
+                            signature: SIGNATURE,
+                        },
+                        selection_proof: SIGNATURE,
+                    },
+                    signature: SIGNATURE,
+                },
+            ),
+        };
+
+        test_client(&server)
+            .publish_aggregate_and_proofs_v2(&[
+                aggregate(DataVersion::Deneb),
+                aggregate(DataVersion::Capella),
+            ])
+            .await
+            .expect_err("mixed versions must be rejected");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("recording")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_success_body_names_the_failing_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/beacon/genesis"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "genesis_time": 1606824023,
+                    "genesis_validators_root": hex(&ROOT),
+                    "genesis_fork_version": "0x00000000",
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let error = test_client(&server)
+            .get_genesis()
+            .await
+            .expect_err("a non-string genesis_time must fail decoding");
+        assert!(
+            format!("{error:#}").contains("data.genesis_time"),
+            "error does not name the field: {error:#}"
+        );
+        assert!(HttpError::from_error(&error).is_none());
+    }
+
+    #[tokio::test]
     async fn transport_failure_is_an_error() {
         // Nothing listens on the reserved port 1.
         let client = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:1").expect("valid");
-        client
-            .get_spec(GetSpecRequest {})
+        let error = client
+            .get_spec()
             .await
             .expect_err("connection refused must surface as an error");
+        assert!(HttpError::from_error(&error).is_none());
+    }
+
+    #[test]
+    fn first_set_bit_finds_the_lowest_bit() {
+        assert_eq!(first_set_bit(&[0b0000_1000, 0]), Some(3));
+        assert_eq!(first_set_bit(&[0, 0b0000_0001]), Some(8));
+        assert_eq!(first_set_bit(&[0, 0]), None);
     }
 
     #[test]

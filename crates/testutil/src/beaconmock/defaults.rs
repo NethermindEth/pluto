@@ -10,7 +10,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
-use super::state::{MockState, last_path_segment_u64, read_lock};
+use super::state::{MockState, hex_0x, last_path_segment_u64, read_lock};
 
 pub(crate) const ZERO_ROOT: &str =
     "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -367,18 +367,7 @@ pub(crate) async fn mount_status(
 }
 
 fn validators_response(state: &MockState) -> Value {
-    let data: Vec<Value> = read_lock(&state.validator_set)
-        .validators()
-        .into_iter()
-        .map(|validator| {
-            json!({
-                "index": validator.index.to_string(),
-                "balance": validator.balance.to_string(),
-                "status": validator.status,
-                "validator": validator.validator,
-            })
-        })
-        .collect();
+    let data = read_lock(&state.validator_set).validators();
 
     json!({
         "data": data,
@@ -500,7 +489,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
                 .checked_add(slot_offset)?;
 
             Some(json!({
-                "pubkey": validator.validator.pubkey,
+                "pubkey": hex_0x(validator.validator.pubkey),
                 "slot": slot.to_string(),
                 "validator_index": index.to_string(),
                 "committee_index": index.to_string(),
@@ -558,7 +547,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
         };
 
         data.push(json!({
-            "pubkey": validator.validator.pubkey,
+            "pubkey": hex_0x(validator.validator.pubkey),
             "slot": slot.to_string(),
             "validator_index": validator.index.to_string(),
         }));
@@ -662,7 +651,7 @@ fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value
         .filter_map(|(position, index)| {
             let validator = validator_set.by_index(index)?;
             Some(json!({
-                "pubkey": validator.validator.pubkey,
+                "pubkey": hex_0x(validator.validator.pubkey),
                 "validator_index": index.to_string(),
                 "validator_sync_committee_indices": [position.to_string()],
             }))
@@ -796,10 +785,7 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
-    use pluto_eth2api::types::{
-        ConsensusVersion, GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest,
-        GetPeerCountResponse,
-    };
+    use pluto_eth2api::spec::DataVersion;
 
     #[test]
     fn default_spec_contains_load_bearing_keys() {
@@ -821,9 +807,8 @@ mod tests {
         }
     }
 
-    /// The inclusion checker consumes this endpoint through the generated
-    /// client, which requires `execution_optimistic` and `finalized` — the
-    /// beacon-API spec marks both required and non-nullable.
+    /// The inclusion checker consumes this endpoint through the client, which
+    /// decodes the block by its `version`.
     #[tokio::test]
     async fn block_endpoint_serves_a_decodable_bellatrix_block() {
         let mock = BeaconMock::builder()
@@ -836,16 +821,9 @@ mod tests {
         // The `block_id` segment is opaque to the mock; "head" and a numeric
         // id both exercise the path_regex match.
         for block_id in ["head", "123"] {
-            let request = GetBlockV2Request::builder()
-                .block_id(block_id.to_string())
-                .build()
-                .expect("block request");
-
-            let response = client.get_block_v2(request).await.expect("get_block_v2");
-            let GetBlockV2Response::Ok(block) = response else {
-                panic!("expected a decoded 200 for {block_id}, got {response:?}");
-            };
-            assert_eq!(block.version, ConsensusVersion::Bellatrix);
+            let response = client.get_block_v2(block_id).await.expect("get_block_v2");
+            assert_eq!(response.version, DataVersion::Bellatrix);
+            assert_eq!(response.data.version(), DataVersion::Bellatrix);
         }
     }
 
@@ -861,20 +839,9 @@ mod tests {
 
         let client = mock.client();
 
-        let response = client
-            .get_peer_count(GetPeerCountRequest {})
-            .await
-            .expect("get_peer_count");
-        let GetPeerCountResponse::Ok(peers) = response else {
-            panic!("expected a decoded 200, got {response:?}");
-        };
-        let connected_peers: u64 = peers
-            .data
-            .connected
-            .parse()
-            .expect("connected parses as u64");
+        let peers = client.get_peer_count().await.expect("get_peer_count");
         assert!(
-            connected_peers > 0,
+            peers.connected > 0,
             "zero connected peers fails the readiness check"
         );
     }

@@ -72,7 +72,7 @@ rand = { version = "0.8", features = ["std_rng"] }
 rand_core = "0.6"
 regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde_json = { version = "1.0", features = ["raw_value"] }
 serde_path_to_error = "0.1"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
@@ -130,11 +130,8 @@ vise = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf
 vise-exporter = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 criterion = "0.8"
 reqwest = "0.13"
-http = "1.4"
 tempfile = "3.24"
 assert-json-diff = "2.0"
-validator = { version = "0.20", features = ["derive"] }
-oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"

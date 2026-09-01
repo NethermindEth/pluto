@@ -46,9 +46,9 @@ use pluto_core::{
 };
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum,
+    BeaconNodeClient, EthBeaconNodeApiClient, ValidatorsResponse,
     spec::{altair, phase0},
+    v1::Validator,
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
@@ -123,34 +123,25 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
 
 /// Builds a `/states/{id}/validators` datum for an active validator with the
 /// given index and pubkey.
-fn validator_datum(index: u64, pubkey: PubKey) -> GetStateValidatorsResponseResponseDatum {
-    let v = pluto_testutil::Validator::active(index, pubkey_to_eth2(pubkey));
-    GetStateValidatorsResponseResponseDatum {
-        index: v.index.to_string(),
-        balance: v.balance.to_string(),
-        status: v.status,
-        validator: v.validator,
-    }
+fn validator_datum(index: u64, pubkey: PubKey) -> Validator {
+    pluto_testutil::active_validator(index, pubkey_to_eth2(pubkey))
 }
 
 /// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
 /// datums whose pubkey appears in the request-body `ids` — so an unseeded
 /// (empty-pubkey) cache resolves zero validators. Cover both `head` and slot
 /// state IDs because the scheduler refreshes the cache by slot immediately.
-async fn mount_filtered_post_validators(
-    server: &MockServer,
-    datums: Vec<GetStateValidatorsResponseResponseDatum>,
-) {
+async fn mount_filtered_post_validators(server: &MockServer, datums: Vec<Validator>) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
         .respond_with(move |request: &Request| {
             let body = String::from_utf8_lossy(&request.body);
             let data: Vec<_> = datums
                 .iter()
-                .filter(|d| body.contains(&d.validator.pubkey))
+                .filter(|d| body.contains(&pluto_ssz::to_0x_hex(&d.validator.pubkey)))
                 .cloned()
                 .collect();
-            ResponseTemplate::new(200).set_body_json(GetStateValidatorsResponseResponse {
+            ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                 execution_optimistic: false,
                 finalized: true,
                 data,

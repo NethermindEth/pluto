@@ -29,7 +29,7 @@ use options::{
 };
 use state::{hex_0x, set_object_field, write_lock};
 
-pub use state::{MockState, Validator, ValidatorSet};
+pub use state::{MockState, Validator, ValidatorSet, active_validator, mock_dv_validator};
 
 /// Errors returned while configuring `BeaconMock`.
 #[derive(Debug, thiserror::Error)]
@@ -42,8 +42,7 @@ pub enum Error {
 /// Result type for beacon mock setup.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Wire-level beacon node mock with a generated client pre-dialed to the
-/// server.
+/// Wire-level beacon node mock with a client pre-dialed to the server.
 #[derive(Debug)]
 pub struct BeaconMock {
     server: MockServer,
@@ -285,22 +284,22 @@ mod tests {
     /// deterministic assignment iterates active validators only).
     #[tokio::test]
     async fn proposer_duties_skip_inactive_validators() {
-        use pluto_eth2api::{ValidatorResponseValidator, ValidatorStatus};
+        use pluto_eth2api::{spec::phase0, v1::ValidatorStatus};
 
         let mut set = ValidatorSet::validator_set_a();
         set.insert(Validator {
             index: 4,
             balance: 4,
             status: ValidatorStatus::WithdrawalDone,
-            validator: ValidatorResponseValidator {
-                activation_eligibility_epoch: "4".into(),
-                activation_epoch: "5".into(),
-                effective_balance: "4".into(),
-                exit_epoch: "0".into(),
-                pubkey: format!("0x{}", "01".repeat(48)),
+            validator: phase0::Validator {
+                activation_eligibility_epoch: 4,
+                activation_epoch: 5,
+                effective_balance: 4,
+                exit_epoch: 0,
+                pubkey: [0x01; 48],
                 slashed: false,
-                withdrawable_epoch: "0".into(),
-                withdrawal_credentials: format!("0x{}", "00".repeat(32)),
+                withdrawable_epoch: 0,
+                withdrawal_credentials: [0; 32],
             },
         });
 
@@ -475,30 +474,28 @@ mod tests {
     }
 
     /// The core fetcher fetches proposer data via `produce_block_v3` → GET
-    /// `/eth/v3/validator/blocks/{slot}`; without a mount it gets
-    /// `UnexpectedResponse` and the proposer duty never decides. Assert the
-    /// mock serves an `Ok` produce-block response the client parses.
+    /// `/eth/v3/validator/blocks/{slot}`; without a mount the proposer duty
+    /// never decides. Assert the mock serves a produce-block response the
+    /// client decodes.
     #[tokio::test]
     async fn produce_block_v3_serves_ok_proposal() {
-        use pluto_eth2api::{ProduceBlockV3Request, ProduceBlockV3Response};
+        use pluto_eth2api::{ProduceBlockOpts, spec::DataVersion};
 
         let mock = BeaconMock::builder().build().await.expect("build mock");
-        let request = ProduceBlockV3Request::builder()
-            .slot("1".to_string())
-            .randao_reveal(format!("0x{}", "00".repeat(96)))
-            .graffiti(format!("0x{}", "00".repeat(32)))
-            .builder_boost_factor("0".to_string())
-            .build()
-            .expect("build produce-block request");
+        let opts = ProduceBlockOpts {
+            slot: 1,
+            randao_reveal: [0; 96],
+            graffiti: Some([0; 32]),
+            skip_randao_verification: false,
+            builder_boost_factor: Some(0),
+        };
 
-        let resp = mock
+        let proposal = mock
             .client()
-            .produce_block_v3(request)
+            .produce_block_v3(&opts)
             .await
             .expect("produce_block_v3 request succeeds");
-        assert!(
-            matches!(resp, ProduceBlockV3Response::Ok(_)),
-            "expected an Ok produce-block response (not UnexpectedResponse)"
-        );
+        assert_eq!(proposal.version(), DataVersion::Deneb);
+        assert!(!proposal.is_blinded());
     }
 }
