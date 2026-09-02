@@ -138,7 +138,7 @@ fn build_host(
     let keypair = keypair_from_secret_key(key).expect("keypair");
 
     // A permissive verifier returning Ok for every message.
-    let validator = Box::new(|_: &PriorityMsg| Ok(()));
+    let validator = Arc::new(|_: &PriorityMsg| Ok(()));
 
     let (prioritiser, behaviour) = Prioritiser::new_internal(
         peer_id,

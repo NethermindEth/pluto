@@ -297,13 +297,6 @@ pub enum CreateClusterError {
     #[error("Crypto error: {0}")]
     CryptoError(#[from] pluto_crypto::types::Error),
 
-    /// Value exceeds u8::MAX.
-    #[error("Value {value} exceeds u8::MAX (255)")]
-    ValueExceedsU8 {
-        /// The value that exceeds u8::MAX.
-        value: u64,
-    },
-
     /// Value exceeds usize::MAX.
     #[error("Value {value} exceeds usize::MAX")]
     ValueExceedsUsize {

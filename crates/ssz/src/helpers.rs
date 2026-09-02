@@ -1,9 +1,9 @@
 //! Generic SSZ helper functions.
 
-use crate::{Error, HashWalker, Result};
+use crate::{Error, HashWalker, HexDecodeError, Result};
 
 /// Decodes a `0x`-prefixed hex string and enforces an exact byte length.
-pub fn from_0x_hex_str(s: &str, len: usize) -> std::result::Result<Vec<u8>, hex::FromHexError> {
+pub fn from_0x_hex_str(s: &str, len: usize) -> std::result::Result<Vec<u8>, HexDecodeError> {
     if s.is_empty() {
         return Ok(vec![]);
     }
@@ -11,7 +11,10 @@ pub fn from_0x_hex_str(s: &str, len: usize) -> std::result::Result<Vec<u8>, hex:
     let s = s.strip_prefix("0x").unwrap_or(s);
     let bytes = hex::decode(s)?;
     if bytes.len() != len {
-        return Err(hex::FromHexError::InvalidStringLength);
+        return Err(HexDecodeError::InvalidLength {
+            expected: len,
+            actual: bytes.len(),
+        });
     }
     Ok(bytes)
 }
@@ -91,6 +94,23 @@ pub fn to_0x_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_0x_hex_str_separates_bad_hex_from_bad_length() {
+        assert_eq!(from_0x_hex_str("0x1234", 2).unwrap(), vec![0x12, 0x34]);
+        assert!(matches!(
+            from_0x_hex_str("0xzz", 1),
+            Err(HexDecodeError::InvalidHex(_))
+        ));
+        // Valid hex, wrong byte count: previously reported as bad hex.
+        assert!(matches!(
+            from_0x_hex_str("0x1234", 3),
+            Err(HexDecodeError::InvalidLength {
+                expected: 3,
+                actual: 2
+            })
+        ));
+    }
 
     #[test]
     fn left_pad_works() {

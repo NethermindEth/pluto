@@ -360,15 +360,11 @@ impl MemDB {
             }
         }
 
-        inner
-            .entries
-            .entry(k.clone())
-            .or_insert_with(Vec::new)
-            .push(value);
+        inner.entries.entry(k.clone()).or_default().push(value);
         inner
             .keys_by_duty
             .entry(k.duty.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(k.clone());
 
         if k.duty.duty_type == DutyType::Exit {
