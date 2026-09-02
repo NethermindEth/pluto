@@ -619,4 +619,66 @@ mod tests {
             Err(FrostCoreError::EmptyPolynomial)
         ));
     }
+
+    /// Three distinct, valid G1 commitments: `[G, 2G, 3G]`.
+    // `clippy.toml` exempts `#[test]` bodies from this lint but not the helpers
+    // they call.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "BLS12-381 group/scalar arithmetic has no integer overflow semantics"
+    )]
+    fn valid_commitments() -> [[u8; 48]; 3] {
+        let g = G1Projective::generator();
+
+        [
+            G1Affine::from(g).to_compressed(),
+            G1Affine::from(g * Scalar::from(2u64)).to_compressed(),
+            G1Affine::from(g * Scalar::from(3u64)).to_compressed(),
+        ]
+    }
+
+    // `deserialize_commitment_rejects_invalid_point` cannot see *position*:
+    // the `collect::<Option<_>>()` short-circuits, so a check that only looked
+    // at the first coefficient would still pass it. The positive control is
+    // here because "rejects everything" would satisfy the sweep on its own.
+    #[test]
+    fn from_commitments_rejects_an_off_subgroup_point_at_any_position() {
+        let valid = valid_commitments();
+
+        assert!(
+            VerifiableSecretSharingCommitment::from_commitments(&valid).is_some(),
+            "the unmodified vector must be accepted"
+        );
+
+        for position in 0..valid.len() {
+            let mut corrupted = valid;
+            corrupted[position] = crate::curve::tests::OFF_SUBGROUP_G1_POINT;
+
+            assert!(
+                VerifiableSecretSharingCommitment::from_commitments(&corrupted).is_none(),
+                "an off-subgroup point at position {position} must be rejected"
+            );
+        }
+    }
+
+    // A commitment to the identity is a commitment to a zero coefficient — for
+    // the constant term, a group public key of infinity. Only
+    // `G1Projective::from_compressed` rejects it, so this pins that
+    // `from_commitments` goes through the projective constructor.
+    #[test]
+    fn from_commitments_rejects_the_identity() {
+        let identity = G1Affine::from(G1Projective::identity()).to_compressed();
+
+        assert!(
+            VerifiableSecretSharingCommitment::from_commitments(&[identity]).is_none(),
+            "a lone identity commitment must be rejected"
+        );
+
+        let mut with_identity = valid_commitments();
+        with_identity[1] = identity;
+        assert!(
+            VerifiableSecretSharingCommitment::from_commitments(&with_identity).is_none(),
+            "the identity must be rejected mid-vector too"
+        );
+    }
 }

@@ -748,6 +748,10 @@ mod tests {
 
     use super::*;
 
+    /// A DKG context byte that is not zero. At `ctx = 0` a context dropped on
+    /// the floor is indistinguishable from one that was used.
+    const NON_ZERO_CTX: u8 = 0x2a;
+
     #[test]
     fn shamir_share_debug_redacts_value() {
         let share = ShamirShare {
@@ -978,12 +982,17 @@ mod tests {
     }
 
     /// 2-of-3 DKG then BLS threshold signing (Ethereum 2.0 compatible).
+    ///
+    /// Runs at a non-zero context; `bls_round_trip_3_of_3` keeps the `ctx = 0`
+    /// case. It is the positive control for the `ctx` tests below: without it,
+    /// "a different ctx is rejected" would also pass against an implementation
+    /// where any non-zero `ctx` breaks the protocol outright.
     #[test]
     fn bls_round_trip_2_of_3() {
         let mut rng = StdRng::seed_from_u64(123);
         let threshold = 2u16;
         let max_signers = 3u16;
-        let ctx = 0u8;
+        let ctx = NON_ZERO_CTX;
 
         let mut bcasts: BTreeMap<u32, Round1Bcast> = BTreeMap::new();
         let mut all_shares: BTreeMap<u32, BTreeMap<u32, ShamirShare>> = BTreeMap::new();
@@ -1333,5 +1342,89 @@ mod tests {
             result,
             Err(KryptologyError::DuplicateIdentifier(1))
         ));
+    }
+
+    // `ctx` does not enter the secret polynomial — the Feldman commitments are
+    // byte-identical across contexts — but it does enter the Schnorr
+    // challenge, so `ci` and `wi` both change. Both RNGs are seeded
+    // identically, so the context byte is the only difference.
+    #[test]
+    fn the_context_byte_binds_the_schnorr_proof_but_not_the_polynomial() {
+        let (threshold, max_signers) = (2u16, 3u16);
+
+        let mut rng_zero = StdRng::seed_from_u64(1789);
+        let (zero_ctx, ..) =
+            round1(1, threshold, max_signers, 0, &mut rng_zero).expect("round1 at ctx 0");
+
+        let mut rng_non_zero = StdRng::seed_from_u64(1789);
+        let (non_zero_ctx, ..) = round1(1, threshold, max_signers, NON_ZERO_CTX, &mut rng_non_zero)
+            .expect("round1 at a non-zero ctx");
+
+        assert_eq!(
+            zero_ctx.commitments, non_zero_ctx.commitments,
+            "ctx must not reach the secret polynomial"
+        );
+        assert_ne!(
+            zero_ctx.ci, non_zero_ctx.ci,
+            "ctx must reach the Schnorr challenge"
+        );
+        assert_ne!(
+            zero_ctx.wi, non_zero_ctx.wi,
+            "a different challenge must give a different response"
+        );
+    }
+
+    // The context byte is what stops a proof from one DKG session being
+    // replayed into another. With a single sender the culprit is unambiguous.
+    #[test]
+    fn round2_rejects_a_broadcast_made_under_a_different_context() {
+        let mut rng = StdRng::seed_from_u64(31337);
+        let (threshold, max_signers) = (2u16, 2u16);
+
+        let (_bcast1, _shares1, secret1) =
+            round1(1, threshold, max_signers, NON_ZERO_CTX, &mut rng).expect("round1 at our ctx");
+        let (foreign_bcast, foreign_shares, _secret2) =
+            round1(2, threshold, max_signers, 0, &mut rng).expect("round1 at a foreign ctx");
+
+        let result = round2(
+            secret1,
+            &[(2, foreign_bcast)].into(),
+            &[(2, foreign_shares[&1].clone())].into(),
+        );
+
+        assert!(
+            matches!(result, Err(KryptologyError::InvalidProof { culprit: 2 })),
+            "expected InvalidProof from participant 2"
+        );
+    }
+
+    // The interoperability surface with Go's kryptology: a reordered preimage
+    // still produces a self-consistent Rust DKG, so every other test here would
+    // pass while charon rejected every proof we send.
+    #[test]
+    fn the_challenge_preimage_is_id_then_ctx_then_commitment_then_nonce() {
+        let commitment_0 = G1Projective::generator() * Scalar::from(11u64);
+        let nonce_point = G1Projective::generator() * Scalar::from(13u64);
+
+        let mut expected_preimage = vec![7u8, NON_ZERO_CTX];
+        expected_preimage.extend_from_slice(&G1Affine::from(commitment_0).to_compressed());
+        expected_preimage.extend_from_slice(&G1Affine::from(nonce_point).to_compressed());
+        assert_eq!(expected_preimage.len(), 98);
+
+        assert_eq!(
+            kryptology_challenge(7, NON_ZERO_CTX, &commitment_0, &nonce_point),
+            kryptology_hash_to_scalar(&expected_preimage)
+        );
+
+        // Neither the two leading bytes nor the two points are
+        // interchangeable, which the assertion above cannot show on its own.
+        assert_ne!(
+            kryptology_challenge(7, NON_ZERO_CTX, &commitment_0, &nonce_point),
+            kryptology_challenge(NON_ZERO_CTX, 7, &commitment_0, &nonce_point)
+        );
+        assert_ne!(
+            kryptology_challenge(7, NON_ZERO_CTX, &commitment_0, &nonce_point),
+            kryptology_challenge(7, NON_ZERO_CTX, &nonce_point, &commitment_0)
+        );
     }
 }
