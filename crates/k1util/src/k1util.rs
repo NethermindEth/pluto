@@ -581,7 +581,7 @@ mod tests {
                 K1UtilError::InvalidSignatureLength { expected, actual }
                     if expected == SIGNATURE_LEN_WITHOUT_V && actual == len
             ),
-            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN_WITHOUT_V}, actual: {len} }}, got {err:?}"
+            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN_WITHOUT_V}, actual: {len} }}"
         );
     }
 
@@ -599,7 +599,7 @@ mod tests {
 
         assert!(
             matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
-            "expected InvalidHashLength {{ actual: {len} }}, got {err:?}"
+            "expected InvalidHashLength {{ actual: {len} }}"
         );
     }
 
@@ -617,7 +617,7 @@ mod tests {
                 K1UtilError::InvalidSignatureLength { expected, actual }
                     if expected == SIGNATURE_LEN && actual == len
             ),
-            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN}, actual: {len} }}, got {err:?}"
+            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN}, actual: {len} }}"
         );
     }
 
@@ -629,7 +629,7 @@ mod tests {
 
         assert!(
             matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
-            "expected InvalidHashLength {{ actual: {len} }}, got {err:?}"
+            "expected InvalidHashLength {{ actual: {len} }}"
         );
     }
 
@@ -641,7 +641,7 @@ mod tests {
 
         assert!(
             matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
-            "expected InvalidHashLength {{ actual: {len} }}, got {err:?}"
+            "expected InvalidHashLength {{ actual: {len} }}"
         );
     }
 
@@ -698,7 +698,7 @@ mod tests {
 
         assert!(
             matches!(err, K1UtilError::FailedToParseLibp2pPublicKey(_)),
-            "expected FailedToParseLibp2pPublicKey, got {err:?}"
+            "expected FailedToParseLibp2pPublicKey"
         );
     }
 }

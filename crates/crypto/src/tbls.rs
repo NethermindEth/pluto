@@ -994,14 +994,13 @@ mod tests {
     // produce a valid scalar must terminate rather than spin.
     #[test]
     fn generate_insecure_secret_exhausts_retry_budget() {
-        let result = super::generate_insecure_secret(ConstantRng(INVALID_DRAW));
+        let Err(error) = super::generate_insecure_secret(ConstantRng(INVALID_DRAW)) else {
+            panic!("an RNG that never yields a valid scalar must exhaust the retry budget")
+        };
 
         assert!(
-            matches!(
-                result,
-                Err(Error::InvalidSecretKey(BlsError::KeyGeneration))
-            ),
-            "expected InvalidSecretKey(KeyGeneration), got {result:?}"
+            matches!(error, Error::InvalidSecretKey(BlsError::KeyGeneration)),
+            "expected InvalidSecretKey(KeyGeneration)"
         );
     }
 
@@ -1088,7 +1087,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(Error::InvalidPublicKey(BlsError::BadEncoding))),
-            "expected InvalidPublicKey(BadEncoding), got {result:?}"
+            "expected InvalidPublicKey(BadEncoding)"
         );
     }
 
@@ -1106,19 +1105,19 @@ mod tests {
         let threshold = threshold_aggregate(&HashMap::from([(1u64, BAD)]));
         assert!(
             matches!(threshold, Err(Error::InvalidSignature(_))),
-            "threshold_aggregate: expected InvalidSignature, got {threshold:?}"
+            "threshold_aggregate: expected InvalidSignature"
         );
 
         let verified = verify(&public_key, MSG, &BAD);
         assert!(
             matches!(verified, Err(Error::InvalidSignature(_))),
-            "verify: expected InvalidSignature, got {verified:?}"
+            "verify: expected InvalidSignature"
         );
 
         let verified_aggregate = verify_aggregate(&[public_key], BAD, MSG);
         assert!(
             matches!(verified_aggregate, Err(Error::InvalidSignature(_))),
-            "verify_aggregate: expected InvalidSignature, got {verified_aggregate:?}"
+            "verify_aggregate: expected InvalidSignature"
         );
     }
 
@@ -1133,7 +1132,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(Error::VerificationFailed(_))),
-            "the identity signature must not verify, got {result:?}"
+            "the identity signature must not verify"
         );
     }
 
@@ -1156,7 +1155,7 @@ mod tests {
                 result,
                 Err(Error::VerificationFailed(BlsError::VerifyFailed))
             ),
-            "expected VerificationFailed(VerifyFailed), got {result:?}"
+            "expected VerificationFailed(VerifyFailed)"
         );
 
         // The same 48 bytes, reported far more precisely one function over.
@@ -1166,7 +1165,7 @@ mod tests {
                 aggregate_result,
                 Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
             ),
-            "verify_aggregate must name the real cause, got {aggregate_result:?}"
+            "verify_aggregate must name the real cause"
         );
     }
 }

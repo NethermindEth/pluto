@@ -447,8 +447,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(Error::IndicesSharesMismatch)),
-            "expected IndicesSharesMismatch, got {:?}",
-            result.map(|_| "Ok")
+            "expected IndicesSharesMismatch"
         );
     }
 
@@ -491,8 +490,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(Error::EmptySignatureArray)),
-            "expected EmptySignatureArray, got {:?}",
-            result.map(|_| "Ok")
+            "expected EmptySignatureArray"
         );
     }
 

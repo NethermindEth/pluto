@@ -387,11 +387,11 @@ mod tests {
 
         assert!(
             rendered.starts_with(context),
-            "expected the message to start with {context:?}, got {rendered:?}"
+            "expected the message to start with {context:?}"
         );
         assert!(
             rendered.contains(cause),
-            "expected the message to carry the wrapped cause {cause:?}, got {rendered:?}"
+            "expected the message to carry the wrapped cause {cause:?}"
         );
     }
 
@@ -407,7 +407,7 @@ mod tests {
 
         assert!(
             rendered.contains("threshold=3") && rendered.contains("total=5"),
-            "expected threshold=3 and total=5, got {rendered:?}"
+            "expected threshold=3 and total=5"
         );
     }
 
@@ -421,7 +421,7 @@ mod tests {
 
         assert!(
             rendered.contains("4294967296"),
-            "expected the offending threshold in the message, got {rendered:?}"
+            "expected the offending threshold in the message"
         );
     }
 
@@ -438,7 +438,7 @@ mod tests {
 
         assert!(
             rendered.contains("expected 48") && rendered.contains("got 32"),
-            "expected 'expected 48' and 'got 32', got {rendered:?}"
+            "expected 'expected 48' and 'got 32'"
         );
     }
 }
