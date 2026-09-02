@@ -14,9 +14,14 @@ if ! cargo machete; then
     exit 1
 fi
 
-# Formatting check
-if ! cargo +nightly fmt --all -- --check; then
-    echo "❌ Formatting issues (run 'cargo +nightly fmt --all')"
+# Formatting check (pinned nightly — see rustfmt-toolchain)
+FMT_TOOLCHAIN="$(tr -d '[:space:]' < rustfmt-toolchain 2>/dev/null || echo nightly)"
+if command -v cargo-+nightly >/dev/null 2>&1; then
+    # Nix dev shell wraps `cargo +nightly fmt` to the pinned nightly.
+    FMT_TOOLCHAIN="nightly"
+fi
+if ! cargo "+$FMT_TOOLCHAIN" fmt --all -- --check; then
+    echo "❌ Formatting issues (run 'cargo +$FMT_TOOLCHAIN fmt --all')"
     exit 1
 fi
 
