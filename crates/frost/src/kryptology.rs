@@ -1349,7 +1349,7 @@ mod tests {
     // challenge, so `ci` and `wi` both change. Both RNGs are seeded
     // identically, so the context byte is the only difference.
     #[test]
-    fn the_context_byte_binds_the_schnorr_proof_but_not_the_polynomial() {
+    fn ctx_binds_schnorr_proof_but_not_polynomial() {
         let (threshold, max_signers) = (2u16, 3u16);
 
         let mut rng_zero = StdRng::seed_from_u64(1789);
@@ -1377,7 +1377,7 @@ mod tests {
     // The context byte is what stops a proof from one DKG session being
     // replayed into another. With a single sender the culprit is unambiguous.
     #[test]
-    fn round2_rejects_a_broadcast_made_under_a_different_context() {
+    fn round2_rejects_broadcast_from_different_ctx() {
         let mut rng = StdRng::seed_from_u64(31337);
         let (threshold, max_signers) = (2u16, 2u16);
 
@@ -1402,7 +1402,7 @@ mod tests {
     // still produces a self-consistent Rust DKG, so every other test here would
     // pass while charon rejected every proof we send.
     #[test]
-    fn the_challenge_preimage_is_id_then_ctx_then_commitment_then_nonce() {
+    fn challenge_preimage_is_id_ctx_commitment_nonce() {
         let commitment_0 = G1Projective::generator() * Scalar::from(11u64);
         let nonce_point = G1Projective::generator() * Scalar::from(13u64);
 

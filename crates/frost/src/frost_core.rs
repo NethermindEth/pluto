@@ -642,7 +642,7 @@ mod tests {
     // at the first coefficient would still pass it. The positive control is
     // here because "rejects everything" would satisfy the sweep on its own.
     #[test]
-    fn from_commitments_rejects_an_off_subgroup_point_at_any_position() {
+    fn from_commitments_rejects_off_subgroup_point_at_any_position() {
         let valid = valid_commitments();
 
         assert!(
@@ -666,7 +666,7 @@ mod tests {
     // `G1Projective::from_compressed` rejects it, so this pins that
     // `from_commitments` goes through the projective constructor.
     #[test]
-    fn from_commitments_rejects_the_identity() {
+    fn from_commitments_rejects_identity() {
         let identity = G1Affine::from(G1Projective::identity()).to_compressed();
 
         assert!(

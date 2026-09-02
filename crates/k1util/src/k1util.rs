@@ -544,7 +544,7 @@ mod tests {
     #[test_case(Corruption::WrongKey ; "wrong public key")]
     #[test_case(Corruption::WrongHash ; "wrong hash")]
     #[test_case(Corruption::CorruptedR ; "corrupted r")]
-    fn verify_64_returns_ok_false_for_a_well_formed_bad_signature(corruption: Corruption) {
+    fn verify_64_returns_false_for_wrong_signature(corruption: Corruption) {
         let (pubkey, hash, sig) = corrupted_input(corruption);
 
         let verified = verify_64(&pubkey, &hash, &sig[..SIGNATURE_LEN_WITHOUT_V])
@@ -558,7 +558,7 @@ mod tests {
     // which key is recovered, and recovery is allowed to fail outright.
     #[test_case(Corruption::WrongKey ; "wrong public key")]
     #[test_case(Corruption::WrongHash ; "wrong hash")]
-    fn verify_65_returns_ok_false_for_a_well_formed_bad_signature(corruption: Corruption) {
+    fn verify_65_returns_false_for_wrong_signature(corruption: Corruption) {
         let (pubkey, hash, sig) = corrupted_input(corruption);
 
         let verified =
@@ -571,7 +571,7 @@ mod tests {
     // two fields would still satisfy an `is_err()` check.
     #[test_case(SIGNATURE_LEN_WITHOUT_V - 1 ; "one byte short")]
     #[test_case(SIGNATURE_LEN ; "the 65-byte format offered to the 64-byte verifier")]
-    fn verify_64_rejects_a_wrong_length_signature(len: usize) {
+    fn verify_64_rejects_wrong_length_signature(len: usize) {
         let err = verify_64(&key_1().public_key(), &digest_1(), &vec![0u8; len])
             .expect_err("a wrong-length signature must be rejected");
 
@@ -587,7 +587,7 @@ mod tests {
 
     #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
     #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
-    fn verify_64_rejects_a_wrong_length_hash(len: usize) {
+    fn verify_64_rejects_wrong_length_hash(len: usize) {
         let sig = sig_1();
 
         let err = verify_64(
@@ -607,7 +607,7 @@ mod tests {
     // realistic mistake.
     #[test_case(SIGNATURE_LEN_WITHOUT_V ; "the 64-byte format offered to the recoverer")]
     #[test_case(SIGNATURE_LEN + 1 ; "one byte long")]
-    fn recover_rejects_a_wrong_length_signature(len: usize) {
+    fn recover_rejects_wrong_length_signature(len: usize) {
         let err = recover(&digest_1(), &vec![0u8; len])
             .expect_err("a wrong-length signature must be rejected");
 
@@ -623,7 +623,7 @@ mod tests {
 
     #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
     #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
-    fn recover_rejects_a_wrong_length_hash(len: usize) {
+    fn recover_rejects_wrong_length_hash(len: usize) {
         let err =
             recover(&vec![0u8; len], &sig_1()).expect_err("a wrong-length hash must be rejected");
 
@@ -635,7 +635,7 @@ mod tests {
 
     #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
     #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
-    fn sign_rejects_a_wrong_length_hash(len: usize) {
+    fn sign_rejects_wrong_length_hash(len: usize) {
         let err =
             sign(&key_1(), &vec![0u8; len]).expect_err("a wrong-length hash must be rejected");
 
@@ -649,7 +649,7 @@ mod tests {
     // This pins what as: 27 is the Bitcoin-compact spelling of 0, 28 of 1. A
     // mapping that folded them together would still pass the domain test.
     #[test]
-    fn recover_maps_bitcoin_compact_recovery_ids_onto_their_ethereum_twins() {
+    fn recover_maps_compact_recovery_ids_to_ethereum_ids() {
         let digest = digest_1();
         let mut sig = sig_1();
 
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn public_key_from_libp2p_round_trips_a_secp256k1_key() {
+    fn public_key_from_libp2p_round_trips_secp256k1_key() {
         let sec1 = key_1().public_key().to_sec1_bytes();
         let libp2p_key = libp2p::identity::secp256k1::PublicKey::try_from_bytes(&sec1)
             .expect("a compressed sec1 point is a valid libp2p secp256k1 key");
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn public_key_from_libp2p_rejects_a_non_secp256k1_key() {
+    fn public_key_from_libp2p_rejects_non_secp256k1_key() {
         let ed25519 = libp2p::identity::ed25519::Keypair::generate().public();
 
         let err = public_key_from_libp2p(Libp2pPublicKey::from(ed25519))

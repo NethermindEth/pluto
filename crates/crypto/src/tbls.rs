@@ -963,7 +963,7 @@ mod tests {
     const INVALID_DRAW: u8 = 0xff;
 
     #[test]
-    fn generate_insecure_secret_is_reproducible_from_its_seed() {
+    fn generate_insecure_secret_is_deterministic() {
         let first = super::generate_insecure_secret(StdRng::from_seed([1u8; 32])).unwrap();
         let again = super::generate_insecure_secret(StdRng::from_seed([1u8; 32])).unwrap();
         let other = super::generate_insecure_secret(StdRng::from_seed([2u8; 32])).unwrap();
@@ -975,7 +975,7 @@ mod tests {
     // Unlike `generate_secret_key`, this performs no key derivation: it hands
     // back the draw verbatim. That is why it is documented as insecure.
     #[test]
-    fn generate_insecure_secret_returns_the_raw_rng_draw() {
+    fn generate_insecure_secret_returns_raw_rng_draw() {
         // Asserted, so this cannot quietly become a test of the retry loop.
         assert!(
             BlstSecretKey::from_bytes(&VALID_DRAW).is_ok(),
@@ -993,7 +993,7 @@ mod tests {
     // The retry loop is bounded at 100 attempts, so an RNG that can never
     // produce a valid scalar must terminate rather than spin.
     #[test]
-    fn generate_insecure_secret_gives_up_after_its_retry_budget() {
+    fn generate_insecure_secret_exhausts_retry_budget() {
         let result = super::generate_insecure_secret(ConstantRng(INVALID_DRAW));
 
         assert!(
@@ -1008,7 +1008,7 @@ mod tests {
     // `generate_secret_key` runs EIP-2333 `key_gen` over the RNG output, so
     // the returned key is *not* the draw.
     #[test]
-    fn generate_secret_key_derives_rather_than_returning_the_rng_draw() {
+    fn generate_secret_key_derives_from_rng_draw() {
         let derived = generate_secret_key(ConstantRng(VALID_DRAW[0])).unwrap();
 
         // `VALID_DRAW` is itself a usable scalar, so returning it verbatim
@@ -1028,7 +1028,7 @@ mod tests {
     // before it delegates. `tbls::math` reports `IndicesSharesMismatch` for the
     // empty case — a different guard, a different variant.
     #[test]
-    fn empty_inputs_are_rejected_with_their_own_errors() {
+    fn empty_inputs_reject_with_distinct_errors() {
         assert!(matches!(
             recover_secret(&HashMap::new()),
             Err(Error::SharesAreEmpty)
@@ -1047,7 +1047,7 @@ mod tests {
     // well-formed 96-byte signature; only verification reveals it signs
     // nothing. (`math.rs` pins the secret-side twin.)
     #[test]
-    fn threshold_aggregate_below_threshold_returns_a_signature_that_does_not_verify() {
+    fn threshold_aggregate_below_threshold_does_not_verify() {
         const MSG: &[u8] = b"sub-threshold aggregate";
 
         let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
     // opposite conclusions — "my input is broken" vs "this signer is lying".
     #[test_case([0u8; PUBLIC_KEY_LENGTH] ; "all zero")]
     #[test_case([0xff; PUBLIC_KEY_LENGTH] ; "all ones")]
-    fn verify_rejects_a_malformed_public_key(public_key: PublicKey) {
+    fn verify_rejects_malformed_public_key(public_key: PublicKey) {
         let result = verify(&public_key, b"data", &IDENTITY_SIGNATURE);
 
         assert!(
@@ -1096,7 +1096,7 @@ mod tests {
     // coverage. Each remaining call site maps its own error, so a missing or
     // mis-mapped `?` is otherwise invisible.
     #[test]
-    fn every_entry_point_that_parses_a_signature_rejects_a_malformed_one() {
+    fn all_entry_points_reject_malformed_signature() {
         const MSG: &[u8] = b"malformed signature";
         const BAD: Signature = [0u8; SIGNATURE_LENGTH];
 
@@ -1125,7 +1125,7 @@ mod tests {
     // `aggregate(&[])` hands back the identity signature, which must fail
     // rather than verify against anything.
     #[test]
-    fn verify_rejects_the_identity_signature() {
+    fn verify_rejects_identity_signature() {
         let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
         let public_key = secret_to_public_key(&secret).unwrap();
 
@@ -1143,7 +1143,7 @@ mod tests {
     // `verify_aggregate` calls `key_validate` first and reports
     // `InvalidPublicKey`. Asserted together so the contrast cannot drift.
     #[test]
-    fn verify_cannot_distinguish_an_off_subgroup_key_from_a_bad_signature() {
+    fn verify_reports_off_subgroup_key_as_verify_failure() {
         const MSG: &[u8] = b"off subgroup key";
 
         // Genuine, so the outcome is attributable to the key alone.

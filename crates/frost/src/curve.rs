@@ -471,7 +471,7 @@ pub(crate) mod tests {
     // Wrap-around at the two ends of the field, where a missing reduction
     // produces something that is not a field element at all.
     #[test]
-    fn scalar_arithmetic_wraps_at_the_field_edges() {
+    fn scalar_arithmetic_wraps_at_field_edges() {
         let max = Scalar::from_bytes(&R_MINUS_1_LE).expect("r - 1 is in range");
 
         assert_eq!(
@@ -490,7 +490,7 @@ pub(crate) mod tests {
     // range-checked and rejects it, `from_bytes_wide` reduces it. Each
     // assertion alone reads like an accident.
     #[test]
-    fn from_bytes_rejects_the_field_order_that_from_bytes_wide_reduces_to_zero() {
+    fn scalar_from_bytes_rejects_field_order_but_wide_reduces_it() {
         assert_eq!(
             Scalar::from_bytes(&R_LE),
             None,
@@ -506,7 +506,7 @@ pub(crate) mod tests {
     // r + 5 ≡ 5. A reduction that subtracted the modulus the wrong number of
     // times still lands on *a* field element, so the value is stated.
     #[test]
-    fn from_bytes_wide_reduces_modulo_the_field_order() {
+    fn scalar_from_bytes_wide_reduces_modulo_field_order() {
         let mut r_plus_5 = widen(&R_LE);
         r_plus_5[0] = 0x06;
 
@@ -516,7 +516,7 @@ pub(crate) mod tests {
     // The largest possible input. The round trip proves the result is a
     // canonical in-range scalar and not merely some 32 bytes.
     #[test]
-    fn from_bytes_wide_reduces_the_largest_input() {
+    fn scalar_from_bytes_wide_reduces_largest_input() {
         let reduced = Scalar::from_bytes_wide(&[0xff; 64]);
 
         assert_eq!(reduced.to_bytes(), MAX_WIDE_REDUCED_LE, "(2^512 - 1) mod r");
@@ -565,7 +565,7 @@ pub(crate) mod tests {
     // `G - G == identity` also covers `Sub`, which negates and re-adds rather
     // than calling blst directly.
     #[test]
-    fn g1_group_laws_hold_for_the_identity() {
+    fn g1_group_laws_hold_for_identity() {
         let g = G1Projective::generator();
         let identity = G1Projective::identity();
 
@@ -585,7 +585,7 @@ pub(crate) mod tests {
     // `blst_p1_affine_in_g1` stands between it and acceptance. Both
     // constructors are checked because the projective one delegates.
     #[test]
-    fn from_compressed_rejects_a_well_encoded_off_subgroup_point() {
+    fn g1_from_compressed_rejects_off_subgroup_point() {
         assert!(
             G1Affine::from_compressed(&OFF_SUBGROUP_G1_POINT).is_none(),
             "an off-subgroup point must not deserialize"
@@ -599,7 +599,7 @@ pub(crate) mod tests {
 
     // Both rejected before any curve arithmetic happens.
     #[test]
-    fn from_compressed_rejects_malformed_encodings() {
+    fn g1_from_compressed_rejects_malformed_encodings() {
         // Compression flag clear: not a compressed point at all.
         assert!(G1Affine::from_compressed(&[0x00; 48]).is_none());
 
@@ -613,7 +613,7 @@ pub(crate) mod tests {
     // only the projective one rejects it. That asymmetry matters because
     // `from_commitments` goes through the projective constructor.
     #[test]
-    fn g1_affine_accepts_the_identity_that_g1_projective_rejects() {
+    fn g1_affine_accepts_identity_that_projective_rejects() {
         let identity = G1Affine::from(G1Projective::identity()).to_compressed();
 
         assert!(

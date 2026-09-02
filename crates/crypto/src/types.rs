@@ -382,7 +382,7 @@ mod tests {
         "Aggregate mismatch"
         ; "aggregation failed"
     )]
-    fn error_display_carries_the_wrapped_bls_error(error: Error, context: &str, cause: &str) {
+    fn error_display_carries_wrapped_bls_error(error: Error, context: &str, cause: &str) {
         let rendered = error.to_string();
 
         assert!(
@@ -398,7 +398,7 @@ mod tests {
     // Two fields of the same type: swapping them compiles and produces a
     // plausible message that says the opposite of the truth.
     #[test]
-    fn invalid_threshold_display_does_not_swap_its_fields() {
+    fn invalid_threshold_display_does_not_swap_fields() {
         let rendered = Error::InvalidThreshold {
             threshold: 3,
             total: 5,
@@ -413,7 +413,7 @@ mod tests {
 
     // Unreachable on 64-bit targets, so nothing else constructs it.
     #[test]
-    fn threshold_overflow_display_carries_the_threshold() {
+    fn threshold_overflow_display_carries_threshold() {
         let rendered = Error::ThresholdOverflow {
             threshold: 4_294_967_296,
         }

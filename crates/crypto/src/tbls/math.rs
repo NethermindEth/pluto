@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_polynomial_rejects_an_empty_polynomial() {
+    fn evaluate_polynomial_rejects_empty_polynomial() {
         assert!(matches!(
             evaluate_polynomial(&[], 1),
             Err(Error::PolynomialIsEmpty)
@@ -376,7 +376,7 @@ mod tests {
 
     // The `skip(1)` loop never runs, so x must not reach the result.
     #[test]
-    fn evaluate_polynomial_of_degree_zero_ignores_x() {
+    fn evaluate_polynomial_degree_zero_ignores_x() {
         let poly = vec![sk(7)];
 
         for x in [1u64, 2, 1_000] {
@@ -394,7 +394,7 @@ mod tests {
     #[test_case(&[1, 2, 3] ; "contiguous ascending")]
     #[test_case(&[2, 4, 5] ; "non-contiguous")]
     #[test_case(&[5, 4, 2] ; "descending, driving the scalar_negate branch")]
-    fn lagrange_interpolate_secret_recovers_the_constant_term(indices: &[Index]) {
+    fn lagrange_interpolate_secret_recovers_constant_term(indices: &[Index]) {
         let recovered = lagrange_interpolate_secret(indices, &shares_at(indices)).unwrap();
 
         assert_eq!(
@@ -408,7 +408,7 @@ mod tests {
     // interpolate a different field element. The line through f(1) and f(2)
     // gives 2·f(1) − f(2) = 62 − 81 = −19, i.e. exactly r − 19.
     #[test]
-    fn lagrange_interpolate_secret_below_threshold_yields_a_specific_wrong_scalar() {
+    fn lagrange_interpolate_secret_below_threshold_yields_wrong_scalar() {
         let recovered = lagrange_interpolate_secret(&[1, 2], &shares_at(&[1, 2]))
             .expect("sub-threshold interpolation succeeds — that is the hazard");
 
@@ -439,7 +439,7 @@ mod tests {
     // errors.
     #[test_case(&[], &[] ; "empty")]
     #[test_case(&[1, 2, 3], &[1, 2] ; "more indices than shares")]
-    fn lagrange_interpolate_secret_rejects_a_length_mismatch(
+    fn lagrange_interpolate_secret_rejects_length_mismatch(
         indices: &[Index],
         share_points: &[Index],
     ) {
@@ -456,7 +456,7 @@ mod tests {
     // byte-identical to the one the recovered secret produces. Descending
     // indices again, for the negated-denominator branch.
     #[test]
-    fn lagrange_interpolate_signature_recovers_the_group_signature() {
+    fn lagrange_interpolate_signature_recovers_group_signature() {
         const MSG: &[u8] = b"lagrange interpolate signature";
 
         let indices: [Index; 3] = [5, 4, 2];
@@ -478,7 +478,7 @@ mod tests {
     // `EmptySignatureArray`, not `IndicesSharesMismatch`.
     #[test_case(&[], &[] ; "empty")]
     #[test_case(&[1, 2, 3], &[1, 2] ; "more indices than signatures")]
-    fn lagrange_interpolate_signature_rejects_a_length_mismatch(
+    fn lagrange_interpolate_signature_rejects_length_mismatch(
         indices: &[Index],
         sig_points: &[Index],
     ) {
@@ -512,14 +512,14 @@ mod tests {
     // n = 1 is the `skip(1)` boundary: the loop body never runs, so an
     // off-by-one in the accumulator shows up only here.
     #[test]
-    fn aggregate_public_keys_of_a_single_key_is_that_key() {
+    fn aggregate_public_keys_of_single_key_is_that_key() {
         let agg = aggregate_public_keys(&[sk(7).sk_to_pk()]).unwrap();
 
         assert_eq!(agg.to_bytes(), sk(7).sk_to_pk().to_bytes());
     }
 
     #[test]
-    fn scalar_div_rejects_a_zero_denominator() {
+    fn scalar_div_rejects_zero_denominator() {
         assert!(matches!(
             scalar_div(&scalar_from_u64(42), &scalar_from_u64(0)),
             Err(Error::DivisionByZero)
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_div_multiplies_by_the_modular_inverse() {
+    fn scalar_div_multiplies_by_modular_inverse() {
         let quotient = scalar_div(&scalar_from_u64(42), &scalar_from_u64(6)).unwrap();
 
         assert_eq!(
@@ -539,7 +539,7 @@ mod tests {
 
     // Negating zero, −19 == r − 19, and involution.
     #[test]
-    fn scalar_negate_computes_the_additive_inverse() {
+    fn scalar_negate_computes_additive_inverse() {
         assert_eq!(
             scalar_negate(&scalar_from_u64(0)).unwrap().b,
             scalar_from_u64(0).b,
