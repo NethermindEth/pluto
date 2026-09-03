@@ -138,7 +138,7 @@ fn build_host(
     let keypair = keypair_from_secret_key(key).expect("keypair");
 
     // A permissive verifier returning Ok for every message.
-    let validator = Box::new(|_: &PriorityMsg| Ok(()));
+    let validator = Arc::new(|_: &PriorityMsg| Ok(()));
 
     let (prioritiser, behaviour) = Prioritiser::new_internal(
         peer_id,
@@ -364,7 +364,8 @@ async fn three_host_prioritiser() {
     }
     drop(err_tx);
 
-    // Expect N * len(duties) decided priority lists, each [prio 0] @ score N*1000.
+    // Expect N * len(duties) decided priority lists, each [prio 0] @ score
+    // N*1000.
     let expected_results = N * duties.len();
     let expected_score = i64::try_from(N).expect("N fits i64") * 1000;
     let zero_any = prio_to_any(0);

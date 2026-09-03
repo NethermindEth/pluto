@@ -43,7 +43,7 @@ pub struct NodeIdx {
     pub share_idx: u64,
 }
 
-/// Definition defines an intended charon cluster configuration excluding
+/// Definition defines an intended cluster configuration excluding
 /// validators.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Definition {
@@ -68,7 +68,7 @@ pub struct Definition {
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     pub fork_version: Vec<u8>,
-    /// Charon nodes in the cluster and their operators.
+    /// Nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<Operator>,
     /// Creator identifies the creator of a cluster definition. They may also be
@@ -127,13 +127,13 @@ impl Serialize for Definition {
     {
         match self.version.as_str() {
             V1_0 | V1_1 => DefinitionV1x0or1::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_2 | V1_3 => DefinitionV1x2or3::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_4 => DefinitionV1x4::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_5 | V1_6 | V1_7 => DefinitionV1x5to7::from(self.clone()).serialize(serializer),
             V1_8 => DefinitionV1x8::from(self.clone()).serialize(serializer),
@@ -167,21 +167,21 @@ impl<'de> Deserialize<'de> for Definition {
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_2 | V1_3 => {
                 let definition: DefinitionV1x2or3 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_4 => {
                 let definition: DefinitionV1x4 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_5 | V1_6 | V1_7 => {
                 let definition: DefinitionV1x5to7 =
@@ -268,7 +268,7 @@ pub enum DefinitionError {
 
     /// Failed to convert hex string
     #[error("Failed to convert hex string")]
-    FailedToConvertHexString(#[from] hex::FromHexError),
+    FailedToConvertHexString(#[from] pluto_ssz::HexDecodeError),
 
     /// Invalid target gas limit
     #[error("Invalid target gas limit: {0}")]
@@ -419,7 +419,10 @@ pub enum InvalidGasLimitError {
 
 impl Definition {
     /// Create a new cluster definition.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the full cluster definition field set"
+    )]
     pub fn new(
         name: String,
         num_validators: u64,
@@ -543,10 +546,11 @@ impl Definition {
     /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
     pub async fn verify_signatures(&self, eth1: &EthClient) -> Result<(), DefinitionError> {
-        // Skip signature verification for definition versions earlier than v1.3 since
-        // there are no EIP712 signatures before v1.3.0. For definition versions
-        // earlier than v1.3.0, error if either config signature or enr signature for
-        // any operator is present.
+        // Skip signature verification for definition versions earlier than v1.3
+        // since there are no EIP712 signatures before v1.3.0. For
+        // definition versions earlier than v1.3.0, error if either
+        // config signature or enr signature for any operator is
+        // present.
         if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
@@ -564,8 +568,8 @@ impl Definition {
         let mut no_op_sigs = 0usize;
 
         for operator in &self.operators {
-            // Completely unsigned operators are also fine, assuming a single cluster-wide
-            // operator.
+            // Completely unsigned operators are also fine, assuming a single
+            // cluster-wide operator.
             if operator.address.is_empty()
                 && operator.enr_signature.is_empty()
                 && operator.config_signature.is_empty()
@@ -857,9 +861,12 @@ pub struct ValidatorAddresses {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x0or1 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
-    /// Charon nodes in the cluster and their operators.
+    /// Nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X1>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -868,6 +875,7 @@ pub struct DefinitionV1x0or1 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -877,9 +885,11 @@ pub struct DefinitionV1x0or1 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -970,9 +980,12 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x2or3 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
-    /// Charon nodes in the cluster and their operators.
+    /// Nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -981,6 +994,7 @@ pub struct DefinitionV1x2or3 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -990,9 +1004,11 @@ pub struct DefinitionV1x2or3 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1083,12 +1099,15 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x4 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Operators define the nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1097,6 +1116,7 @@ pub struct DefinitionV1x4 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1202,12 +1222,15 @@ impl TryFrom<DefinitionV1x4> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x5to7 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Charon nodes in the cluster and their operators.
+    /// Nodes in the cluster and their operators.
     /// Max 256 operators.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1216,6 +1239,7 @@ pub struct DefinitionV1x5to7 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1224,7 +1248,8 @@ pub struct DefinitionV1x5to7 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// Addresses of each validator.
-    #[serde(rename = "validators")]
+    #[serde(rename = "validators", default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1301,12 +1326,18 @@ impl From<DefinitionV1x5to7> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x8 {
     /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    // Omitted from JSON when empty.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Operators define the nodes in the cluster and their operators.
     /// Max 256 operators.
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1315,6 +1346,8 @@ pub struct DefinitionV1x8 {
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // Omitted from JSON when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
@@ -1323,7 +1356,10 @@ pub struct DefinitionV1x8 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// ValidatorAddresses define addresses of each validator.
-    #[serde(rename = "validators")]
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1405,12 +1441,18 @@ impl From<DefinitionV1x8> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x9 {
     /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    // Omitted from JSON when empty.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Operators define the nodes in the cluster and their operators.
     /// Max 256 operators.
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1419,6 +1461,8 @@ pub struct DefinitionV1x9 {
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // Omitted from JSON when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
@@ -1427,7 +1471,10 @@ pub struct DefinitionV1x9 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// ValidatorAddresses define addresses of each validator.
-    #[serde(rename = "validators")]
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1518,8 +1565,12 @@ pub struct DefinitionV1x10 {
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Charon nodes in the cluster and their operators.
+    /// Nodes in the cluster and their operators.
     /// Max 256 operators.
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull")]
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -1528,6 +1579,8 @@ pub struct DefinitionV1x10 {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
+    // Omitted from JSON when empty.
+    #[serde(default)]
     pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
@@ -1536,7 +1589,10 @@ pub struct DefinitionV1x10 {
     /// for number of nodes/peers.
     pub threshold: u64,
     /// Addresses of each validator.
-    #[serde(rename = "validators")]
+    // A nil slice is written as JSON `null`, and older tools may omit the
+    // key entirely, so accept both.
+    #[serde(default, rename = "validators")]
+    #[serde_as(as = "DefaultOnNull")]
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1629,12 +1685,13 @@ fn repeat_v_addresses(
     addr: ValidatorAddresses,
     num_validators: u64,
 ) -> Result<Vec<ValidatorAddresses>, DefinitionError> {
-    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it at
-    // SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already enforced on the
-    // validator-addresses field) *before* the clone loop, so a value up to
-    // u64::MAX cannot drive an unbounded allocation / OOM. This is defensive
-    // hardening consistent with the SSZ bound Charon enforces; it cannot reject
-    // any definition that could round-trip through SSZ hashing.
+    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it
+    // at SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already
+    // enforced on the validator-addresses field) *before* the clone loop,
+    // so a value up to u64::MAX cannot drive an unbounded allocation / OOM.
+    // This is defensive hardening consistent with the SSZ bound itself; it
+    // cannot reject any definition that could round-trip through SSZ
+    // hashing.
     if num_validators > SSZ_MAX_VALIDATORS as u64 {
         return Err(DefinitionError::NumValidatorsTooLarge {
             num_validators,
@@ -1653,36 +1710,44 @@ fn repeat_v_addresses(
 mod tests {
     use super::*;
 
-    fn parse_example_definition(json: &str) -> Definition {
-        let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
-        let version = value
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+    /// The version-specific parser and the dispatching `Deserialize` must
+    /// agree, and the fixture must report the expected counts and verify.
+    fn assert_versioned_definition<V>(
+        json: &str,
+        version: &str,
+        operators: usize,
+        validators: usize,
+    ) -> Definition
+    where
+        V: serde::de::DeserializeOwned,
+        Definition: TryFrom<V>,
+        <Definition as TryFrom<V>>::Error: std::fmt::Debug,
+    {
+        let versioned = serde_json::from_str::<V>(json)
+            .unwrap_or_else(|err| panic!("{version} parser must accept the fixture: {err}"));
+        let definition = serde_json::from_str::<Definition>(json)
+            .unwrap_or_else(|err| panic!("dispatching parser must accept {version}: {err}"));
 
-        if version == V1_4 {
-            if value.get("fee_recipient_address").is_none() {
-                value["fee_recipient_address"] = serde_json::Value::String(
-                    "0x0000000000000000000000000000000000000000".to_string(),
-                );
-            }
-            if value.get("withdrawal_address").is_none() {
-                value["withdrawal_address"] = serde_json::Value::String(
-                    "0x0000000000000000000000000000000000000000".to_string(),
-                );
-            }
-        }
+        assert_eq!(
+            Definition::try_from(versioned).expect("convert versioned definition"),
+            definition,
+            "dispatching parser disagrees with the {version} parser"
+        );
 
-        if version == V1_10 && value.get("compounding").is_none() {
-            value["compounding"] = serde_json::Value::Bool(false);
-        }
+        assert_eq!(definition.version, version);
+        assert_eq!(definition.operators.len(), operators, "operators");
+        assert_eq!(
+            definition.validator_addresses.len(),
+            validators,
+            "validator addresses"
+        );
+        assert_eq!(
+            definition.num_validators,
+            u64::try_from(validators).expect("validator count fits in u64")
+        );
+        definition.verify_hashes().expect("hashes must verify");
 
-        serde_json::from_value(value).unwrap()
-    }
-
-    async fn test_eth1_client() -> EthClient {
-        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+        definition
     }
 
     fn legacy_definition_json(num_validators: u64) -> String {
@@ -1716,12 +1781,9 @@ mod tests {
             result.is_err(),
             "u64::MAX num_validators must be rejected, not allocated"
         );
-        // The deserialize dispatch renders the TryFrom error via Debug
-        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on the
-        // variant name and the enforced max, both of which appear in the Debug repr.
         let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains("NumValidatorsTooLarge") && msg.contains("65536"),
+            msg.contains("exceeds maximum") && msg.contains("65536"),
             "unexpected error message: {msg}"
         );
     }
@@ -1738,6 +1800,171 @@ mod tests {
             serde_json::from_str::<Definition>(&legacy_definition_json(65537)).is_err(),
             "65537 must be rejected"
         );
+    }
+
+    const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+    /// `Definition::new` always stamps [`CURRENT_VERSION`]; `opts` is the only
+    /// way to reach the version-gated validations.
+    fn downgrade_to_v1_7(definition: &mut Definition) -> Definition {
+        definition.version = V1_7.to_owned();
+        definition.clone()
+    }
+
+    fn downgrade_to_v1_9(definition: &mut Definition) -> Definition {
+        definition.version = V1_9.to_owned();
+        definition.clone()
+    }
+
+    /// A valid v1.10 argument set; each test overrides exactly one field.
+    struct NewArgs {
+        num_validators: u64,
+        fee_recipient_addresses: Vec<String>,
+        withdrawal_addresses: Vec<String>,
+        deposit_amounts: Vec<u64>,
+        target_gas_limit: u64,
+        compounding: bool,
+        opts: Vec<fn(&mut Definition) -> Definition>,
+    }
+
+    impl Default for NewArgs {
+        fn default() -> Self {
+            Self {
+                num_validators: 2,
+                fee_recipient_addresses: vec![ZERO_ADDRESS.to_owned(); 2],
+                withdrawal_addresses: vec![ZERO_ADDRESS.to_owned(); 2],
+                deposit_amounts: Vec::new(),
+                target_gas_limit: 30_000_000,
+                compounding: false,
+                opts: Vec::new(),
+            }
+        }
+    }
+
+    impl NewArgs {
+        fn build(self) -> Result<Definition, DefinitionError> {
+            Definition::new(
+                "test".to_owned(),
+                self.num_validators,
+                2,
+                self.fee_recipient_addresses,
+                self.withdrawal_addresses,
+                "0x00000000".to_owned(),
+                Creator::default(),
+                Vec::new(),
+                self.deposit_amounts,
+                String::new(),
+                self.target_gas_limit,
+                self.compounding,
+                self.opts,
+            )
+        }
+    }
+
+    #[test]
+    fn definition_new_builds_a_current_version_definition() {
+        let definition = NewArgs::default().build().unwrap();
+
+        assert_eq!(definition.version, CURRENT_VERSION);
+        assert_eq!(definition.num_validators, 2);
+        assert_eq!(definition.validator_addresses.len(), 2);
+        assert_eq!(definition.dkg_algorithm, DKG_ALGO);
+        assert_eq!(definition.config_hash.len(), 32);
+        assert_eq!(definition.definition_hash.len(), 32);
+        definition.verify_hashes().expect("hashes must verify");
+    }
+
+    #[test]
+    fn definition_new_rejects_short_fee_recipient_list() {
+        let result = NewArgs {
+            fee_recipient_addresses: vec![ZERO_ADDRESS.to_owned()],
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(DefinitionError::InsufficientFeeRecipientAddresses)
+        ));
+    }
+
+    #[test]
+    fn definition_new_rejects_short_withdrawal_list() {
+        let result = NewArgs {
+            withdrawal_addresses: vec![ZERO_ADDRESS.to_owned()],
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(DefinitionError::InsufficientWithdrawalAddresses)
+        ));
+    }
+
+    /// Partial deposits arrived in v1.8.
+    #[test]
+    fn definition_new_rejects_partial_deposits_before_v1_8() {
+        let result = NewArgs {
+            deposit_amounts: vec![16_000_000_000, 16_000_000_000],
+            target_gas_limit: 0,
+            opts: vec![downgrade_to_v1_7],
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(DefinitionError::InvalidDepositAmounts)
+        ));
+    }
+
+    /// Compounding arrived in v1.10.
+    #[test]
+    fn definition_new_rejects_compounding_before_v1_10() {
+        let result = NewArgs {
+            compounding: true,
+            target_gas_limit: 0,
+            opts: vec![downgrade_to_v1_9],
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(result, Err(DefinitionError::InvalidCompounding)));
+    }
+
+    /// A custom target gas limit arrived in v1.10.
+    #[test]
+    fn definition_new_rejects_target_gas_limit_before_v1_10() {
+        let result = NewArgs {
+            opts: vec![downgrade_to_v1_9],
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(DefinitionError::InvalidTargetGasLimit(
+                InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit
+            ))
+        ));
+    }
+
+    /// v1.10 has no default, so leaving it unset is rejected too.
+    #[test]
+    fn definition_new_requires_a_target_gas_limit() {
+        let result = NewArgs {
+            target_gas_limit: 0,
+            ..Default::default()
+        }
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(DefinitionError::InvalidTargetGasLimit(
+                InvalidGasLimitError::GasLimitNotSet
+            ))
+        ));
     }
 
     #[test]
@@ -1849,24 +2076,22 @@ mod tests {
 
     #[test]
     fn cluster_definition_v1_0_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_0_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x0or1>(
+            include_str!("testdata/cluster_definition_v1_0_0.json"),
+            V1_0,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_1_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_1_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x0or1>(
+            include_str!("testdata/cluster_definition_v1_1_0.json"),
+            V1_1,
+            2,
+            2,
+        );
     }
 
     #[test]
@@ -1880,7 +2105,7 @@ mod tests {
 
             let err = serde_json::from_value::<Definition>(value).unwrap_err();
             assert!(
-                err.to_string().contains("NonZeroOperatorNonce"),
+                err.to_string().contains("non-zero operator nonce"),
                 "unexpected error: {err}"
             );
         }
@@ -1888,113 +2113,142 @@ mod tests {
 
     #[test]
     fn cluster_definition_v1_2_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_2_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x2or3>(
+            include_str!("testdata/cluster_definition_v1_2_0.json"),
+            V1_2,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_3_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_3_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x2or3>(
+            include_str!("testdata/cluster_definition_v1_3_0.json"),
+            V1_3,
+            2,
+            2,
+        );
     }
 
-    #[test]
-    fn cluster_definition_v1_3_0_unsigned_operators() {
-        for fixture in [
-            include_str!("testdata/cluster_definition_v1_3_0_unsigned.json"),
-            include_str!("testdata/cluster_definition_v1_3_0_partial_sigs.json"),
-        ] {
-            let definition = serde_json::from_str::<Definition>(fixture).unwrap();
+    #[test_case::test_case(include_str!("testdata/cluster_definition_v1_3_0_unsigned.json") ; "unsigned")]
+    #[test_case::test_case(include_str!("testdata/cluster_definition_v1_3_0_partial_sigs.json") ; "partial sigs")]
+    fn cluster_definition_v1_3_0_unsigned_operators(fixture: &str) {
+        let definition = assert_versioned_definition::<DefinitionV1x2or3>(fixture, V1_3, 2, 2);
 
-            assert!(definition.verify_hashes().is_ok());
-        }
+        // Operator signatures are absent or only partly filled in; the
+        // config/definition hashes must still verify.
+        assert!(
+            definition
+                .operators
+                .iter()
+                .any(|o| o.config_signature.is_empty() || o.enr_signature.is_empty()),
+            "fixture should carry at least one unsigned operator"
+        );
     }
 
     #[test]
     fn cluster_definition_v1_4_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_4_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x4>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x4>(
+            include_str!("testdata/cluster_definition_v1_4_0.json"),
+            V1_4,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_5_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_5_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x5to7>(
+            include_str!("testdata/cluster_definition_v1_5_0.json"),
+            V1_5,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_6_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_6_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x5to7>(
+            include_str!("testdata/cluster_definition_v1_6_0.json"),
+            V1_6,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_7_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_7_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x5to7>(
+            include_str!("testdata/cluster_definition_v1_7_0.json"),
+            V1_7,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_8_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_8_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x8>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x8>(
+            include_str!("testdata/cluster_definition_v1_8_0.json"),
+            V1_8,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_9_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_9_0.json");
-
-        let _ = serde_json::from_str::<DefinitionV1x9>(json_str).unwrap();
-
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
-
-        assert!(definition.verify_hashes().is_ok());
+        assert_versioned_definition::<DefinitionV1x9>(
+            include_str!("testdata/cluster_definition_v1_9_0.json"),
+            V1_9,
+            2,
+            2,
+        );
     }
 
     #[test]
     fn cluster_definition_v1_10_0() {
-        let json_str = include_str!("testdata/cluster_definition_v1_10_0.json");
+        assert_versioned_definition::<DefinitionV1x10>(
+            include_str!("testdata/cluster_definition_v1_10_0.json"),
+            V1_10,
+            2,
+            2,
+        );
+    }
 
-        let _ = serde_json::from_str::<DefinitionV1x10>(json_str).unwrap();
+    /// Nil `operators`/`validators` slices are written as JSON `null` and
+    /// `name`/`timestamp` are omitted when empty. Every supported version must
+    /// accept those shapes rather than fail deserialization.
+    #[test]
+    fn definition_accepts_null_slices_and_absent_omitempty_fields() {
+        for fixture in [
+            include_str!("testdata/cluster_definition_v1_8_0.json"),
+            include_str!("testdata/cluster_definition_v1_9_0.json"),
+            include_str!("testdata/cluster_definition_v1_10_0.json"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let obj = value.as_object_mut().unwrap();
+            obj.insert("operators".to_owned(), serde_json::Value::Null);
+            // `validators: null` only appears when there are no validators, so
+            // keep the count consistent with the num_validators cross-check.
+            obj.insert("validators".to_owned(), serde_json::Value::Null);
+            obj.insert("num_validators".to_owned(), serde_json::json!(0));
+            obj.remove("name");
+            obj.remove("timestamp");
 
-        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+            let version = value["version"].as_str().unwrap().to_owned();
+            let definition = serde_json::from_value::<Definition>(value)
+                .unwrap_or_else(|e| panic!("version {version} must parse: {e}"));
 
-        assert!(definition.verify_hashes().is_ok());
+            assert!(definition.operators.is_empty(), "version {version}");
+            assert!(
+                definition.validator_addresses.is_empty(),
+                "version {version}"
+            );
+            assert_eq!(definition.name, "", "version {version}");
+            assert_eq!(definition.timestamp, "", "version {version}");
+        }
     }
 
     #[test]
@@ -2042,6 +2296,32 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test_case::test_case(include_str!("examples/cluster-definition-000.json"), V1_3, 4, 1 ; "v1.3")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-001.json"), V1_4, 2, 1 ; "v1.4")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-002.json"), V1_4, 4, 1 ; "v1.4-2")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-003.json"), V1_5, 2, 2 ; "v1.5")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-004.json"), V1_7, 4, 2 ; "v1.7")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-005.json"), V1_8, 4, 2 ; "v1.8")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-006.json"), V1_10, 4, 2 ; "v1.10")]
+    fn example_definition_parses_as_is(
+        definition_json: &str,
+        version: &str,
+        operators: usize,
+        validators: usize,
+    ) {
+        let definition = serde_json::from_str::<Definition>(definition_json)
+            .unwrap_or_else(|err| panic!("pristine {version} example must parse: {err}"));
+
+        assert_eq!(definition.version, version);
+        assert_eq!(definition.operators.len(), operators);
+        assert_eq!(definition.validator_addresses.len(), validators);
+        assert_eq!(
+            definition.num_validators,
+            u64::try_from(validators).expect("validator count fits in u64")
+        );
+        definition.verify_hashes().expect("hashes must verify");
+    }
+
     #[test_case::test_case(include_str!("examples/cluster-definition-000.json") ; "v1.3")]
     #[test_case::test_case(include_str!("examples/cluster-definition-001.json") ; "v1.4")]
     #[test_case::test_case(include_str!("examples/cluster-definition-002.json") ; "v1.4-2")]
@@ -2051,8 +2331,8 @@ mod tests {
     #[test_case::test_case(include_str!("examples/cluster-definition-006.json") ; "v1.10")]
     #[tokio::test]
     async fn verify_signatures_examples(definition_json: &str) {
-        let definition = parse_example_definition(definition_json);
-        let eth1 = test_eth1_client().await;
+        let definition = serde_json::from_str::<Definition>(definition_json).unwrap();
+        let eth1 = EthClient::Noop;
 
         assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
@@ -2063,7 +2343,7 @@ mod tests {
             "testdata/cluster_definition_v1_2_0.json"
         ))
         .unwrap();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
@@ -2075,7 +2355,7 @@ mod tests {
         ))
         .unwrap();
         definition.operators[0].config_signature = vec![1];
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -2086,10 +2366,12 @@ mod tests {
 
     #[tokio::test]
     async fn verify_signatures_empty_operator_enr_signature() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-001.json"
+        ))
+        .unwrap();
         definition.operators[0].enr_signature = Vec::new();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -2100,10 +2382,12 @@ mod tests {
 
     #[tokio::test]
     async fn verify_signatures_empty_operator_config_signature() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-001.json"
+        ))
+        .unwrap();
         definition.operators[0].config_signature = Vec::new();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -2114,10 +2398,12 @@ mod tests {
 
     #[tokio::test]
     async fn verify_signatures_mixed_signed_and_unsigned_operators() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-001.json"
+        ))
+        .unwrap();
         definition.operators[0] = Operator::default();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -2128,10 +2414,12 @@ mod tests {
 
     #[tokio::test]
     async fn verify_signatures_creator_missing_signature_while_operators_signed() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-001.json"
+        ))
+        .unwrap();
         definition.creator.config_signature = Vec::new();
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
@@ -2142,21 +2430,25 @@ mod tests {
 
     #[tokio::test]
     async fn verify_signatures_unsigned_creator_and_operators() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-001.json"
+        ))
+        .unwrap();
         definition.creator = Creator::default();
         definition.operators = vec![Operator::default(), Operator::default()];
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
     async fn verify_signatures_v1_3_rejects_creator_signature() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-000.json"));
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-000.json"
+        ))
+        .unwrap();
         definition.creator.config_signature = vec![1];
-        let eth1 = test_eth1_client().await;
+        let eth1 = EthClient::Noop;
 
         let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(

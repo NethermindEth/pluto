@@ -574,7 +574,8 @@ mod tests {
         let proto = unsigned_data_set_to_proto(&set).unwrap();
         let decoded = unsigned_data_set_from_proto(&duty_type, &proto).unwrap();
 
-        // Default-marshalling is SSZ (charon parity): the entry must not be JSON.
+        // Default-marshalling is SSZ (charon parity): the entry must not be
+        // JSON.
         let bytes = proto.set.get(&pubkey.to_string()).unwrap();
         assert_ne!(bytes.first(), Some(&b'{'), "default encoding must be SSZ");
 

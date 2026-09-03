@@ -260,12 +260,11 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                         },
                         &known,
                     );
-                    // Drop cached identify addresses once the peer has no active
-                    // connections and is not a known cluster peer, to bound
+                    // Drop cached identify addresses once the peer has no
+                    // active connections and is not a known
+                    // cluster peer, to bound
                     // `peer_addresses` growth.
-                    if store.connections_to_peer(&event.peer_id).is_empty()
-                        && !known.contains(&event.peer_id)
-                    {
+                    if !store.has_connection(&event.peer_id) && !known.contains(&event.peer_id) {
                         store.remove_peer_addresses(&event.peer_id);
                     }
                 }
@@ -547,7 +546,8 @@ mod tests {
         let count = behaviour.metrics().inner().relay_connection_types[&labels].get();
         assert_eq!(count, 1);
 
-        // peer_connection_total should not have been incremented for unknown peer
+        // peer_connection_total should not have been incremented for unknown
+        // peer
         let total =
             behaviour.metrics().inner().peer_connection_total[&peer_name(&unknown_peer)].get();
         assert_eq!(total, 0);

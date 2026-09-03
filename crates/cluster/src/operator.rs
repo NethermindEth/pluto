@@ -1,9 +1,9 @@
 use crate::{definition::DefinitionError, version::ZERO_NONCE};
 use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{DefaultOnNull, serde_as};
 
-/// Operator represents a charon node operator.
+/// Operator represents a cluster node operator.
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -32,11 +32,16 @@ pub struct OperatorV1X1 {
     enr: String,
     /// The nonce of the operator (always 0)
     nonce: u64,
-    /// The config signature of the operator
-    #[serde_as(as = "HexBytes")]
+    /// The config signature of the operator.
+    ///
+    /// v1.0/v1.1 marshal this `[]byte` directly, so a nil signature is emitted
+    /// as JSON `null`; accept that as an empty signature.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull<HexBytes>")]
     pub config_signature: Vec<u8>,
-    /// The ENR signature of the operator
-    #[serde_as(as = "HexBytes")]
+    /// The ENR signature of the operator (see `config_signature` re: `null`).
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull<HexBytes>")]
     pub enr_signature: Vec<u8>,
 }
 
@@ -50,11 +55,16 @@ pub struct OperatorV1X2OrLater {
     address: String,
     /// The ENR of the operator
     enr: String,
-    /// The config signature of the operator
-    #[serde_as(as = "HexBytes")]
+    /// The config signature of the operator.
+    ///
+    /// A nil slice is written as `""` and `null` is tolerated on read, so
+    /// accept both as an empty signature.
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull<HexBytes>")]
     config_signature: Vec<u8>,
-    /// The ENR signature of the operator
-    #[serde_as(as = "HexBytes")]
+    /// The ENR signature of the operator (see `config_signature`).
+    #[serde(default)]
+    #[serde_as(as = "DefaultOnNull<HexBytes>")]
     enr_signature: Vec<u8>,
 }
 

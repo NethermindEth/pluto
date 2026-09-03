@@ -1,10 +1,11 @@
-#![allow(
+#![expect(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::collapsible_if
+    clippy::collapsible_if,
+    reason = "QBFT test harness uses bounded integer arithmetic and casts over small test values"
 )]
 
 use crate::qbft::{
@@ -758,7 +759,10 @@ fn make_is_leader(n: i64) -> impl for<'a> Fn(LeaderRequest<'a, TestQbft>) -> boo
 }
 
 /// Returns a new message to be broadcast.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper mirrors the full QBFT message field set"
+)]
 fn new_msg(
     type_: MessageType,
     instance: i64,
@@ -2149,12 +2153,9 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
 }
 
 fn buffer_by_source(msgs: &[Msg<TestQbft>]) -> HashMap<i64, Vec<Msg<TestQbft>>> {
-    let mut buffer = HashMap::new();
+    let mut buffer: HashMap<i64, Vec<_>> = HashMap::new();
     for msg in msgs {
-        buffer
-            .entry(msg.source())
-            .or_insert_with(Vec::new)
-            .push(msg.clone());
+        buffer.entry(msg.source()).or_default().push(msg.clone());
     }
     buffer
 }

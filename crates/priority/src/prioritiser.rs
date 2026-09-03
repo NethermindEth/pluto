@@ -97,7 +97,7 @@ struct Shared {
     /// Cluster peers participating in the protocol.
     peers: Vec<PeerId>,
     /// Validates received messages (peer membership + signature).
-    msg_validator: Arc<MsgVerifier>,
+    msg_validator: MsgVerifier,
     /// Cancelled when the engine shuts down, signalling instances to stop.
     quit: CancellationToken,
     /// Deadline scheduler; expired duties drop their request buffers.
@@ -177,7 +177,7 @@ impl Shared {
             return Err(Error::InvalidPeerId);
         }
 
-        (self.msg_validator)(&msg)?; // Arc<Box<dyn Fn>> auto-derefs for call.
+        (self.msg_validator)(&msg)?;
 
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
@@ -241,7 +241,10 @@ impl Prioritiser {
     /// handler and its exchange silently skipped, so the instance could
     /// otherwise reach consensus on a partial message set. Callers using this
     /// seam directly must uphold that invariant.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal constructor wires the full engine; each argument is a distinct collaborator"
+    )]
     pub fn new_internal(
         local_id: PeerId,
         peers: Vec<PeerId>,
@@ -258,7 +261,7 @@ impl Prioritiser {
         // feeds the remaining `Inner` fields — no construction cycle.
         let shared = Arc::new(Shared {
             peers,
-            msg_validator: Arc::new(msg_validator),
+            msg_validator,
             quit: CancellationToken::new(),
             deadliner,
             req_buffers: Mutex::new(HashMap::new()),
@@ -318,7 +321,8 @@ impl Prioritiser {
                     },
                 }
             }
-            // Cancelling `quit` on exit unblocks any in-flight `handle_request`.
+            // Cancelling `quit` on exit unblocks any in-flight
+            // `handle_request`.
             shared.quit.cancel();
         });
     }
@@ -347,9 +351,10 @@ impl Prioritiser {
         match self.inner.shared.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
             AddOutcome::FailedToCompute => {
-                // The deadliner shares the engine/instance cancellation token, so
-                // a failure while shutting down is a cancellation, not a genuine
-                // compute error — report it like the run-loop cancel path.
+                // The deadliner shares the engine/instance cancellation token,
+                // so a failure while shutting down is a
+                // cancellation, not a genuine compute error —
+                // report it like the run-loop cancel path.
                 if ct.is_cancelled() || self.inner.shared.quit.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -895,7 +900,8 @@ mod tests {
 
         let ct = CancellationToken::new();
         // The cleanup loop consumes whatever the deadliner emits; drive it with
-        // a hand-built expired-duty channel to assert deletion deterministically.
+        // a hand-built expired-duty channel to assert deletion
+        // deterministically.
         let (expired_tx, expired_rx) = mpsc::channel(1);
         let (deadliner, _real_expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
         let (prio, _behaviour) = Prioritiser::new_internal(

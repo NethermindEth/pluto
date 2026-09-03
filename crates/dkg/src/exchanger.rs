@@ -146,8 +146,8 @@ impl Exchanger {
         peers: Vec<PeerId>,
         sig_types: Vec<SigType>,
     ) -> Self {
-        // Partial signature roots not known yet, so skip verification in parsigex,
-        // rather verify before we aggregate.
+        // Partial signature roots not known yet, so skip verification in
+        // parsigex, rather verify before we aggregate.
         let st: HashSet<SigType> = sig_types.iter().copied().collect();
 
         let duty_gater_fn: DutyGaterFn = {
@@ -165,8 +165,8 @@ impl Exchanger {
             })
         };
 
-        // threshold is len(peers) to wait until we get all the partial sigs from all
-        // the peers per DV
+        // threshold is len(peers) to wait until we get all the partial sigs
+        // from all the peers per DV
         let threshold = u64::try_from(peers.len()).expect("usize fits in u64");
         // DKG is one-shot and outside the slot timeline; we wire a real
         // deadliner with a never-expiring calculator just to satisfy the
@@ -266,7 +266,8 @@ impl Exchanger {
             {
                 let inner = self.sig_data.inner.lock().await;
                 if let Some(data) = inner.get(&sig_type) {
-                    // We are done when we have ParSignedData of all the DVs from each peer
+                    // We are done when we have ParSignedData of all the DVs
+                    // from each peer
                     if data.len() == expected_dvs {
                         return Ok(data.clone());
                     }
@@ -297,7 +298,7 @@ async fn push_psigs(
 
     {
         let mut inner = sig_data.inner.lock().await;
-        let entry = inner.entry(sig_type).or_insert_with(HashMap::new);
+        let entry = inner.entry(sig_type).or_default();
         for (pk, psigs) in set {
             entry.insert(pk, psigs);
         }
@@ -584,7 +585,8 @@ mod tests {
             exchangers.push(Arc::new(ex));
         }
 
-        // Run concurrent exchanges: for each (node, sig_type) pair, spawn a task
+        // Run concurrent exchanges: for each (node, sig_type) pair, spawn a
+        // task
         let mut join_set = tokio::task::JoinSet::new();
         for (node_idx, ex) in exchangers.iter().enumerate() {
             for &sig_type in &sig_types {
@@ -597,13 +599,14 @@ mod tests {
             }
         }
 
-        // Collect results into actual: one entry per sig_type (last writer wins,
-        // all nodes return equivalent data for each sig_type)
+        // Collect results into actual: one entry per sig_type (last writer
+        // wins, all nodes return equivalent data for each sig_type)
         let actual: SigTypeStore = join_set.join_all().await.into_iter().collect();
 
-        // Assert all expected sig types arrived (matches the Go test assertions).
-        // The Go reflect.DeepEqual is intentionally discarded there — we only
-        // verify presence, DV count, and share count per DV.
+        // Assert all expected sig types arrived (matches the Go test
+        // assertions). The Go reflect.DeepEqual is intentionally
+        // discarded there — we only verify presence, DV count, and
+        // share count per DV.
         for &sig_type in &sig_types {
             let data = actual
                 .get(&sig_type)

@@ -244,7 +244,8 @@ pub fn threshold_aggregate(
         return Err(Error::EmptySignatureArray);
     }
 
-    // Signature indices are already 1-indexed (matching share evaluation points)
+    // Signature indices are already 1-indexed (matching share evaluation
+    // points)
     let indices: Vec<Index> = partial_signatures_by_idx.keys().copied().collect();
 
     let signatures: Vec<BlstSignature> = partial_signatures_by_idx
@@ -284,7 +285,13 @@ pub fn sign(private_key: &PrivateKey, data: &[u8]) -> Result<Signature, Error> {
     Ok(sig.to_bytes())
 }
 
-/// Verifies an aggregate signature
+/// Verifies an aggregate signature against the sum of `public_keys`.
+///
+/// Each key is validated individually — infinity and G1 subgroup checks —
+/// before the keys are summed: a point and its negation cancel to infinity, so
+/// checking only the sum lets invalid keys through. This is the IETF BLS
+/// `FastAggregateVerify` precondition that `KeyValidate` succeeded for every
+/// input key.
 pub fn verify_aggregate(
     public_keys: &[PublicKey],
     signature: Signature,
@@ -297,7 +304,7 @@ pub fn verify_aggregate(
     let pks: Vec<BlstPublicKey> = public_keys
         .iter()
         .map(|pk_bytes| {
-            BlstPublicKey::from_bytes(pk_bytes).map_err(|e| Error::InvalidPublicKey(e.into()))
+            BlstPublicKey::key_validate(pk_bytes).map_err(|e| Error::InvalidPublicKey(e.into()))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -319,6 +326,7 @@ pub fn verify_aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PUBLIC_KEY_LENGTH;
 
     #[test]
     fn generate_insecure_secret() {
@@ -589,13 +597,15 @@ mod tests {
         let sk = generate_secret_key(OsRng).unwrap();
         let sig = sign(&sk, data).unwrap();
 
-        // Charon Herumi Aggregate deserializes+re-serializes even for one element,
-        // so the output is the canonical encoding of the parsed point (not the
-        // input bytes verbatim). For a signature produced by `sign` these coincide.
+        // Charon Herumi Aggregate deserializes+re-serializes even for one
+        // element, so the output is the canonical encoding of the
+        // parsed point (not the input bytes verbatim). For a signature
+        // produced by `sign` these coincide.
         let aggregated = aggregate(&[sig]).unwrap();
         assert_eq!(sig, aggregated);
 
-        // Canonical round-trip: re-serializing the parsed aggregate is idempotent.
+        // Canonical round-trip: re-serializing the parsed aggregate is
+        // idempotent.
         let reparsed = BlstSignature::from_bytes(&aggregated).unwrap();
         assert_eq!(aggregated, reparsed.to_bytes());
     }
@@ -760,8 +770,9 @@ mod tests {
     #[test]
     fn aggregate_empty_returns_identity_signature() {
         // Parity with Charon Herumi Aggregate: empty input is NOT an error; it
-        // returns the serialized G2 point at infinity. Fixture: `0xc0` followed by
-        // 95 zero bytes (Herumi `sig.Serialize()` of a zero `bls.Sign`).
+        // returns the serialized G2 point at infinity. Fixture: `0xc0` followed
+        // by 95 zero bytes (Herumi `sig.Serialize()` of a zero
+        // `bls.Sign`).
         let agg = aggregate(&[]).expect("empty aggregate must not error (Herumi parity)");
 
         let mut expected = [0u8; 96];
@@ -774,9 +785,9 @@ mod tests {
 
     #[test]
     fn identity_signature_matches_go_fixture() {
-        // Hex of Herumi `bls.Sign{}.Serialize()` for the BLS12-381 G2 compressed
-        // point at infinity (eth2/ZCash compressed encoding): `c0` followed by
-        // 190 hex zeros (96 bytes total).
+        // Hex of Herumi `bls.Sign{}.Serialize()` for the BLS12-381 G2
+        // compressed point at infinity (eth2/ZCash compressed
+        // encoding): `c0` followed by 190 hex zeros (96 bytes total).
         let go_fixture_hex = format!("c0{}", "0".repeat(190));
         let go_fixture = hex::decode(go_fixture_hex).unwrap();
         assert_eq!(go_fixture.len(), 96);
@@ -830,5 +841,89 @@ mod tests {
 
         // Verify no 0-indexed key exists
         assert!(!shares.contains_key(&0), "Should not contain key 0");
+    }
+
+    /// Compressed `x = 4`: on the curve, outside the order-`r` subgroup G1.
+    /// `0x80` is the compression flag, sign bit clear.
+    const OFF_SUBGROUP_G1_POINT: PublicKey = {
+        let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
+        bytes[0] = 0x80;
+        bytes[PUBLIC_KEY_LENGTH - 1] = 4;
+        bytes
+    };
+
+    /// Same `x` with the sign bit set: the negation, so the pair sums to
+    /// infinity.
+    const NEGATED_OFF_SUBGROUP_G1_POINT: PublicKey = {
+        let mut bytes = OFF_SUBGROUP_G1_POINT;
+        bytes[0] = 0xa0;
+        bytes
+    };
+
+    /// Compressed G1 point at infinity: compression bit plus infinity bit.
+    const INFINITY_G1_POINT: PublicKey = {
+        let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
+        bytes[0] = 0xc0;
+        bytes
+    };
+
+    /// Position must not matter, so all three orderings are checked.
+    #[test]
+    fn verify_aggregate_rejects_off_subgroup_cancelling_keys() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let pk = secret_to_public_key(&sk).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        assert!(verify_aggregate(&[pk], sig, data).is_ok());
+
+        for keys in [
+            [pk, OFF_SUBGROUP_G1_POINT, NEGATED_OFF_SUBGROUP_G1_POINT],
+            [OFF_SUBGROUP_G1_POINT, NEGATED_OFF_SUBGROUP_G1_POINT, pk],
+            [OFF_SUBGROUP_G1_POINT, pk, NEGATED_OFF_SUBGROUP_G1_POINT],
+        ] {
+            assert!(
+                matches!(
+                    verify_aggregate(&keys, sig, data),
+                    Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
+                ),
+                "cancelling keys must be rejected, not summed away"
+            );
+        }
+    }
+
+    /// The degenerate case: infinity contributes nothing to the sum either.
+    #[test]
+    fn verify_aggregate_rejects_infinity_key() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let pk = secret_to_public_key(&sk).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        for keys in [[pk, INFINITY_G1_POINT], [INFINITY_G1_POINT, pk]] {
+            assert!(matches!(
+                verify_aggregate(&keys, sig, data),
+                Err(Error::InvalidPublicKey(BlsError::InvalidPublicKey))
+            ));
+        }
+    }
+
+    /// A lone off-subgroup key was rejected before this fix too, but as
+    /// `VerificationFailed` from the check on the summed key.
+    #[test]
+    fn verify_aggregate_reports_a_bad_key_as_a_key_error_not_a_verify_failure() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        assert!(matches!(
+            verify_aggregate(&[OFF_SUBGROUP_G1_POINT], sig, data),
+            Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
+        ));
+
+        assert!(matches!(
+            verify_aggregate(&[[0xff; PUBLIC_KEY_LENGTH]], sig, data),
+            Err(Error::InvalidPublicKey(BlsError::BadEncoding))
+        ));
     }
 }

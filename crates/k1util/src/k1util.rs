@@ -40,7 +40,7 @@ pub enum K1UtilError {
 
     /// Failed to parse the signature.
     #[error("Failed to parse the signature: {0}")]
-    InvalidSignature(ecdsa::Error),
+    InvalidSignature(#[source] ecdsa::Error),
 
     /// The hash length is invalid.
     #[error("The hash length is invalid: expected {K1_HASH_LEN}, actual {actual}")]
@@ -58,11 +58,11 @@ pub enum K1UtilError {
 
     /// Failed to read the file.
     #[error("Failed to read the file: {0}")]
-    FailedToReadFile(std::io::Error),
+    FailedToReadFile(#[source] std::io::Error),
 
     /// Failed to write the file.
     #[error("Failed to write the file: {0}")]
-    FailedToWriteFile(std::io::Error),
+    FailedToWriteFile(#[source] std::io::Error),
 
     /// Failed to decode the hex string.
     #[error("Failed to decode the hex string: {0}")]
@@ -70,11 +70,11 @@ pub enum K1UtilError {
 
     /// Failed to parse the secret key.
     #[error("Failed to parse the secret key: {0}")]
-    FailedToParseSecretKey(k256::elliptic_curve::Error),
+    FailedToParseSecretKey(#[source] k256::elliptic_curve::Error),
 
     /// Failed to parse the secp256k1 public key.
     #[error("Failed to parse the secp256k1 public key: {0}")]
-    FailedToParseSecp256k1PublicKey(k256::elliptic_curve::Error),
+    FailedToParseSecp256k1PublicKey(#[source] k256::elliptic_curve::Error),
 
     /// Failed to parse the libp2p public key.
     #[error("Failed to parse the libp2p public key: {0}")]
@@ -84,8 +84,8 @@ pub enum K1UtilError {
 type Result<T> = std::result::Result<T, K1UtilError>;
 
 /// Converts a libp2p PublicKey to a secp256k1 PublicKey.
-pub fn public_key_from_libp2p(pk: &Libp2pPublicKey) -> Result<PublicKey> {
-    let secp_key = pk.clone().try_into_secp256k1()?;
+pub fn public_key_from_libp2p(pk: Libp2pPublicKey) -> Result<PublicKey> {
+    let secp_key = pk.try_into_secp256k1()?;
     PublicKey::from_sec1_bytes(&secp_key.to_bytes())
         .map_err(K1UtilError::FailedToParseSecp256k1PublicKey)
 }

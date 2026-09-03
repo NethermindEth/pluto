@@ -251,7 +251,8 @@ impl DkgParticipant {
             .take()
             .ok_or(FrostError::MissingRoundState)?;
         // get_round2_inputs keeps this node's broadcast. Strip it here to
-        // match Charon's participant behavior; kryptology::round2 rejects self IDs.
+        // match Charon's participant behavior; kryptology::round2 rejects self
+        // IDs.
         let bcasts = bcasts
             .iter()
             .filter(|(id, _)| **id != self.id)

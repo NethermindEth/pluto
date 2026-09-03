@@ -174,7 +174,6 @@ const EVENT_BUFFER: usize = 1024;
 ///
 /// `par_sig` is only set by `ParSigDBInternal`, `ParSigEx`, and
 /// `ParSigDBExternal` events, matching Go's `event.parSig`.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct Event {
     pub duty: Duty,
@@ -204,6 +203,8 @@ pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
     /// Kept so callers can detect task completion or panics by awaiting it.
     /// Dropping the handle detaches the task; call `.abort()` to cancel it.
+    // Read only from tests, so `expect(dead_code)` would be unfulfilled under
+    // `--all-targets`; use `allow` to keep the field in non-test builds.
     #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<()>,
 }
@@ -211,7 +212,8 @@ pub struct TrackerHandle {
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
         // Shutdown is signalled by the receiver being dropped, which causes
-        // send() to return Err immediately — no explicit cancellation select needed.
+        // send() to return Err immediately — no explicit cancellation select
+        // needed.
         if let Err(e) = self.input_tx.send(event).await {
             tracing::warn!(
                 duty = %e.0.duty,
@@ -356,7 +358,10 @@ impl TrackerService {
     /// Both `analyser` and `deleter` must have been started with the same
     /// `cancel` token as passed here, so that all three components shut down
     /// together.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tracker startup wires all deadliner handles, receivers, and config in one call"
+    )]
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
@@ -381,7 +386,10 @@ impl TrackerService {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal tracker startup wires all deadliner handles, receivers, sinks, and config in one call"
+    )]
     fn start_with_buffer_and_sinks(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
@@ -1118,8 +1126,9 @@ mod tests {
 
         let recs = part_records.lock().unwrap();
         assert_eq!(recs.len(), 1);
-        // analyse_participation counts distinct pubkeys across all stored events;
-        // expected_per_peer==3 proves each key produced its own event entry.
+        // analyse_participation counts distinct pubkeys across all stored
+        // events; expected_per_peer==3 proves each key produced its own
+        // event entry.
         assert_eq!(recs[0].expected_per_peer, 3);
     }
 }

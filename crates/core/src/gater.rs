@@ -260,7 +260,8 @@ mod tests {
         let genesis = DateTime::from_timestamp(1_600_000_000, 0).expect("valid timestamp");
         // 100s after genesis at 1s slots ⇒ slot 100 ⇒ epoch 3 (32 slots/epoch).
         let now = DateTime::from_timestamp(1_600_000_100, 0).expect("valid timestamp");
-        // Budget = current epoch 3 + 2 = 5 ⇒ duty epoch ≤ 5 (slot ≤ 191) allowed.
+        // Budget = current epoch 3 + 2 = 5 ⇒ duty epoch ≤ 5 (slot ≤ 191)
+        // allowed.
         let gater = gater(genesis, 1_000, 32, 2, now);
 
         assert!(gater.allows(&attester(96))); // current epoch (3)
@@ -276,7 +277,8 @@ mod tests {
     fn pre_genesis_clamps_to_epoch_zero() {
         let genesis = DateTime::from_timestamp(1_600_000_100, 0).expect("valid timestamp");
         let now = DateTime::from_timestamp(1_600_000_000, 0).expect("valid timestamp");
-        // Budget = epoch 0 + 2 = 2 ⇒ slot ≤ 95 (epoch ≤ 2) allowed at 32 slots/epoch.
+        // Budget = epoch 0 + 2 = 2 ⇒ slot ≤ 95 (epoch ≤ 2) allowed at 32
+        // slots/epoch.
         let gater = gater(genesis, 1_000, 32, 2, now);
 
         assert!(gater.allows(&attester(0)));

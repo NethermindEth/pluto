@@ -160,11 +160,11 @@ impl NetworkBehaviour for ConnGater {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Charon's `InterceptSecured` ignores the connection direction and gates
-        // both inbound and outbound secured connections, so mirror the inbound
-        // gating logic here. Legitimate outbound dials (relay dials,
-        // force-direct, QUIC-upgrade) target relays and cluster peers, which are
-        // both in the allow-list.
+        // Charon's `InterceptSecured` ignores the connection direction and
+        // gates both inbound and outbound secured connections, so
+        // mirror the inbound gating logic here. Legitimate outbound
+        // dials (relay dials, force-direct, QUIC-upgrade) target relays
+        // and cluster peers, which are both in the allow-list.
         if self.is_peer_allowed(&peer) {
             Ok(dummy::ConnectionHandler)
         } else {
@@ -201,16 +201,9 @@ impl NetworkBehaviour for ConnGater {
 }
 
 /// Error indicating a peer is not allowed to connect.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("peer {0} is not in the allowed list")]
 pub struct PeerNotAllowed(pub PeerId);
-
-impl std::fmt::Display for PeerNotAllowed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "peer {} is not in the allowed list", self.0)
-    }
-}
-
-impl std::error::Error for PeerNotAllowed {}
 
 #[cfg(test)]
 mod tests {

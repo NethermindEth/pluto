@@ -242,7 +242,10 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "test code uses simple arithmetic on small known values"
+)]
 mod tests {
     use std::task::Waker;
 

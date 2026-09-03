@@ -168,7 +168,7 @@ impl MutablePeer {
 /// Only works for secp256k1 keys.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Result<K256PublicKey> {
     let libp2p_pk = peer_id_to_libp2p_pk(peer_id)?;
-    pluto_k1util::public_key_from_libp2p(&libp2p_pk).map_err(Into::into)
+    pluto_k1util::public_key_from_libp2p(libp2p_pk).map_err(Into::into)
 }
 
 /// Extracts the libp2p PublicKey from a PeerId.
@@ -197,7 +197,7 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
     for peer in peers {
         let pub_key = peer_id_to_libp2p_pk(&peer.id)?;
 
-        let got = pluto_k1util::public_key_from_libp2p(&pub_key)?;
+        let got = pluto_k1util::public_key_from_libp2p(pub_key)?;
 
         if got == want {
             return Ok(());
@@ -241,8 +241,20 @@ pub fn addr_infos_from_p2p_addrs(addrs: &[Multiaddr]) -> Result<Vec<AddrInfo>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use libp2p::{relay, swarm::SwarmEvent};
+    use pluto_cluster::test_cluster;
     use pluto_testutil::random::generate_insecure_k1_key;
+    use tokio::time;
+
+    use super::*;
+    use crate::{
+        config::P2PConfig,
+        p2p::{Node, NodeType},
+        p2p_context::P2PContext,
+    };
 
     #[test]
     fn new_peer() {
@@ -258,22 +270,133 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore]
-    fn new_tcp_host() {
-        todo!("add this test after implementing p2p.NewNode function");
+    /// The cluster's operator ENRs as peers of *this* crate: `Lock::peers`
+    /// returns the `Peer` of the `pluto-p2p` copy the `pluto-cluster`
+    /// dev-dependency links, which is a distinct type from the one under test.
+    fn cluster_peers(lock: &pluto_cluster::lock::Lock) -> Vec<Peer> {
+        lock.operators
+            .iter()
+            .enumerate()
+            .map(|(index, operator)| {
+                let record = Record::try_from(operator.enr.as_str()).unwrap();
+                Peer::from_enr(&record, u64::try_from(index).unwrap()).unwrap()
+            })
+            .collect()
+    }
+
+    fn node(node_type: NodeType, cfg: P2PConfig) -> Node<relay::client::Behaviour> {
+        Node::new(
+            cfg,
+            generate_insecure_k1_key(7),
+            node_type,
+            false,
+            P2PContext::default(),
+            |builder, _keypair, relay_client| builder.with_inner(relay_client),
+        )
+        .expect("node should build")
+    }
+
+    /// The address libp2p reports once a client node's single configured
+    /// listener is bound.
+    async fn bound_listen_addr(node_type: NodeType, cfg: P2PConfig) -> Multiaddr {
+        let mut node = node(node_type, cfg);
+
+        assert_eq!(node.node_type(), node_type);
+        assert_eq!(
+            node.listener_ids().len(),
+            1,
+            "the one configured address must be registered as a listener"
+        );
+
+        time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let SwarmEvent::NewListenAddr { address, .. } = node.select_next_some().await {
+                    return address;
+                }
+            }
+        })
+        .await
+        .expect("listener should report the address it bound")
+    }
+
+    #[tokio::test]
+    async fn new_tcp_host() {
+        let cfg = P2PConfig {
+            tcp_addrs: vec!["127.0.0.1:0".to_owned()],
+            ..Default::default()
+        };
+
+        let addr = bound_listen_addr(NodeType::TCP, cfg).await;
+
+        assert!(crate::utils::is_tcp_addr(&addr), "bound {addr} is not TCP");
+        assert!(!crate::utils::is_quic_addr(&addr));
+        // Port 0 was configured, so the kernel picked the listening port.
+        assert!(crate::utils::tcp_port(&addr).is_some_and(|port| port != 0));
+    }
+
+    #[tokio::test]
+    async fn new_quic_host() {
+        // A QUIC node listens on its UDP addresses; an empty `tcp_addrs` keeps
+        // this to the single QUIC listener under test.
+        let cfg = P2PConfig {
+            udp_addrs: vec!["127.0.0.1:0".to_owned()],
+            ..Default::default()
+        };
+
+        let addr = bound_listen_addr(NodeType::QUIC, cfg).await;
+
+        assert!(
+            crate::utils::is_quic_addr(&addr),
+            "bound {addr} is not QUIC"
+        );
+        assert!(!crate::utils::is_tcp_addr(&addr));
+        assert!(crate::utils::udp_port(&addr).is_some_and(|port| port != 0));
+    }
+
+    #[tokio::test]
+    async fn new_host_without_listen_addrs() {
+        // Charon's TestNewTCPHost/TestNewQUICHost build from an empty
+        // `p2p.Config`: an outgoing-only node must construct with nothing to
+        // listen on.
+        for node_type in [NodeType::TCP, NodeType::QUIC] {
+            let node = node(node_type, P2PConfig::default());
+
+            assert_eq!(node.node_type(), node_type);
+            assert!(node.listener_ids().is_empty());
+        }
     }
 
     #[test]
-    #[ignore]
-    fn verify_p2p_key() {
-        todo!("add this test after implementing cluster.NewForT function");
+    fn verify_p2p_key_accepts_cluster_keys() {
+        let (lock, keys, _) = test_cluster::new_for_test(1, 3, 4, 1);
+        let peers = cluster_peers(&lock);
+        assert_eq!(peers.len(), keys.len());
+
+        // Every operator's p2p key matches the public key in its own ENR.
+        for key in &keys {
+            verify_p2p_key(&peers, key).expect("cluster p2p key should verify");
+        }
+
+        // A key that belongs to no operator matches no ENR.
+        let outsider = generate_insecure_k1_key(99);
+        assert!(matches!(
+            verify_p2p_key(&peers, &outsider),
+            Err(PeerError::UnknownPublicKey)
+        ));
     }
 
     #[test]
-    #[ignore]
     fn peer_id_key() {
-        todo!("add this test after implementing peer_id_key function");
+        let (lock, keys, _) = test_cluster::new_for_test(1, 3, 4, 1);
+        let peers = cluster_peers(&lock);
+        assert_eq!(peers.len(), keys.len());
+
+        for (peer, key) in peers.iter().zip(keys.iter()) {
+            let public_key = peer_id_to_public_key(&peer.id).unwrap();
+            assert_eq!(public_key, key.public_key());
+
+            assert_eq!(peer_id_from_key(public_key).unwrap(), peer.id);
+        }
     }
 
     #[test]

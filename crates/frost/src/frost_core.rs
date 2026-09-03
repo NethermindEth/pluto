@@ -34,6 +34,9 @@ pub enum FrostCoreError {
     /// The commitment has no coefficients.
     #[error("incorrect commitment")]
     IncorrectCommitment,
+    /// The polynomial has no coefficients.
+    #[error("empty polynomial")]
+    EmptyPolynomial,
 }
 
 /// A participant identifier wrapping a non-zero scalar.
@@ -162,8 +165,13 @@ impl SigningShare {
     }
 
     /// Evaluate the polynomial defined by `coefficients` at `peer`.
-    pub fn from_coefficients(coefficients: &[Scalar], peer: Identifier) -> Self {
-        Self::new(evaluate_polynomial(peer, coefficients))
+    ///
+    /// Returns [`FrostCoreError::EmptyPolynomial`] if `coefficients` is empty.
+    pub fn from_coefficients(
+        coefficients: &[Scalar],
+        peer: Identifier,
+    ) -> Result<Self, FrostCoreError> {
+        Ok(Self::new(evaluate_polynomial(peer, coefficients)?))
     }
 }
 
@@ -256,7 +264,10 @@ impl SecretShare {
     /// Checks that `G * signing_share == evaluate_vss(identifier, commitment)`.
     ///
     /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468>
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "BLS12-381 group/scalar ops have no meaningful overflow semantics"
+    )]
     pub fn verify(&self) -> Result<(), FrostCoreError> {
         let f_result = G1Projective::generator() * self.signing_share.to_scalar();
         let result = evaluate_vss(self.identifier, &self.commitment);
@@ -411,8 +422,17 @@ impl PublicKeyPackage {
 /// `a_0 + a_1 * x + a_2 * x^2 + ... + a_{t-1} * x^{t-1}`.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595>
-#[allow(clippy::arithmetic_side_effects)]
-fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scalar {
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 scalar field arithmetic wraps modulo the field order; no integer overflow"
+)]
+fn evaluate_polynomial(
+    identifier: Identifier,
+    coefficients: &[Scalar],
+) -> Result<Scalar, FrostCoreError> {
+    let a0 = *coefficients
+        .first()
+        .ok_or(FrostCoreError::EmptyPolynomial)?;
     let mut value = Scalar::ZERO;
     let x = identifier.to_scalar();
 
@@ -420,11 +440,7 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
         value = value + *coeff;
         value = value * x;
     }
-    value = value
-        + *coefficients
-            .first()
-            .expect("coefficients must have at least one element");
-    value
+    Ok(value + a0)
 }
 
 /// Evaluate the VSS verification equation at `identifier`.
@@ -432,7 +448,10 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
 /// Computes `sum_{k=0}^{t-1} commitment[k] * identifier^k`.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615>
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 group/scalar arithmetic has no integer overflow semantics"
+)]
 fn evaluate_vss(
     identifier: Identifier,
     commitment: &VerifiableSecretSharingCommitment,
@@ -455,7 +474,10 @@ fn evaluate_vss(
 /// elements across all participants.
 ///
 /// See: <https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62>
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "BLS12-381 group element addition has no integer overflow semantics"
+)]
 fn sum_commitments(
     commitments: &[&VerifiableSecretSharingCommitment],
 ) -> Result<VerifiableSecretSharingCommitment, FrostCoreError> {
@@ -556,7 +578,8 @@ mod tests {
         let rendered = format!("{share:?}");
 
         assert!(rendered.contains("<redacted>"));
-        // The unredacted form would render the inner `Scalar(...)`; it must not.
+        // The unredacted form would render the inner `Scalar(...)`; it must
+        // not.
         assert!(!rendered.contains("Scalar"));
     }
 
@@ -585,6 +608,15 @@ mod tests {
         assert!(matches!(
             PublicKeyPackage::from_dkg_commitments(&empty_commitments),
             Err(FrostCoreError::IncorrectNumberOfCommitments)
+        ));
+    }
+
+    #[test]
+    fn from_coefficients_rejects_empty_polynomial() {
+        let peer = Identifier::from_u32(1).expect("identifier");
+        assert!(matches!(
+            SigningShare::from_coefficients(&[], peer),
+            Err(FrostCoreError::EmptyPolynomial)
         ));
     }
 }

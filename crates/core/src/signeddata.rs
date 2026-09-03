@@ -39,9 +39,6 @@ pub enum SignedDataError {
     /// Missing attestation payload for the selected fork.
     #[error("no {0} attestation")]
     MissingAttestation(versioned::DataVersion),
-    /// Missing aggregate-and-proof payload for the selected fork.
-    #[error("no {0} aggregate and proof")]
-    MissingAggregateAndProof(versioned::DataVersion),
     /// Missing unblinded proposal payload for the selected fork.
     #[error("no {0} proposal")]
     MissingProposal(versioned::DataVersion),

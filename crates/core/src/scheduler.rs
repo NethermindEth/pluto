@@ -118,8 +118,8 @@ impl SchedulerBuilder {
     {
         let mut rx = self.slot_broadcast.subscribe();
 
-        // TODO: We might want to return a handle so clients can `.abort()` them to drop
-        // the subscription
+        // TODO: We might want to return a handle so clients can `.abort()` them
+        // to drop the subscription
         let label: Arc<str> = Arc::from(label.as_ref());
         tokio::spawn(async move {
             loop {
@@ -440,7 +440,8 @@ impl SchedulerActor {
                 SCHEDULER_METRICS.duty_total[&duty.duty_type.to_string()]
                     .inc_by(def_set.len() as u64);
 
-                // NOTE: Ignore send errors, it means that there are no subscribers.
+                // NOTE: Ignore send errors, it means that there are no
+                // subscribers.
                 let _ = broadcast.send((duty.clone(), def_set.clone()));
             });
         }
@@ -456,7 +457,8 @@ impl SchedulerActor {
     async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
         // NOTE: Resolving duties requires fetching data from a Beacon node.
         // During this time the Scheduler actor is blocked.
-        // This is the same behavior as in Charon, but it might not be desirable.
+        // This is the same behavior as in Charon, but it might not be
+        // desirable.
 
         let valcache = self.client.validator_cache();
         let vals = resolve_active_validators(slot.epoch(), valcache).await?;
@@ -528,8 +530,8 @@ impl SchedulerActor {
         {
             let sync_duties = fetch_sync_committee_duties(&slot, &vals, &self.client).await?;
             for sync_duty in sync_duties.into_iter() {
-                // TODO(charon): sync committee duties start in the slot before the sync
-                // committee period.
+                // TODO(charon): sync committee duties start in the slot before
+                // the sync committee period.
                 // Refer: https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/validator.md#sync-committee
                 for sl in slot
                     .iter()
@@ -554,8 +556,8 @@ impl SchedulerActor {
 
         self.resolved_epoch = slot.epoch();
         // Only trim once there is an epoch old enough to trim.
-        // NOTE: Charon relies on `uint64` underflow wrapping to a huge (absent) epoch
-        // for epochs < 3. `checked_sub` reproduces that no-op
+        // NOTE: Charon relies on `uint64` underflow wrapping to a huge (absent)
+        // epoch for epochs < 3. `checked_sub` reproduces that no-op
         if let Some(trim_epoch) = slot.epoch().checked_sub(TRIM_EPOCH_OFFSET) {
             self.trim_duties(trim_epoch);
         }
@@ -671,7 +673,8 @@ async fn new_slot_ticker(
             };
 
             // Avoid "thundering herd" problem by skipping slots if missed due
-            // to pause-the-world events (i.e. resources are already constrained).
+            // to pause-the-world events (i.e. resources are already
+            // constrained).
             if chrono::Utc::now() > slot.next_slot().time {
                 let actual = current_slot();
                 tracing::warn!(actual_slot = %actual.slot, expect_slot = %slot.slot, "Slot(s) skipped");
@@ -766,8 +769,8 @@ async fn resolve_active_validators(
         submit_validator_status_metric(&pubkey, &status);
 
         // Check for active validators for the given epoch.
-        // The activation epoch needs to be checked in cases where this function is
-        // called before the epoch starts.
+        // The activation epoch needs to be checked in cases where this function
+        // is called before the epoch starts.
         if !val.status.is_active() {
             let activation_epoch = val.validator.activation_epoch.parse::<u64>().map_err(|_| {
                 pluto_eth2api::EthBeaconNodeApiClientError::ParseError("activation_epoch".into())
@@ -1592,12 +1595,13 @@ mod tests {
         mount_head_validators(&mock, validator_set_a_datums()).await;
         let mut h = spawn_actor(&mock).await;
 
-        // Slot is mid-epoch (epoch 0 spans slots 0..=15). With the deterministic
-        // Beacon setup:
+        // Slot is mid-epoch (epoch 0 spans slots 0..=15). With the
+        // deterministic Beacon setup:
         // - Attester duties are only included in the first slot of an epoch
         //      - The paired Aggregator duties are not included either
         // - Proposer duties are only included in the first slot of an epoch
-        // - Sync-committee contribution duties are included in every slot of an epoch
+        // - Sync-committee contribution duties are included in every slot of an
+        //   epoch
         h.slot_tx
             .send(test_past_slot(slot_number, 16))
             .await
@@ -1656,8 +1660,8 @@ mod tests {
         assert!(!set.is_empty());
 
         // A reorg before the resolved epoch trims duties; the handle then
-        // reports the epoch as unresolved. The reorg is handled first so an immediate
-        // read observes the reset.
+        // reports the epoch as unresolved. The reorg is handled first so an
+        // immediate read observes the reset.
         h.reorg_tx.send(0).await.expect("send reorg");
         assert!(matches!(
             h.handle.get_duty_definition(att).await,
@@ -1676,8 +1680,8 @@ mod tests {
         // A mid-epoch slot triggers only the sync-committee contribution duty,
         // whose broadcast is delayed by 2/3 of the slot duration (~600ms here).
         // Dated at `now`, the offset deadline is still in the future when the
-        // duty task is spawned, so it parks on the live `delay_slot_offset` wait
-        // inside `with_cancellation_token_owned`.
+        // duty task is spawned, so it parks on the live `delay_slot_offset`
+        // wait inside `with_cancellation_token_owned`.
         h.slot_tx
             .send(test_future_slot(5, 16))
             .await
@@ -1695,10 +1699,10 @@ mod tests {
 
         // No duty value must ever arrive: the offset wait is cancelled before
         // its deadline. Wait past the ~600ms deadline to catch a regression
-        // where cancellation is not wired into `delay_slot_offset`. A timeout or
-        // a closed channel (the actor shut down and dropped its sender) both
-        // mean no broadcast fired; only a received duty (`Ok(Ok(_))`) is a
-        // failure.
+        // where cancellation is not wired into `delay_slot_offset`. A timeout
+        // or a closed channel (the actor shut down and dropped its
+        // sender) both mean no broadcast fired; only a received duty
+        // (`Ok(Ok(_))`) is a failure.
         let next = tokio::time::timeout(Duration::from_secs(1), h.duty_sub.recv()).await;
         assert!(
             !matches!(next, Ok(Ok(_))),

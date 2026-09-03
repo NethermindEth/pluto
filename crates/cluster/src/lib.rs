@@ -1,8 +1,11 @@
-//! # Charon Cluster
+//! # Pluto Cluster
 //!
-//! Cluster management and coordination for Charon distributed validator nodes.
-//! This crate handles the formation, management, and coordination of validator
-//! clusters in the Charon network.
+//! The [`Definition`](definition::Definition) a cluster's operators agree on,
+//! the [`Lock`](lock::Lock) that finalises it after distributed key generation,
+//! and the hashing, signing and verification tying the two together.
+//!
+//! Ported from charon's `cluster` package and wire-compatible with it across
+//! definition versions v1.0.0 to v1.10.0.
 
 /// `Definition` type representing the intended cluster configuration
 /// (operators, validators, fork version) with EIP-712 hashing and verification.
@@ -22,7 +25,7 @@ pub mod load;
 /// `Lock` type representing the finalized cluster configuration, including
 /// distributed validators and node signatures.
 pub mod lock;
-/// `Operator` type representing a charon node operator with Ethereum address,
+/// `Operator` type representing a cluster node operator with Ethereum address,
 /// ENR, and config/ENR signatures.
 pub mod operator;
 /// `BuilderRegistration` and `Registration` types for pre-generated signed

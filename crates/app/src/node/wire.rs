@@ -113,20 +113,9 @@ pub struct ValidatorInfo {
 /// returns the original error, so the tracker's reason inference — which walks
 /// `source()` looking for an `EthBeaconNodeApiClientError` — still classifies
 /// beacon-node failures correctly.
-#[derive(Debug, Clone)]
-struct SharedStepError(StepError);
-
-impl std::fmt::Display for SharedStepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for SharedStepError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&*self.0)
-    }
-}
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+struct SharedStepError(#[source] StepError);
 
 /// Splits a step result into the error to report to the tracker and the error
 /// to return to the caller, sharing one allocation between them.
@@ -463,8 +452,9 @@ pub async fn wire_core_workflow(
 
     // ---- Deadliners (one per component) ----
     //
-    // Each component gets its own deadliner task sharing the injected calculator
-    // (an `Arc<dyn DeadlineCalculator>`, so a single instance backs all three).
+    // Each component gets its own deadliner task sharing the injected
+    // calculator (an `Arc<dyn DeadlineCalculator>`, so a single instance
+    // backs all three).
     let (dutydb_deadliner, dutydb_deadliner_rx) =
         DeadlinerTask::start(ct.clone(), "dutydb", Arc::clone(&deadline_calc));
     let (parsigdb_deadliner, parsigdb_deadliner_rx) =
@@ -474,11 +464,11 @@ pub async fn wire_core_workflow(
 
     // ---- Tracker ----
     //
-    // Analysis has to wait until a duty's inclusion verdict can have arrived, so
-    // both tracker deadliners sit `INCL_MISSED_LAG + INCL_CHECK_LAG` slots past
-    // the duty deadline, and the deleter a further minute past the analyser so
-    // duties of the same slot are analysed before their events are dropped.
-    // Parity: charon `app.go` `newTracker`.
+    // Analysis has to wait until a duty's inclusion verdict can have arrived,
+    // so both tracker deadliners sit `INCL_MISSED_LAG + INCL_CHECK_LAG`
+    // slots past the duty deadline, and the deleter a further minute past
+    // the analyser so duties of the same slot are analysed before their
+    // events are dropped. Parity: charon `app.go` `newTracker`.
     let (slot_duration, _slots_per_epoch) = eth2_cl
         .fetch_slots_config()
         .await
@@ -517,9 +507,9 @@ pub async fn wire_core_workflow(
         Arc::clone(&tracker_feature_set),
     );
 
-    // Resolves the terminal `ChainInclusion` step; without it every duty with an
-    // inclusion step would stall unresolved and be reported as failed. Spawned
-    // and supervised by `run_lifecycle`.
+    // Resolves the terminal `ChainInclusion` step; without it every duty with
+    // an inclusion step would stall unresolved and be reported as failed.
+    // Spawned and supervised by `run_lifecycle`.
     let inclusion_checker = {
         let tracker = Arc::clone(&tracker);
         Arc::new(
@@ -541,10 +531,12 @@ pub async fn wire_core_workflow(
         )
     };
 
-    // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target) ----
+    // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target)
+    // ----
     let aggsigdb = MemoryDBHandle::new(aggsigdb_deadliner, aggsigdb_deadliner_rx, ct.clone());
 
-    // ---- (5) DutyDB (built before fetcher: await_att_data back-edge target) ----
+    // ---- (5) DutyDB (built before fetcher: await_att_data back-edge target)
+    // ----
     let dutydb = Arc::new(dutydb::MemDB::new(
         dutydb_deadliner,
         dutydb_deadliner_rx,
@@ -577,7 +569,8 @@ pub async fn wire_core_workflow(
             })
         })
     };
-    // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty deadline.
+    // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty
+    // deadline.
     let fetch_subscriber: Subscriber = {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
@@ -592,7 +585,8 @@ pub async fn wire_core_workflow(
                 let pubkeys: Vec<PubKey> = set.keys().copied().collect();
                 let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
                 // Bound consensus by the duty deadline so a stuck instance is
-                // cancelled (-> ConsensusTimeout) instead of running until shutdown.
+                // cancelled (-> ConsensusTimeout) instead of running until
+                // shutdown.
                 let result = run_bounded_by_duty_deadline(
                     &deadline_calc,
                     &ct,
@@ -709,7 +703,8 @@ pub async fn wire_core_workflow(
             .await;
     }
 
-    // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer) ----
+    // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer)
+    // ----
     //
     // The production verifier (injected via `sigagg_verifier`) reconstructs the
     // group signature and verifies it against the beacon-node signing domain.
@@ -873,8 +868,8 @@ pub async fn wire_core_workflow(
     // Built before the validator API so its handle can back
     // `register_get_duty_definition`. Stitches:
     // scheduler.subscribe_duty(fetcher.fetch) and
-    // scheduler.subscribe_duty(consensus.participate), registered on the builder
-    // before `.build()` (which blocks until chain start + sync).
+    // scheduler.subscribe_duty(consensus.participate), registered on the
+    // builder before `.build()` (which blocks until chain start + sync).
     let mut sched_builder = SchedulerBuilder::new();
     {
         let fetcher = Arc::clone(&fetcher);
@@ -906,8 +901,9 @@ pub async fn wire_core_workflow(
                             tracker
                                 .fetcher_fetched(duty, &pubkeys, Some(reported))
                                 .await;
-                            // `subscribe_duty` is generic over the error type, so
-                            // the shared wrapper propagates as-is.
+                            // `subscribe_duty` is generic over the error type,
+                            // so the shared wrapper
+                            // propagates as-is.
                             Err(returned)
                         }
                     }
@@ -984,11 +980,12 @@ pub async fn wire_core_workflow(
 
     // ---- (13) ValidatorAPI ----
     //
-    // The `Component` holds `dutydb` directly; `await_proposal` falls back to it
-    // when unregistered. The awaits with no fallback are registered here: the
-    // agg-sig-db await (back-edge into `aggsigdb.wait_for`), the dutydb-backed
-    // agg-attestation / sync-contribution / pubkey-by-attestation lookups, and
-    // the scheduler-backed duty-definition lookup.
+    // The `Component` holds `dutydb` directly; `await_proposal` falls back to
+    // it when unregistered. The awaits with no fallback are registered
+    // here: the agg-sig-db await (back-edge into `aggsigdb.wait_for`), the
+    // dutydb-backed agg-attestation / sync-contribution /
+    // pubkey-by-attestation lookups, and the scheduler-backed
+    // duty-definition lookup.
     let mut vapi = Component::new(
         Arc::new(eth2_cl.clone()),
         Arc::clone(&dutydb),
@@ -1047,9 +1044,9 @@ pub async fn wire_core_workflow(
             }
         });
     }
-    // scheduler-backed duty-definition lookup. The result is type-erased for the
-    // validatorapi callback boundary and downcast to `DutyDefinitionSet` by the
-    // component.
+    // scheduler-backed duty-definition lookup. The result is type-erased for
+    // the validatorapi callback boundary and downcast to
+    // `DutyDefinitionSet` by the component.
     {
         let scheduler = scheduler.clone();
         vapi.register_get_duty_definition(move |duty: Duty| {
@@ -1388,7 +1385,8 @@ mod tests {
         let cache = test_cache(&mock, vec![pk]);
         let refresher = ValidatorCacheRefresher::new(cache.clone());
 
-        // First tick (epoch 0, first slot): fetches slot 0 — validator inactive.
+        // First tick (epoch 0, first slot): fetches slot 0 — validator
+        // inactive.
         refresher
             .refresh(&test_slot(0, SPE))
             .await
@@ -1459,8 +1457,9 @@ mod tests {
     async fn refresh_skips_mid_epoch_slot_once_refreshed_by_slot() {
         let pk = test_pubkey(5);
         let mock = MockServer::start().await;
-        // Only slot 0 is served, and it must be hit exactly once. Slot 1 is left
-        // unmounted: any mid-epoch fetch would 404 → head fallback → error.
+        // Only slot 0 is served, and it must be hit exactly once. Slot 1 is
+        // left unmounted: any mid-epoch fetch would 404 → head fallback
+        // → error.
         post_validators_ok(
             "0",
             vec![test_datum(5, &pk, ValidatorStatus::ActiveOngoing)],
@@ -1506,7 +1505,8 @@ mod tests {
         .await;
         // The epoch's first slot (0) reports the validator active. Slot 6 (the
         // current slot on the second tick) is deliberately left unmounted: were
-        // it fetched, it would 404 → head → empty active set, failing the assert.
+        // it fetched, it would 404 → head → empty active set, failing the
+        // assert.
         post_validators_ok(
             "0",
             vec![test_datum(1, &pk, ValidatorStatus::ActiveOngoing)],
@@ -1529,8 +1529,8 @@ mod tests {
         );
 
         // Second tick at mid-epoch slot 6: forced to refresh because the prior
-        // refresh fell back to head, and it fetches epoch-first slot 0 (active),
-        // not slot 6.
+        // refresh fell back to head, and it fetches epoch-first slot 0
+        // (active), not slot 6.
         refresher
             .refresh(&test_slot(6, SPE))
             .await

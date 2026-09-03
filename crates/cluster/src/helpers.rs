@@ -11,7 +11,7 @@ use crate::{
     eip712sigs, operator,
 };
 
-pub use pluto_ssz::{from_0x_hex_str, left_pad, to_0x_hex};
+pub use pluto_ssz::{HexDecodeError, from_0x_hex_str, left_pad, to_0x_hex};
 
 /// Error type returned by `verify_sig`.
 #[derive(Debug, thiserror::Error)]
@@ -197,14 +197,12 @@ pub fn sign_operator(
 }
 
 /// Returns minimum threshold required for a cluster with given nodes.
-/// This formula has been taken from: <https://github.com/ObolNetwork/charon/blob/a8fc3185bdda154412fe034dcd07c95baf5c1aaf/core/qbft/qbft.go#L63>
-///
 /// Computes ceil(2*nodes / 3) using integer arithmetic to avoid floating point
 /// conversions.
 pub fn threshold(nodes: u64) -> u64 {
     // Integer ceiling division: ceil(a/b) = (a + b - 1) / b
-    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes + 2) /
-    // 3
+    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes +
+    // 2) / 3
     let numerator = nodes.checked_mul(2).expect("threshold: nodes * 2 overflow");
     let adjusted = numerator
         .checked_add(2)
@@ -229,9 +227,13 @@ pub fn agg_sign(
 #[cfg(test)]
 mod tests {
     use crate::test_cluster;
+    use pluto_crypto::tbls;
+    use pluto_eth2util::helpers::public_key_to_address;
     use pluto_ssz::serde_utils::HexBytes;
+    use rand::SeedableRng;
     use serde::{Deserialize, Serialize};
     use serde_with::serde_as;
+    use test_case::test_case;
 
     #[serde_as]
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -356,5 +358,165 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, e if e.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    /// Pinned oracle table for `ceil(2n/3)`: the expected values are written
+    /// out rather than recomputed from the implementation under test.
+    #[test_case(1, 1)]
+    #[test_case(2, 2)]
+    #[test_case(3, 2)]
+    #[test_case(4, 3)]
+    #[test_case(5, 4)]
+    #[test_case(6, 4)]
+    #[test_case(7, 5)]
+    #[test_case(8, 6)]
+    #[test_case(9, 6)]
+    #[test_case(10, 7)]
+    #[test_case(11, 8)]
+    #[test_case(12, 8)]
+    #[test_case(13, 9)]
+    #[test_case(14, 10)]
+    #[test_case(15, 10)]
+    #[test_case(16, 11)]
+    #[test_case(17, 12)]
+    #[test_case(18, 12)]
+    #[test_case(19, 13)]
+    #[test_case(20, 14)]
+    #[test_case(21, 14)]
+    #[test_case(22, 15)]
+    fn threshold_matches_oracle_table(nodes: u64, expected: u64) {
+        assert_eq!(super::threshold(nodes), expected, "nodes = {nodes}");
+    }
+
+    /// `ceil(0/3)` is 0, not 1.
+    #[test]
+    fn threshold_zero_nodes() {
+        assert_eq!(super::threshold(0), 0);
+    }
+
+    /// Exact `ceil(2n/3)` well past the table: the smallest `t` with `3t >=
+    /// 2n`.
+    #[test]
+    fn threshold_is_exact_ceil_of_two_thirds() {
+        for nodes in 0..=4096u64 {
+            let t = super::threshold(nodes);
+            assert!(3 * t >= 2 * nodes, "threshold({nodes}) = {t} is below 2n/3");
+            assert!(
+                3 * t < 2 * nodes + 3,
+                "threshold({nodes}) = {t} overshoots ceil(2n/3)"
+            );
+        }
+    }
+
+    /// A fixed scalar, so the recovered address is stable across runs.
+    fn k1_secret(byte: u8) -> k256::SecretKey {
+        k256::SecretKey::from_slice(&[byte; 32]).expect("valid secp256k1 scalar")
+    }
+
+    #[test]
+    fn verify_sig_accepts_the_signing_address() {
+        let secret = k1_secret(1);
+        let digest = [7u8; 32];
+        let sig = pluto_k1util::sign(&secret, &digest).unwrap();
+        let addr = public_key_to_address(&secret.public_key());
+
+        assert!(super::verify_sig(&addr, &digest, &sig).unwrap());
+    }
+
+    /// The wrong signer is `Ok(false)`, not an error: recovery still succeeds.
+    #[test]
+    fn verify_sig_rejects_another_signers_address() {
+        let signer = k1_secret(1);
+        let other = k1_secret(2);
+        let digest = [7u8; 32];
+        let sig = pluto_k1util::sign(&signer, &digest).unwrap();
+        let other_addr = public_key_to_address(&other.public_key());
+
+        assert!(!super::verify_sig(&other_addr, &digest, &sig).unwrap());
+    }
+
+    /// A different digest recovers some other public key.
+    #[test]
+    fn verify_sig_rejects_a_different_digest() {
+        let secret = k1_secret(1);
+        let sig = pluto_k1util::sign(&secret, &[7u8; 32]).unwrap();
+        let addr = public_key_to_address(&secret.public_key());
+
+        assert!(!super::verify_sig(&addr, &[8u8; 32], &sig).unwrap());
+    }
+
+    #[test]
+    fn verify_sig_rejects_a_malformed_expected_address() {
+        let secret = k1_secret(1);
+        let digest = [7u8; 32];
+        let sig = pluto_k1util::sign(&secret, &digest).unwrap();
+
+        assert!(matches!(
+            super::verify_sig("not-an-address", &digest, &sig),
+            Err(super::VerifySigError::InvalidExpectedAddress(_))
+        ));
+    }
+
+    #[test]
+    fn verify_sig_surfaces_recovery_failure() {
+        let addr = public_key_to_address(&k1_secret(1).public_key());
+
+        // Too short to be a 65-byte recoverable signature.
+        assert!(matches!(
+            super::verify_sig(&addr, &[7u8; 32], &[0u8; 10]),
+            Err(super::VerifySigError::FailedToRecoverPubKey(_))
+        ));
+
+        // Right length, but an all-zero signature recovers no public key.
+        assert!(matches!(
+            super::verify_sig(&addr, &[7u8; 32], &[0u8; 65]),
+            Err(super::VerifySigError::FailedToRecoverPubKey(_))
+        ));
+    }
+
+    /// One signature per share, so the aggregate must verify against the
+    /// flattened list of share public keys.
+    #[test]
+    fn agg_sign_round_trips() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(603);
+        let secrets: Vec<Vec<pluto_crypto::types::PrivateKey>> = (0..3)
+            .map(|_| {
+                (0..2)
+                    .map(|_| tbls::generate_insecure_secret(&mut rng).unwrap())
+                    .collect()
+            })
+            .collect();
+        let public_keys = secrets
+            .iter()
+            .flatten()
+            .map(|s| tbls::secret_to_public_key(s).unwrap())
+            .collect::<Vec<_>>();
+        let message = b"cluster lock hash";
+
+        let aggregate = super::agg_sign(&secrets, message).unwrap();
+
+        tbls::verify_aggregate(&public_keys, aggregate, message)
+            .expect("aggregate must verify against every signing share");
+
+        assert!(tbls::verify_aggregate(&public_keys, aggregate, b"other message").is_err());
+
+        assert!(tbls::verify_aggregate(&public_keys[1..], aggregate, message).is_err());
+    }
+
+    /// Not an error: aggregating nothing yields the G2 compressed point at
+    /// infinity.
+    #[test]
+    fn agg_sign_of_no_shares_is_the_identity_signature() {
+        let mut identity = [0u8; 96];
+        identity[0] = 0xc0;
+
+        assert_eq!(
+            super::agg_sign(&[], b"cluster lock hash").unwrap(),
+            identity
+        );
+        assert_eq!(
+            super::agg_sign(&[vec![]], b"cluster lock hash").unwrap(),
+            identity
+        );
     }
 }
