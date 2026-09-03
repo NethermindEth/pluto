@@ -989,7 +989,7 @@ pub async fn wire_core_workflow(
     // pubkey-by-attestation lookups, and the scheduler-backed
     // duty-definition lookup.
     let mut vapi = Component::new(
-        Arc::new(eth2_cl.clone()),
+        eth2_cl.clone(),
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,

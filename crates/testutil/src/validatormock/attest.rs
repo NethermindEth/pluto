@@ -60,7 +60,7 @@ const PAYLOAD_VERSION: DataVersion = DataVersion::Fulu;
 /// `OnceCell`s (one per stage) acting as Go's `chan struct{}` ready signals.
 #[derive(Debug, Clone)]
 pub struct SlotAttester {
-    eth2_cl: Arc<EthBeaconNodeApiClient>,
+    eth2_cl: EthBeaconNodeApiClient,
     slot: Slot,
     #[expect(
         dead_code,
@@ -89,7 +89,7 @@ impl SlotAttester {
     /// and safe to share between the scheduler tasks.
     #[must_use]
     pub fn new(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: EthBeaconNodeApiClient,
         slot: Slot,
         sign_func: SignFunc,
         pubkeys: Vec<BLSPubKey>,
@@ -533,12 +533,8 @@ mod tests {
             .expect("fetch slots config");
 
         let sign_func: SignFunc = Arc::new(PubkeyEchoSigner);
-        let attester = SlotAttester::new(
-            Arc::new(mock.client().clone()),
-            slots_per_epoch,
-            sign_func,
-            pubkeys,
-        );
+        let attester =
+            SlotAttester::new(mock.client().clone(), slots_per_epoch, sign_func, pubkeys);
 
         attester.prepare().await.expect("prepare");
         attester.attest().await.expect("attest");

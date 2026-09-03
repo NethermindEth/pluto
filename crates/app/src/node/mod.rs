@@ -506,7 +506,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Aggregated-signature verifier: verifies the reconstructed group signature
     // against the beacon-node signing domain.
-    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     // The readiness checker uses its own beacon-client clone, taken before
     // `eth2_cl` is moved into the workflow inputs below.

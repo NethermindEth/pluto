@@ -103,7 +103,7 @@ impl SseListenerBuilder {
             .await
             .ok_or(SseListenerError::Terminated)??;
 
-        let addr = client.base_url.to_string();
+        let addr = client.base_url().to_string();
 
         let actor = SseListenerActor {
             addr: addr.clone(),

@@ -12,7 +12,7 @@
 //! decode) in the `app_eth2_*` Prometheus metrics under that label.
 //!
 //! The `fetch_*` methods derive values from several endpoints and cache the
-//! static chain configuration (spec, genesis, fork schedule) per endpoint.
+//! static chain configuration (spec, genesis, fork schedule) in the client.
 
 use crate::{
     EthBeaconNodeApiClientError, PayloadError,
@@ -28,7 +28,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, LazyLock, Mutex},
+    sync::Arc,
     time,
 };
 use tokio::sync::OnceCell;
@@ -36,13 +36,31 @@ use tokio_stream::{Stream, StreamExt};
 
 type Result<T> = std::result::Result<T, EthBeaconNodeApiClientError>;
 
-/// Client for one beacon node.
+/// Client for one beacon node. Clones share the connection pool and the chain
+/// config cache.
 #[derive(Debug, Clone)]
-pub struct EthBeaconNodeApiClient {
+pub struct EthBeaconNodeApiClient(Arc<Inner>);
+
+#[derive(Debug)]
+struct Inner {
     /// HTTP client the requests are sent with.
-    pub client: Client,
+    client: Client,
     /// Beacon node URL; endpoint paths are appended to its path.
-    pub base_url: Url,
+    base_url: Url,
+    config: ChainConfigCache,
+}
+
+/// Lifetime-constant chain config, fetched once per beacon node.
+///
+/// One cache per client, shared by its clones. A failed fetch leaves the cell
+/// empty and the next call retries; a successful response is kept until the
+/// process exits, so a fork schedule changed by a beacon-node upgrade needs a
+/// pluto restart to be picked up.
+#[derive(Debug, Default)]
+struct ChainConfigCache {
+    spec: OnceCell<Spec>,
+    genesis: OnceCell<v1::Genesis>,
+    fork_schedule: OnceCell<Vec<phase0::Fork>>,
 }
 
 /// `{ "data": .. }`, the envelope of endpoints that return nothing else.
@@ -253,12 +271,21 @@ impl EthBeaconNodeApiClient {
         if base_url.cannot_be_a_base() {
             return Err(EthBeaconNodeApiClientError::UrlCannotBeABase);
         }
-        Ok(Self { client, base_url })
+        Ok(Self(Arc::new(Inner {
+            client,
+            base_url,
+            config: ChainConfigCache::default(),
+        })))
+    }
+
+    /// Beacon node URL; endpoint paths are appended to its path.
+    pub fn base_url(&self) -> &Url {
+        &self.0.base_url
     }
 
     /// Appends `segments` to the base URL path.
     fn url(&self, segments: &[&str]) -> Url {
-        let mut url = self.base_url.clone();
+        let mut url = self.0.base_url.clone();
         url.path_segments_mut()
             .expect("with_client rejects URLs that cannot be a base")
             .extend(segments);
@@ -266,13 +293,14 @@ impl EthBeaconNodeApiClient {
     }
 
     fn get(&self, segments: &[&str]) -> RequestBuilder {
-        self.client
+        self.0
+            .client
             .get(self.url(segments))
             .header(ACCEPT, "application/json")
     }
 
     fn post(&self, segments: &[&str]) -> RequestBuilder {
-        self.client.post(self.url(segments))
+        self.0.client.post(self.url(segments))
     }
 
     /// Sends `request` and returns the response for a 2xx status, an
@@ -280,7 +308,7 @@ impl EthBeaconNodeApiClient {
     async fn send(&self, request: RequestBuilder) -> Result<Response> {
         let request = request.build()?;
         let method = request.method().clone();
-        let response = self.client.execute(request).await?;
+        let response = self.0.client.execute(request).await?;
 
         let status = response.status();
         if status.is_success() {
@@ -907,77 +935,24 @@ fn fork_version_from_schedule(
     Ok(current.current_version)
 }
 
-/// Cached static chain config for one beacon endpoint: spec, genesis, and
-/// fork schedule. These are constant for the lifetime of a beacon-node
-/// process, but fetching them live put up to four sequential HTTP round-trips
-/// on every signature verification.
-///
-/// Cached for the lifetime of *this* process: picking up a fork schedule
-/// changed by a beacon-node upgrade requires a pluto restart. Request
-/// failures are never cached (the `OnceCell` stays empty and the next caller
-/// retries); a successful response is cached as-is, so a malformed 200 body
-/// persists until restart.
-///
-/// TODO(#563): interim process-global cache. Moves into the client when the
-/// client owns its state.
-#[derive(Default)]
-struct ChainConfigCache {
-    spec: OnceCell<Arc<Spec>>,
-    genesis: OnceCell<Arc<v1::Genesis>>,
-    fork_schedule: OnceCell<Arc<Vec<phase0::Fork>>>,
-}
-
-/// Keyed by endpoint, so every client for one beacon node (e.g. the
-/// scheduling and submission clients) shares the same entries.
-///
-/// TODO(#563): removed once the client owns its state.
-static CONFIG_CACHES: LazyLock<Mutex<HashMap<Url, Arc<ChainConfigCache>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Returns the config cache for `base_url`. The map lock is only held to
-/// get-or-insert the entry, never across a fetch.
-fn config_cache_for(base_url: &Url) -> Arc<ChainConfigCache> {
-    let mut caches = CONFIG_CACHES.lock().expect("config cache mutex poisoned");
-    Arc::clone(caches.entry(base_url.clone()).or_default())
-}
-
-/// Removes the cached chain config for `base_url`.
-///
-/// Test support: wiremock pools listeners, so mock servers reuse ports within
-/// one test process and a later test would inherit an earlier test's cached
-/// config for the same URL. Production never needs this.
-#[doc(hidden)]
-pub fn purge_chain_config_cache(base_url: &Url) {
-    CONFIG_CACHES
-        .lock()
-        .expect("config cache mutex poisoned")
-        .remove(base_url);
-}
-
 impl EthBeaconNodeApiClient {
-    /// Fetches the chain spec (cached per endpoint).
-    pub async fn fetch_spec(&self) -> Result<Arc<Spec>> {
-        let cache = config_cache_for(&self.base_url);
-        cache
+    /// Fetches the chain spec (cached).
+    pub async fn fetch_spec(&self) -> Result<Spec> {
+        self.0
+            .config
             .spec
-            .get_or_try_init(|| async {
-                let spec = self.get_spec().await?;
-                Ok(Arc::new(spec))
-            })
+            .get_or_try_init(|| self.get_spec())
             .await
-            .map(Arc::clone)
+            .cloned()
     }
 
-    async fn fetch_genesis_data(&self) -> Result<Arc<v1::Genesis>> {
-        let cache = config_cache_for(&self.base_url);
-        cache
+    async fn fetch_genesis_data(&self) -> Result<v1::Genesis> {
+        self.0
+            .config
             .genesis
-            .get_or_try_init(|| async {
-                let genesis = self.get_genesis().await?;
-                Ok(Arc::new(genesis))
-            })
+            .get_or_try_init(|| self.get_genesis())
             .await
-            .map(Arc::clone)
+            .cloned()
     }
 
     /// Fetches the genesis time.
@@ -1076,17 +1051,14 @@ impl EthBeaconNodeApiClient {
     }
 
     /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
-    /// (cached per endpoint).
-    async fn fetch_fork_schedule_data(&self) -> Result<Arc<Vec<phase0::Fork>>> {
-        let cache = config_cache_for(&self.base_url);
-        cache
+    /// (cached).
+    async fn fetch_fork_schedule_data(&self) -> Result<Vec<phase0::Fork>> {
+        self.0
+            .config
             .fork_schedule
-            .get_or_try_init(|| async {
-                let schedule = self.get_fork_schedule().await?;
-                Ok(Arc::new(schedule))
-            })
+            .get_or_try_init(|| self.get_fork_schedule())
             .await
-            .map(Arc::clone)
+            .cloned()
     }
 
     /// Fetches the `current_version` of every entry in the beacon node's fork
@@ -1175,7 +1147,8 @@ impl EthBeaconNodeApiClient {
 
         let response = self
             .send(
-                self.client
+                self.0
+                    .client
                     .get(self.url(&["eth", "v1", "events"]))
                     .query(&query)
                     .header(ACCEPT, "text/event-stream"),
@@ -2099,20 +2072,11 @@ mod tests {
         json!({ "data": crate::test_fixtures::spec_json() })
     }
 
-    fn config_client(server: &MockServer) -> EthBeaconNodeApiClient {
-        let client =
-            EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL");
-        // The pooled port may have served an earlier test.
-        purge_chain_config_cache(&client.base_url);
-        client
-    }
-
-    /// Every config-derived lookup after the first is served from the
-    /// process-global cache, including from a second client for the same
-    /// endpoint (the submission client in production). Enforced by the
+    /// Every config-derived lookup after the first is served from the client's
+    /// cache, including from a clone of the client. Enforced by the
     /// `.expect(1)` mocks on drop.
     #[tokio::test]
-    async fn config_fetches_are_cached_per_endpoint() {
+    async fn config_fetches_are_cached_per_client() {
         let server = MockServer::start().await;
         for (endpoint, body) in [
             (SPEC_PATH, cache_spec_body()),
@@ -2126,7 +2090,7 @@ mod tests {
                 .mount(&server)
                 .await;
         }
-        let client = config_client(&server);
+        let client = test_client(&server);
 
         let spec = client.fetch_spec().await.unwrap();
         let domain_type = spec.domain_beacon_attester;
@@ -2155,13 +2119,10 @@ mod tests {
             )
         );
 
-        // Constructed directly (`config_client` purges): a second client for
-        // the same endpoint shares the already-warmed entries.
-        let second_client = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
+        // A clone shares the already-warmed entries.
+        let second_client = client.clone();
         second_client.fetch_slots_config().await.unwrap();
         second_client.fetch_genesis_time().await.unwrap();
-
-        purge_chain_config_cache(&client.base_url);
     }
 
     /// Concurrent cold lookups coalesce into one upstream request.
@@ -2179,7 +2140,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = config_client(&server);
+        let client = test_client(&server);
 
         // Spawn all tasks before awaiting any (a lazy `map` would run them
         // sequentially) so they race on the cold cache.
@@ -2192,8 +2153,6 @@ mod tests {
         for lookup in lookups {
             lookup.await.unwrap().unwrap();
         }
-
-        purge_chain_config_cache(&client.base_url);
     }
 
     /// Request failures are never cached: the next call retries and succeeds
@@ -2209,7 +2168,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = config_client(&server);
+        let client = test_client(&server);
         client.fetch_genesis_time().await.unwrap_err();
 
         Mock::given(method("GET"))
@@ -2219,8 +2178,6 @@ mod tests {
             .mount(&server)
             .await;
         client.fetch_genesis_time().await.unwrap();
-
-        purge_chain_config_cache(&client.base_url);
     }
 
     /// Fork-schedule entries as served by Charon's beaconmock static.json:
