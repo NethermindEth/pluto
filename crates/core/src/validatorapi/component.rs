@@ -126,11 +126,6 @@ pub type PubKeyByAttFn = Arc<
         + 'static,
 >;
 
-/// Observer invoked with each DV root public key a validator client references
-/// on a validator-facing endpoint (duties, validators). Lets the monitoring
-/// readiness checker track which validators the VC is actively serving.
-pub type SeenPubkeysFn = Arc<dyn Fn(PubKey) + Send + Sync + 'static>;
-
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls.
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -200,9 +195,6 @@ pub struct Component {
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
-    /// Invoked with each DV root pubkey the VC references on a validator-facing
-    /// endpoint, feeding the monitoring readiness "validators seen" signal.
-    seen_pubkeys: Option<SeenPubkeysFn>,
 }
 
 impl Component {
@@ -230,7 +222,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         }
     }
 
@@ -260,7 +251,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         }
     }
 
@@ -359,39 +349,6 @@ impl Component {
         self.pub_key_by_att_fn = Some(Arc::new(move |slot, comm, val| {
             Box::pin(f(slot, comm, val))
         }));
-    }
-
-    /// Registers (and overwrites any prior) seen-pubkeys observer. Invoked with
-    /// each of this cluster's DV root public keys as the validator client
-    /// references them on a validator-facing endpoint.
-    pub fn register_seen_pubkeys(&mut self, observer: SeenPubkeysFn) {
-        self.seen_pubkeys = Some(observer);
-    }
-
-    /// Reports a single cluster DV root pubkey to the registered seen-pubkeys
-    /// observer (no-op when unset).
-    fn observe_root_pubkey(&self, root: &BLSPubKey) {
-        if let Some(observer) = self.seen_pubkeys.as_deref() {
-            observer(PubKey::new(*root));
-        }
-    }
-
-    /// Reports each of our DV root public keys present in `pubkeys` to the
-    /// registered seen-pubkeys observer (no-op when unset). Unparseable or
-    /// non-cluster pubkeys are skipped — the surrounding rewrite validates
-    /// them.
-    fn observe_seen_pubkeys<'a>(&self, pubkeys: impl IntoIterator<Item = &'a str>) {
-        if self.seen_pubkeys.is_none() {
-            return;
-        }
-        for raw in pubkeys {
-            let Ok(pubkey) = parse_bls_pubkey(raw) else {
-                continue;
-            };
-            if self.pub_share_by_pubkey.contains_key(&pubkey) {
-                self.observe_root_pubkey(&pubkey);
-            }
-        }
     }
 
     /// Verifies an outer partial signature on a [`ParSignedData`] against
@@ -940,7 +897,6 @@ impl Handler for Component {
             }
         };
 
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
         swap_proposer_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
 
         Ok(payload)
@@ -990,7 +946,6 @@ impl Handler for Component {
             }
         };
 
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
         swap_attester_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
 
         Ok(payload)
@@ -1046,7 +1001,6 @@ impl Handler for Component {
             }
         };
 
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
         swap_sync_committee_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
 
         Ok(payload)
@@ -1616,11 +1570,6 @@ impl Handler for Component {
                     "unknown validator public key in request",
                 )
             })?;
-            // Mark the validator seen as soon as its share resolves to a
-            // cluster root — before the upstream call — so a
-            // validator the beacon node has no row for yet (e.g.
-            // not activated) still counts toward readiness.
-            self.observe_root_pubkey(root);
             root_pubkeys.push(format_bls_pubkey(root));
         }
 
@@ -1678,12 +1627,6 @@ impl Handler for Component {
         // an unfiltered "fetch all"), validators outside the share map pass
         // through with their root pubkey untouched.
         let ignore_not_found = opts.indices.is_empty();
-        self.observe_seen_pubkeys(
-            payload
-                .data
-                .iter()
-                .map(|validator| validator.validator.pubkey.as_str()),
-        );
         let data = convert_validators(payload.data, &self.pub_share_by_pubkey, ignore_not_found)?;
 
         Ok(EthResponse {
@@ -6359,108 +6302,6 @@ mod tests {
         );
     }
 
-    /// A registered seen-pubkeys observer receives the DV root pubkey for each
-    /// cluster validator the VC references (and skips validators this cluster
-    /// does not own). This feeds `/readyz`'s "validators seen" state, which
-    /// otherwise sticks at "vc missing validators" after an epoch rollover.
-    #[tokio::test]
-    async fn validators_reports_seen_cluster_root_pubkeys() {
-        let server = MockServer::start().await;
-        let known_root = [0x11_u8; 48];
-        let share = [0x22_u8; 48];
-        let stranger = [0x33_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
-            data: vec![
-                make_validator_datum(1, &known_root),
-                make_validator_datum(2, &stranger),
-            ],
-            execution_optimistic: false,
-            finalized: true,
-        };
-        Mock::given(method("POST"))
-            .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let mut component =
-            make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        component.register_seen_pubkeys(Arc::new(move |pubkey| {
-            sink.lock().expect("seen lock").push(pubkey);
-        }));
-
-        component
-            .validators(ValidatorsOpts {
-                state: "head".to_owned(),
-                pubkeys: vec![share],
-                indices: vec![],
-            })
-            .await
-            .unwrap();
-
-        // The cluster-owned validator's root pubkey is reported (via both the
-        // share→root request translation and the response rewrite — production
-        // dedups these in a set); the stranger the cluster does not own is
-        // never reported.
-        let observed: std::collections::HashSet<PubKey> =
-            seen.lock().expect("seen lock").iter().copied().collect();
-        assert_eq!(
-            observed,
-            std::collections::HashSet::from([PubKey::new(known_root)])
-        );
-    }
-
-    /// Regression: a requested share resolves to a cluster root even when the
-    /// beacon node returns no validator row for it (e.g. not yet activated).
-    /// The root must still be marked seen — from the share→root translation —
-    /// so `/readyz` does not stick at "vc missing validators".
-    #[tokio::test]
-    async fn validators_reports_seen_pubkey_when_upstream_returns_no_rows() {
-        let server = MockServer::start().await;
-        let known_root = [0x44_u8; 48];
-        let share = [0x55_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
-            // The beacon node has no row for the requested validator yet.
-            data: vec![],
-            execution_optimistic: false,
-            finalized: true,
-        };
-        Mock::given(method("POST"))
-            .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let mut component =
-            make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        component.register_seen_pubkeys(Arc::new(move |pubkey| {
-            sink.lock().expect("seen lock").push(pubkey);
-        }));
-
-        let response = component
-            .validators(ValidatorsOpts {
-                state: "head".to_owned(),
-                pubkeys: vec![share],
-                indices: vec![],
-            })
-            .await
-            .unwrap();
-
-        // Empty upstream response, yet the requested validator's root is still
-        // reported seen via the share→root translation.
-        assert!(response.data.is_empty());
-        assert_eq!(
-            *seen.lock().expect("seen lock"),
-            vec![PubKey::new(known_root)]
-        );
-    }
-
     /// When the caller filters by index (any non-empty `indices`),
     /// `ignore_not_found` is `false`, so an upstream validator that does not
     /// belong to this cluster surfaces as `INTERNAL_SERVER_ERROR`.
@@ -6667,7 +6508,6 @@ mod tests {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         };
         (component, mock)
     }

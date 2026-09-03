@@ -217,7 +217,6 @@ fn wire_inputs_with(
         graffiti_builder: pluto_core::fetcher::GraffitiBuilder::default(),
         electra_slot: 0,
         fetch_only_comm_idx0: false,
-        seen_pubkeys: None,
         slot_tick: None,
         // Single-node wiring test: one peer at share index 1, default features
         // (so only proposers carry an on-chain inclusion step).
