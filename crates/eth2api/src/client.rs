@@ -3,20 +3,21 @@
 //! One method per Beacon API endpoint Pluto uses. Methods take typed
 //! parameters, exchange JSON, and return the decoded payload: the `data`
 //! value for endpoints whose envelope carries nothing else, a named envelope
-//! struct where the node adds metadata. A non-2xx status is an `Err` wrapping
-//! [`HttpError`]; transport and decoding failures are plain errors.
+//! struct where the node adds metadata. A non-2xx status is
+//! [`EthBeaconNodeApiClientError::Http`]; transport and decoding failures are
+//! [`EthBeaconNodeApiClientError::Transport`] and
+//! [`EthBeaconNodeApiClientError::Decode`].
 //!
 //! The `fetch_*` methods derive values from several endpoints and cache the
 //! static chain configuration (spec, genesis, fork schedule) per endpoint.
 
 use crate::{
-    EthBeaconNodeApiClientError,
-    spec::{DataVersion, altair, electra, phase0},
+    EthBeaconNodeApiClientError, PayloadError,
+    spec::{BuilderVersion, DataVersion, altair, electra, phase0},
     types::*,
     v1, versioned,
 };
 use alloy::primitives::U256;
-use anyhow::Context;
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use reqwest::{Client, RequestBuilder, Response, StatusCode, Url, header::ACCEPT};
@@ -29,6 +30,8 @@ use std::{
 };
 use tokio::sync::OnceCell;
 use tokio_stream::{Stream, StreamExt};
+
+type Result<T> = std::result::Result<T, EthBeaconNodeApiClientError>;
 
 /// Client for one beacon node.
 #[derive(Debug, Clone)]
@@ -77,70 +80,43 @@ struct NodeVersion {
     version: String,
 }
 
-/// Returns `response` for a 2xx status and an [`HttpError`] otherwise.
-async fn success(response: Response) -> anyhow::Result<Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-
-    let text = text(response).await?;
-    let body = serde_json::from_str(&text).unwrap_or_else(|_| ErrorBody {
-        message: text,
-        ..ErrorBody::default()
-    });
-    Err(HttpError { status, body }.into())
-}
-
-async fn text(response: Response) -> anyhow::Result<String> {
-    response.text().await.context("reading response body")
-}
-
 /// Decodes JSON, naming the offending field path on failure.
-fn decode<'a, T: Deserialize<'a>>(body: &'a str) -> anyhow::Result<T> {
+fn decode<'a, T: Deserialize<'a>>(body: &'a str) -> Result<T> {
     let mut deserializer = serde_json::Deserializer::from_str(body);
-    serde_path_to_error::deserialize(&mut deserializer).context("decoding JSON response body")
+    Ok(serde_path_to_error::deserialize(&mut deserializer)?)
 }
 
 /// Decodes the JSON body of a 2xx response.
-async fn json<T: DeserializeOwned>(response: Response) -> anyhow::Result<T> {
-    let body = text(success(response).await?).await?;
+async fn json<T: DeserializeOwned>(response: Response) -> Result<T> {
+    let body = response.text().await?;
     decode(&body)
 }
 
 /// Decodes the `data` field of a 2xx response.
-async fn data<T: DeserializeOwned>(response: Response) -> anyhow::Result<T> {
+async fn data<T: DeserializeOwned>(response: Response) -> Result<T> {
     Ok(json::<Data<T>>(response).await?.data)
 }
 
-/// Checks the status of a response without a payload.
-async fn empty(response: Response) -> anyhow::Result<()> {
-    success(response)
-        .await?
-        .bytes()
-        .await
-        .context("reading response body")?;
+/// Drains a 2xx response without a payload.
+async fn empty(response: Response) -> Result<()> {
+    response.bytes().await?;
     Ok(())
 }
 
 /// Returns the `Eth-Consensus-Version` header value for `version`.
-fn consensus_version(version: DataVersion) -> anyhow::Result<&'static str> {
-    anyhow::ensure!(
-        version != DataVersion::Unknown,
-        "payload has no consensus version"
-    );
+fn consensus_version(version: DataVersion) -> Result<&'static str> {
+    if version == DataVersion::Unknown {
+        return Err(PayloadError::UnknownVersion.into());
+    }
     Ok(version.as_str())
 }
 
 /// Returns the version shared by every element of `versions`.
-fn common_version(mut versions: impl Iterator<Item = DataVersion>) -> anyhow::Result<&'static str> {
-    let first = versions
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("empty payload list"))?;
-    anyhow::ensure!(
-        versions.all(|version| version == first),
-        "payloads carry different consensus versions"
-    );
+fn common_version(mut versions: impl Iterator<Item = DataVersion>) -> Result<&'static str> {
+    let first = versions.next().ok_or(PayloadError::Empty)?;
+    if !versions.all(|version| version == first) {
+        return Err(PayloadError::MixedVersions.into());
+    }
     consensus_version(first)
 }
 
@@ -148,19 +124,15 @@ fn decode_proposal_block(
     version: DataVersion,
     blinded: bool,
     body: &str,
-) -> anyhow::Result<versioned::ProposalBlock> {
+) -> Result<versioned::ProposalBlock> {
     let mut deserializer = serde_json::Deserializer::from_str(body);
     let mut track = serde_path_to_error::Track::new();
     let tracked = serde_path_to_error::Deserializer::new(&mut deserializer, &mut track);
     versioned::ProposalBlock::from_json(version, blinded, tracked)
-        .map_err(|error| serde_path_to_error::Error::new(track.path(), error))
-        .context("decoding JSON response body")
+        .map_err(|error| serde_path_to_error::Error::new(track.path(), error).into())
 }
 
-fn decode_signed_block(
-    version: DataVersion,
-    body: &str,
-) -> anyhow::Result<versioned::SignedBeaconBlock> {
+fn decode_signed_block(version: DataVersion, body: &str) -> Result<versioned::SignedBeaconBlock> {
     use versioned::SignedBeaconBlock;
 
     Ok(match version {
@@ -171,14 +143,11 @@ fn decode_signed_block(
         DataVersion::Deneb => SignedBeaconBlock::Deneb(decode(body)?),
         DataVersion::Electra => SignedBeaconBlock::Electra(decode(body)?),
         DataVersion::Fulu => SignedBeaconBlock::Fulu(decode(body)?),
-        DataVersion::Unknown => anyhow::bail!("block has an unknown consensus version"),
+        DataVersion::Unknown => return Err(PayloadError::UnknownVersion.into()),
     })
 }
 
-fn decode_attestation(
-    version: DataVersion,
-    body: &str,
-) -> anyhow::Result<versioned::AttestationPayload> {
+fn decode_attestation(version: DataVersion, body: &str) -> Result<versioned::AttestationPayload> {
     use versioned::AttestationPayload;
 
     Ok(match version {
@@ -189,7 +158,7 @@ fn decode_attestation(
         DataVersion::Deneb => AttestationPayload::Deneb(decode(body)?),
         DataVersion::Electra => AttestationPayload::Electra(decode(body)?),
         DataVersion::Fulu => AttestationPayload::Fulu(decode(body)?),
-        DataVersion::Unknown => anyhow::bail!("attestation has an unknown consensus version"),
+        DataVersion::Unknown => return Err(PayloadError::UnknownVersion.into()),
     })
 }
 
@@ -215,10 +184,15 @@ enum PoolAttestations<'a> {
 fn pool_attestations(
     version: DataVersion,
     attestations: &[versioned::VersionedAttestation],
-) -> anyhow::Result<PoolAttestations<'_>> {
+) -> std::result::Result<PoolAttestations<'_>, PayloadError> {
     use versioned::AttestationPayload;
 
-    if crate::data_version_is_before_electra(version) {
+    let wrong_fork = |attestation: &versioned::VersionedAttestation| PayloadError::WrongFork {
+        submission: version,
+        payload: attestation.version,
+    };
+
+    if version.is_before_electra() {
         let items = attestations
             .iter()
             .map(|attestation| match attestation.attestation.as_ref() {
@@ -230,11 +204,11 @@ fn pool_attestations(
                     | AttestationPayload::Deneb(payload),
                 ) => Ok(payload),
                 Some(AttestationPayload::Electra(_) | AttestationPayload::Fulu(_)) => {
-                    anyhow::bail!("electra attestation in a pre-electra submission")
+                    Err(wrong_fork(attestation))
                 }
-                None => anyhow::bail!("attestation has no payload"),
+                None => Err(PayloadError::MissingAttestation),
             })
-            .collect::<anyhow::Result<_>>()?;
+            .collect::<std::result::Result<_, _>>()?;
         return Ok(PoolAttestations::Legacy(items));
     }
 
@@ -245,14 +219,14 @@ fn pool_attestations(
                 Some(AttestationPayload::Electra(payload) | AttestationPayload::Fulu(payload)) => {
                     payload
                 }
-                Some(_) => anyhow::bail!("pre-electra attestation in an electra submission"),
-                None => anyhow::bail!("attestation has no payload"),
+                Some(_) => return Err(wrong_fork(attestation)),
+                None => return Err(PayloadError::MissingAttestation),
             };
             let attester_index = attestation
                 .validator_index
-                .ok_or_else(|| anyhow::anyhow!("attestation has no validator index"))?;
-            let committee_index = first_set_bit(&payload.committee_bits.bytes)
-                .ok_or_else(|| anyhow::anyhow!("attestation has no committee bit set"))?;
+                .ok_or(PayloadError::MissingValidatorIndex)?;
+            let committee_index =
+                first_set_bit(&payload.committee_bits.bytes).ok_or(PayloadError::NoCommitteeBit)?;
             Ok(electra::SingleAttestation {
                 committee_index,
                 attester_index,
@@ -260,71 +234,94 @@ fn pool_attestations(
                 signature: payload.signature,
             })
         })
-        .collect::<anyhow::Result<_>>()?;
+        .collect::<std::result::Result<_, _>>()?;
     Ok(PoolAttestations::Single(items))
 }
 
 impl EthBeaconNodeApiClient {
     /// Creates a client for `base_url` with a default [`reqwest::Client`].
-    pub fn with_base_url(base_url: impl AsRef<str>) -> anyhow::Result<Self> {
-        let client = Client::builder()
-            .build()
-            .context("building reqwest client")?;
-        Self::with_client(base_url, client)
+    pub fn with_base_url(base_url: impl AsRef<str>) -> Result<Self> {
+        Self::with_client(base_url, Client::builder().build()?)
     }
 
     /// Creates a client for `base_url` that sends its requests with `client`.
-    pub fn with_client(base_url: impl AsRef<str>, client: Client) -> anyhow::Result<Self> {
-        let base_url = Url::parse(base_url.as_ref()).context("parsing base url")?;
+    pub fn with_client(base_url: impl AsRef<str>, client: Client) -> Result<Self> {
+        let base_url = Url::parse(base_url.as_ref())?;
+        if base_url.cannot_be_a_base() {
+            return Err(EthBeaconNodeApiClientError::UrlCannotBeABase);
+        }
         Ok(Self { client, base_url })
     }
 
     /// Appends `segments` to the base URL path.
-    fn url(&self, segments: &[&str]) -> anyhow::Result<Url> {
+    fn url(&self, segments: &[&str]) -> Url {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
-            .map_err(|()| anyhow::anyhow!("URL cannot be a base"))?
+            .expect("with_client rejects URLs that cannot be a base")
             .extend(segments);
-        Ok(url)
+        url
     }
 
-    fn get(&self, segments: &[&str]) -> anyhow::Result<RequestBuilder> {
-        Ok(self
-            .client
-            .get(self.url(segments)?)
-            .header(ACCEPT, "application/json"))
+    fn get(&self, segments: &[&str]) -> RequestBuilder {
+        self.client
+            .get(self.url(segments))
+            .header(ACCEPT, "application/json")
     }
 
-    fn post(&self, segments: &[&str]) -> anyhow::Result<RequestBuilder> {
-        Ok(self.client.post(self.url(segments)?))
+    fn post(&self, segments: &[&str]) -> RequestBuilder {
+        self.client.post(self.url(segments))
+    }
+
+    /// Sends `request` and returns the response for a 2xx status, an
+    /// [`HttpError`] otherwise.
+    async fn send(&self, request: RequestBuilder) -> Result<Response> {
+        let request = request.build()?;
+        let method = request.method().clone();
+        let response = self.client.execute(request).await?;
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let endpoint = response.url().path().to_owned();
+        let text = response.text().await?;
+        let body = serde_json::from_str(&text).unwrap_or_else(|_| ErrorBody {
+            message: text,
+            ..ErrorBody::default()
+        });
+        Err(HttpError {
+            status,
+            method,
+            endpoint,
+            body,
+        }
+        .into())
     }
 
     /// `GET /eth/v1/beacon/genesis`: genesis time, validators root and fork
     /// version.
-    pub async fn get_genesis(&self) -> anyhow::Result<v1::Genesis> {
+    pub async fn get_genesis(&self) -> Result<v1::Genesis> {
         data(
-            self.get(&["eth", "v1", "beacon", "genesis"])?
-                .send()
+            self.send(self.get(&["eth", "v1", "beacon", "genesis"]))
                 .await?,
         )
         .await
     }
 
     /// `GET /eth/v1/beacon/blocks/{block_id}/root`: the root of a block.
-    pub async fn get_block_root(&self, block_id: &str) -> anyhow::Result<BlockRootResponse> {
+    pub async fn get_block_root(&self, block_id: &str) -> Result<BlockRootResponse> {
         json(
-            self.get(&["eth", "v1", "beacon", "blocks", block_id, "root"])?
-                .send()
+            self.send(self.get(&["eth", "v1", "beacon", "blocks", block_id, "root"]))
                 .await?,
         )
         .await
     }
 
     /// `GET /eth/v1/beacon/headers/{block_id}`: the signed header of a block.
-    pub async fn get_block_header(&self, block_id: &str) -> anyhow::Result<BlockHeaderResponse> {
+    pub async fn get_block_header(&self, block_id: &str) -> Result<BlockHeaderResponse> {
         json(
-            self.get(&["eth", "v1", "beacon", "headers", block_id])?
-                .send()
+            self.send(self.get(&["eth", "v1", "beacon", "headers", block_id]))
                 .await?,
         )
         .await
@@ -332,18 +329,19 @@ impl EthBeaconNodeApiClient {
 
     /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block, or `None`
     /// when no block exists for `block_id`.
-    pub async fn get_block_v2(
-        &self,
-        block_id: &str,
-    ) -> anyhow::Result<Option<SignedBlockResponse>> {
-        let response = self
-            .get(&["eth", "v2", "beacon", "blocks", block_id])?
-            .send()
-            .await?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let body = text(success(response).await?).await?;
+    pub async fn get_block_v2(&self, block_id: &str) -> Result<Option<SignedBlockResponse>> {
+        let response = match self
+            .send(self.get(&["eth", "v2", "beacon", "blocks", block_id]))
+            .await
+        {
+            Err(EthBeaconNodeApiClientError::Http(http))
+                if http.status == StatusCode::NOT_FOUND =>
+            {
+                return Ok(None);
+            }
+            response => response?,
+        };
+        let body = response.text().await?;
         let envelope: Versioned<'_> = decode(&body)?;
 
         Ok(Some(SignedBlockResponse {
@@ -360,12 +358,13 @@ impl EthBeaconNodeApiClient {
         &self,
         state_id: &str,
         filter: &ValidatorsFilter,
-    ) -> anyhow::Result<ValidatorsResponse> {
+    ) -> Result<ValidatorsResponse> {
         json(
-            self.post(&["eth", "v1", "beacon", "states", state_id, "validators"])?
-                .json(filter)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "beacon", "states", state_id, "validators"])
+                    .json(filter),
+            )
+            .await?,
         )
         .await
     }
@@ -376,19 +375,18 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: &versioned::VersionedSignedProposal,
         broadcast_validation: Option<BroadcastValidation>,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !proposal.blinded,
-            "blinded proposal on the unblinded publish endpoint"
-        );
+    ) -> Result<()> {
+        if proposal.blinded {
+            return Err(PayloadError::BlindedOnUnblindedEndpoint.into());
+        }
         let mut request = self
-            .post(&["eth", "v2", "beacon", "blocks"])?
+            .post(&["eth", "v2", "beacon", "blocks"])
             .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
             .json(&proposal.block);
         if let Some(validation) = broadcast_validation {
             request = request.query(&[("broadcast_validation", validation.as_str())]);
         }
-        empty(request.send().await?).await
+        empty(self.send(request).await?).await
     }
 
     /// `POST /eth/v2/beacon/blinded_blocks`: publishes a signed blinded block.
@@ -396,15 +394,15 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: &versioned::VersionedSignedBlindedProposal,
         broadcast_validation: Option<BroadcastValidation>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let mut request = self
-            .post(&["eth", "v2", "beacon", "blinded_blocks"])?
+            .post(&["eth", "v2", "beacon", "blinded_blocks"])
             .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
             .json(&proposal.block);
         if let Some(validation) = broadcast_validation {
             request = request.query(&[("broadcast_validation", validation.as_str())]);
         }
-        empty(request.send().await?).await
+        empty(self.send(request).await?).await
     }
 
     /// `POST /eth/v2/beacon/pool/attestations`: submits signed attestations.
@@ -413,18 +411,16 @@ impl EthBeaconNodeApiClient {
     pub async fn submit_pool_attestations_v2(
         &self,
         attestations: &[versioned::VersionedAttestation],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let version = attestations
             .first()
             .map_or(DataVersion::Phase0, |attestation| attestation.version);
         let body = pool_attestations(version, attestations)?;
-        let response = self
-            .post(&["eth", "v2", "beacon", "pool", "attestations"])?
+        let request = self
+            .post(&["eth", "v2", "beacon", "pool", "attestations"])
             .header(ETH_CONSENSUS_VERSION, consensus_version(version)?)
-            .json(&body)
-            .send()
-            .await?;
-        empty(response).await
+            .json(&body);
+        empty(self.send(request).await?).await
     }
 
     /// `POST /eth/v1/beacon/pool/sync_committees`: submits sync committee
@@ -432,12 +428,13 @@ impl EthBeaconNodeApiClient {
     pub async fn submit_pool_sync_committee_signatures(
         &self,
         messages: &[altair::SyncCommitteeMessage],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "beacon", "pool", "sync_committees"])?
-                .json(messages)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "beacon", "pool", "sync_committees"])
+                    .json(messages),
+            )
+            .await?,
         )
         .await
     }
@@ -447,21 +444,21 @@ impl EthBeaconNodeApiClient {
     pub async fn submit_pool_voluntary_exit(
         &self,
         exit: &phase0::SignedVoluntaryExit,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "beacon", "pool", "voluntary_exits"])?
-                .json(exit)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "beacon", "pool", "voluntary_exits"])
+                    .json(exit),
+            )
+            .await?,
         )
         .await
     }
 
     /// `GET /eth/v1/config/fork_schedule`: every fork the node knows about.
-    pub async fn get_fork_schedule(&self) -> anyhow::Result<Vec<phase0::Fork>> {
+    pub async fn get_fork_schedule(&self) -> Result<Vec<phase0::Fork>> {
         data(
-            self.get(&["eth", "v1", "config", "fork_schedule"])?
-                .send()
+            self.send(self.get(&["eth", "v1", "config", "fork_schedule"]))
                 .await?,
         )
         .await
@@ -469,30 +466,40 @@ impl EthBeaconNodeApiClient {
 
     /// `GET /eth/v1/config/spec`: the chain constants, presets and
     /// configuration.
-    pub async fn get_spec(&self) -> anyhow::Result<Spec> {
-        data(self.get(&["eth", "v1", "config", "spec"])?.send().await?).await
+    pub async fn get_spec(&self) -> Result<Spec> {
+        data(
+            self.send(self.get(&["eth", "v1", "config", "spec"]))
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/node/peer_count`: the node's peer counts by connection
     /// state.
-    pub async fn get_peer_count(&self) -> anyhow::Result<v1::PeerCount> {
+    pub async fn get_peer_count(&self) -> Result<v1::PeerCount> {
         data(
-            self.get(&["eth", "v1", "node", "peer_count"])?
-                .send()
+            self.send(self.get(&["eth", "v1", "node", "peer_count"]))
                 .await?,
         )
         .await
     }
 
     /// `GET /eth/v1/node/syncing`: the node's sync status.
-    pub async fn get_syncing_status(&self) -> anyhow::Result<v1::SyncState> {
-        data(self.get(&["eth", "v1", "node", "syncing"])?.send().await?).await
+    pub async fn get_syncing_status(&self) -> Result<v1::SyncState> {
+        data(
+            self.send(self.get(&["eth", "v1", "node", "syncing"]))
+                .await?,
+        )
+        .await
     }
 
     /// `GET /eth/v1/node/version`: the node's client version string.
-    pub async fn get_node_version(&self) -> anyhow::Result<String> {
-        let version: NodeVersion =
-            data(self.get(&["eth", "v1", "node", "version"])?.send().await?).await?;
+    pub async fn get_node_version(&self) -> Result<String> {
+        let version: NodeVersion = data(
+            self.send(self.get(&["eth", "v1", "node", "version"]))
+                .await?,
+        )
+        .await?;
         Ok(version.version)
     }
 
@@ -502,15 +509,16 @@ impl EthBeaconNodeApiClient {
         &self,
         slot: phase0::Slot,
         committee_index: u64,
-    ) -> anyhow::Result<phase0::AttestationData> {
+    ) -> Result<phase0::AttestationData> {
         data(
-            self.get(&["eth", "v1", "validator", "attestation_data"])?
-                .query(&[
-                    ("slot", slot.to_string()),
-                    ("committee_index", committee_index.to_string()),
-                ])
-                .send()
-                .await?,
+            self.send(
+                self.get(&["eth", "v1", "validator", "attestation_data"])
+                    .query(&[
+                        ("slot", slot.to_string()),
+                        ("committee_index", committee_index.to_string()),
+                    ]),
+            )
+            .await?,
         )
         .await
     }
@@ -520,12 +528,13 @@ impl EthBeaconNodeApiClient {
     pub async fn submit_beacon_committee_selections(
         &self,
         selections: &[v1::BeaconCommitteeSelection],
-    ) -> anyhow::Result<Vec<v1::BeaconCommitteeSelection>> {
+    ) -> Result<Vec<v1::BeaconCommitteeSelection>> {
         data(
-            self.post(&["eth", "v1", "validator", "beacon_committee_selections"])?
-                .json(selections)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "beacon_committee_selections"])
+                    .json(selections),
+            )
+            .await?,
         )
         .await
     }
@@ -535,12 +544,13 @@ impl EthBeaconNodeApiClient {
     pub async fn publish_contribution_and_proofs(
         &self,
         contributions: &[altair::SignedContributionAndProof],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "validator", "contribution_and_proofs"])?
-                .json(contributions)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "contribution_and_proofs"])
+                    .json(contributions),
+            )
+            .await?,
         )
         .await
     }
@@ -551,18 +561,19 @@ impl EthBeaconNodeApiClient {
         &self,
         epoch: phase0::Epoch,
         indices: &[phase0::ValidatorIndex],
-    ) -> anyhow::Result<AttesterDutiesResponse> {
+    ) -> Result<AttesterDutiesResponse> {
         json(
-            self.post(&[
-                "eth",
-                "v1",
-                "validator",
-                "duties",
-                "attester",
-                &epoch.to_string(),
-            ])?
-            .json(&decimal_strings(indices))
-            .send()
+            self.send(
+                self.post(&[
+                    "eth",
+                    "v1",
+                    "validator",
+                    "duties",
+                    "attester",
+                    &epoch.to_string(),
+                ])
+                .json(&decimal_strings(indices)),
+            )
             .await?,
         )
         .await
@@ -573,17 +584,16 @@ impl EthBeaconNodeApiClient {
     pub async fn get_proposer_duties(
         &self,
         epoch: phase0::Epoch,
-    ) -> anyhow::Result<ProposerDutiesResponse> {
+    ) -> Result<ProposerDutiesResponse> {
         json(
-            self.get(&[
+            self.send(self.get(&[
                 "eth",
                 "v1",
                 "validator",
                 "duties",
                 "proposer",
                 &epoch.to_string(),
-            ])?
-            .send()
+            ]))
             .await?,
         )
         .await
@@ -595,18 +605,19 @@ impl EthBeaconNodeApiClient {
         &self,
         epoch: phase0::Epoch,
         indices: &[phase0::ValidatorIndex],
-    ) -> anyhow::Result<SyncCommitteeDutiesResponse> {
+    ) -> Result<SyncCommitteeDutiesResponse> {
         json(
-            self.post(&[
-                "eth",
-                "v1",
-                "validator",
-                "duties",
-                "sync",
-                &epoch.to_string(),
-            ])?
-            .json(&decimal_strings(indices))
-            .send()
+            self.send(
+                self.post(&[
+                    "eth",
+                    "v1",
+                    "validator",
+                    "duties",
+                    "sync",
+                    &epoch.to_string(),
+                ])
+                .json(&decimal_strings(indices)),
+            )
             .await?,
         )
         .await
@@ -617,12 +628,13 @@ impl EthBeaconNodeApiClient {
     pub async fn prepare_beacon_proposer(
         &self,
         preparations: &[v1::ProposalPreparation],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "validator", "prepare_beacon_proposer"])?
-                .json(preparations)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "prepare_beacon_proposer"])
+                    .json(preparations),
+            )
+            .await?,
         )
         .await
     }
@@ -632,12 +644,13 @@ impl EthBeaconNodeApiClient {
     pub async fn register_validator(
         &self,
         registrations: &[v1::SignedValidatorRegistration],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "validator", "register_validator"])?
-                .json(registrations)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "register_validator"])
+                    .json(registrations),
+            )
+            .await?,
         )
         .await
     }
@@ -649,19 +662,20 @@ impl EthBeaconNodeApiClient {
         slot: phase0::Slot,
         subcommittee_index: u64,
         beacon_block_root: phase0::Root,
-    ) -> anyhow::Result<altair::SyncCommitteeContribution> {
+    ) -> Result<altair::SyncCommitteeContribution> {
         data(
-            self.get(&["eth", "v1", "validator", "sync_committee_contribution"])?
-                .query(&[
-                    ("slot", slot.to_string()),
-                    ("subcommittee_index", subcommittee_index.to_string()),
-                    (
-                        "beacon_block_root",
-                        pluto_ssz::to_0x_hex(&beacon_block_root),
-                    ),
-                ])
-                .send()
-                .await?,
+            self.send(
+                self.get(&["eth", "v1", "validator", "sync_committee_contribution"])
+                    .query(&[
+                        ("slot", slot.to_string()),
+                        ("subcommittee_index", subcommittee_index.to_string()),
+                        (
+                            "beacon_block_root",
+                            pluto_ssz::to_0x_hex(&beacon_block_root),
+                        ),
+                    ]),
+            )
+            .await?,
         )
         .await
     }
@@ -671,12 +685,13 @@ impl EthBeaconNodeApiClient {
     pub async fn submit_sync_committee_selections(
         &self,
         selections: &[v1::SyncCommitteeSelection],
-    ) -> anyhow::Result<Vec<v1::SyncCommitteeSelection>> {
+    ) -> Result<Vec<v1::SyncCommitteeSelection>> {
         data(
-            self.post(&["eth", "v1", "validator", "sync_committee_selections"])?
-                .json(selections)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "sync_committee_selections"])
+                    .json(selections),
+            )
+            .await?,
         )
         .await
     }
@@ -686,12 +701,13 @@ impl EthBeaconNodeApiClient {
     pub async fn prepare_sync_committee_subnets(
         &self,
         subscriptions: &[v1::SyncCommitteeSubscription],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         empty(
-            self.post(&["eth", "v1", "validator", "sync_committee_subscriptions"])?
-                .json(subscriptions)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v1", "validator", "sync_committee_subscriptions"])
+                    .json(subscriptions),
+            )
+            .await?,
         )
         .await
     }
@@ -703,20 +719,21 @@ impl EthBeaconNodeApiClient {
         slot: phase0::Slot,
         committee_index: u64,
         attestation_data_root: phase0::Root,
-    ) -> anyhow::Result<versioned::VersionedAttestation> {
+    ) -> Result<versioned::VersionedAttestation> {
         let response = self
-            .get(&["eth", "v2", "validator", "aggregate_attestation"])?
-            .query(&[
-                (
-                    "attestation_data_root",
-                    pluto_ssz::to_0x_hex(&attestation_data_root),
-                ),
-                ("slot", slot.to_string()),
-                ("committee_index", committee_index.to_string()),
-            ])
-            .send()
+            .send(
+                self.get(&["eth", "v2", "validator", "aggregate_attestation"])
+                    .query(&[
+                        (
+                            "attestation_data_root",
+                            pluto_ssz::to_0x_hex(&attestation_data_root),
+                        ),
+                        ("slot", slot.to_string()),
+                        ("committee_index", committee_index.to_string()),
+                    ]),
+            )
             .await?;
-        let body = text(success(response).await?).await?;
+        let body = response.text().await?;
         let envelope: Versioned<'_> = decode(&body)?;
 
         Ok(versioned::VersionedAttestation {
@@ -732,18 +749,19 @@ impl EthBeaconNodeApiClient {
     pub async fn publish_aggregate_and_proofs_v2(
         &self,
         aggregates: &[versioned::VersionedSignedAggregateAndProof],
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let version = common_version(aggregates.iter().map(|aggregate| aggregate.version))?;
         let body: Vec<_> = aggregates
             .iter()
             .map(|aggregate| &aggregate.aggregate_and_proof)
             .collect();
         empty(
-            self.post(&["eth", "v2", "validator", "aggregate_and_proofs"])?
-                .header(ETH_CONSENSUS_VERSION, version)
-                .json(&body)
-                .send()
-                .await?,
+            self.send(
+                self.post(&["eth", "v2", "validator", "aggregate_and_proofs"])
+                    .header(ETH_CONSENSUS_VERSION, version)
+                    .json(&body),
+            )
+            .await?,
         )
         .await
     }
@@ -753,7 +771,7 @@ impl EthBeaconNodeApiClient {
     pub async fn produce_block_v3(
         &self,
         opts: &ProduceBlockOpts,
-    ) -> anyhow::Result<versioned::VersionedProposal> {
+    ) -> Result<versioned::VersionedProposal> {
         let mut query = vec![("randao_reveal", pluto_ssz::to_0x_hex(&opts.randao_reveal))];
         if let Some(graffiti) = &opts.graffiti {
             query.push(("graffiti", pluto_ssz::to_0x_hex(graffiti)));
@@ -766,11 +784,12 @@ impl EthBeaconNodeApiClient {
         }
 
         let response = self
-            .get(&["eth", "v3", "validator", "blocks", &opts.slot.to_string()])?
-            .query(&query)
-            .send()
+            .send(
+                self.get(&["eth", "v3", "validator", "blocks", &opts.slot.to_string()])
+                    .query(&query),
+            )
             .await?;
-        let body = text(success(response).await?).await?;
+        let body = response.text().await?;
         let envelope: Proposal<'_> = decode(&body)?;
 
         Ok(versioned::VersionedProposal {
@@ -804,10 +823,10 @@ fn decimal_strings(indices: &[phase0::ValidatorIndex]) -> Vec<String> {
 fn fork_version_from_schedule(
     schedule: &[phase0::Fork],
     epoch: phase0::Epoch,
-) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-    let mut current = schedule.first().ok_or_else(|| {
-        EthBeaconNodeApiClientError::ParseError("empty fork schedule".to_string())
-    })?;
+) -> Result<phase0::Version> {
+    let mut current = schedule
+        .first()
+        .ok_or(EthBeaconNodeApiClientError::EmptyForkSchedule)?;
 
     for fork in schedule {
         if fork.epoch > epoch {
@@ -868,7 +887,7 @@ pub fn purge_chain_config_cache(base_url: &Url) {
 
 impl EthBeaconNodeApiClient {
     /// Fetches the chain spec (cached per endpoint).
-    pub async fn fetch_spec(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
+    pub async fn fetch_spec(&self) -> Result<Arc<Spec>> {
         let cache = config_cache_for(&self.base_url);
         cache
             .spec
@@ -880,7 +899,7 @@ impl EthBeaconNodeApiClient {
             .map(Arc::clone)
     }
 
-    async fn fetch_genesis_data(&self) -> Result<Arc<v1::Genesis>, EthBeaconNodeApiClientError> {
+    async fn fetch_genesis_data(&self) -> Result<Arc<v1::Genesis>> {
         let cache = config_cache_for(&self.base_url);
         cache
             .genesis
@@ -893,21 +912,19 @@ impl EthBeaconNodeApiClient {
     }
 
     /// Fetches the genesis time.
-    pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
+    pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>> {
         let genesis = self.fetch_genesis_data().await?;
 
         i64::try_from(genesis.genesis_time)
             .ok()
             .and_then(|timestamp| DateTime::from_timestamp(timestamp, 0))
-            .ok_or_else(|| {
-                EthBeaconNodeApiClientError::ParseError("convert genesis_time to timestamp".into())
-            })
+            .ok_or(EthBeaconNodeApiClientError::InvalidGenesisTime(
+                genesis.genesis_time,
+            ))
     }
 
     /// Fetches the slot duration and slots per epoch.
-    pub async fn fetch_slots_config(
-        &self,
-    ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
+    pub async fn fetch_slots_config(&self) -> Result<(time::Duration, u64)> {
         let spec = self.fetch_spec().await?;
 
         if spec.seconds_per_slot == 0 || spec.slots_per_epoch == 0 {
@@ -918,6 +935,17 @@ impl EthBeaconNodeApiClient {
             time::Duration::from_secs(spec.seconds_per_slot),
             spec.slots_per_epoch,
         ))
+    }
+
+    /// Fetches the attester duties of `indices` for `epoch`.
+    pub async fn fetch_attester_duties_for_indices(
+        &self,
+        epoch: phase0::Epoch,
+        indices: Vec<phase0::ValidatorIndex>,
+    ) -> Result<Vec<v1::AttesterDuty>> {
+        let response =
+            crate::instrument("attester_duties", self.get_attester_duties(epoch, &indices)).await?;
+        Ok(response.data)
     }
 
     /// Fetches the proposer duties for `epoch`, keeping only the duties that
@@ -931,7 +959,7 @@ impl EthBeaconNodeApiClient {
         epoch: phase0::Epoch,
         slots_per_epoch: u64,
         indices: &HashSet<phase0::ValidatorIndex>,
-    ) -> Result<Vec<v1::ProposerDuty>, EthBeaconNodeApiClientError> {
+    ) -> Result<Vec<v1::ProposerDuty>> {
         if slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
         }
@@ -964,9 +992,7 @@ impl EthBeaconNodeApiClient {
     }
 
     /// Fetches the fork schedule for all known forks.
-    pub async fn fetch_fork_config(
-        &self,
-    ) -> Result<HashMap<DataVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
+    pub async fn fetch_fork_config(&self) -> Result<HashMap<DataVersion, ForkSchedule>> {
         Ok(self.fetch_spec().await?.fork_schedule())
     }
 
@@ -974,7 +1000,7 @@ impl EthBeaconNodeApiClient {
     pub async fn fetch_genesis_domain(
         &self,
         domain_type: phase0::DomainType,
-    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+    ) -> Result<phase0::Domain> {
         let genesis = self.fetch_genesis_data().await?;
 
         Ok(compute_domain(
@@ -986,9 +1012,7 @@ impl EthBeaconNodeApiClient {
 
     /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
     /// (cached per endpoint).
-    async fn fetch_fork_schedule_data(
-        &self,
-    ) -> Result<Arc<Vec<phase0::Fork>>, EthBeaconNodeApiClientError> {
+    async fn fetch_fork_schedule_data(&self) -> Result<Arc<Vec<phase0::Fork>>> {
         let cache = config_cache_for(&self.base_url);
         cache
             .fork_schedule
@@ -1004,9 +1028,7 @@ impl EthBeaconNodeApiClient {
     /// schedule (`/eth/v1/config/fork_schedule`), in the order provided by the
     /// endpoint (oldest-to-newest per spec). The first entry is the genesis
     /// fork version, which identifies the beacon node's network.
-    pub async fn fetch_fork_schedule_versions(
-        &self,
-    ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
+    pub async fn fetch_fork_schedule_versions(&self) -> Result<Vec<phase0::Version>> {
         Ok(self
             .fetch_fork_schedule_data()
             .await?
@@ -1025,7 +1047,7 @@ impl EthBeaconNodeApiClient {
         &self,
         domain_type: phase0::DomainType,
         epoch: phase0::Epoch,
-    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+    ) -> Result<phase0::Domain> {
         let spec = self.fetch_spec().await?;
         let genesis = self.fetch_genesis_data().await?;
 
@@ -1043,6 +1065,37 @@ impl EthBeaconNodeApiClient {
         ))
     }
 
+    /// Fetches the beacon attester signing domain for `epoch`.
+    pub async fn fetch_beacon_attester_domain(
+        &self,
+        epoch: phase0::Epoch,
+    ) -> Result<phase0::Domain> {
+        let spec = self.fetch_spec().await?;
+        self.fetch_domain(spec.domain_beacon_attester, epoch).await
+    }
+
+    /// Submits signed builder registrations, which must all be V1.
+    pub async fn submit_validator_registrations(
+        &self,
+        registrations: Vec<versioned::VersionedSignedValidatorRegistration>,
+    ) -> Result<()> {
+        let registrations = registrations
+            .into_iter()
+            .map(
+                |registration| match (registration.version, registration.v1) {
+                    (BuilderVersion::V1, Some(registration)) => Ok(registration),
+                    (version, _) => Err(PayloadError::UnsupportedBuilderVersion(version)),
+                },
+            )
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        crate::instrument(
+            "submit_validator_registrations",
+            self.register_validator(&registrations),
+        )
+        .await
+    }
+
     /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the
     /// given topics.
     ///
@@ -1052,21 +1105,7 @@ impl EthBeaconNodeApiClient {
     pub async fn event_stream(
         &self,
         topics: &[EventTopic],
-    ) -> Result<
-        impl Stream<Item = Result<BeaconNodeEvent, EthBeaconNodeApiClientError>> + Send,
-        EthBeaconNodeApiClientError,
-    > {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|()| {
-                EthBeaconNodeApiClientError::RequestError(anyhow::anyhow!(
-                    "base URL cannot be a base"
-                ))
-            })?
-            .push("eth")
-            .push("v1")
-            .push("events");
-
+    ) -> Result<impl Stream<Item = Result<BeaconNodeEvent>> + Send> {
         // Topics are sent as repeated `topics=<value>` query pairs.
         let query: Vec<(&str, &str)> = topics
             .iter()
@@ -1074,13 +1113,13 @@ impl EthBeaconNodeApiClient {
             .collect();
 
         let response = self
-            .client
-            .get(url)
-            .query(&query)
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .send()
-            .await?
-            .error_for_status()?;
+            .send(
+                self.client
+                    .get(self.url(&["eth", "v1", "events"]))
+                    .query(&query)
+                    .header(ACCEPT, "text/event-stream"),
+            )
+            .await?;
 
         let stream = response.bytes_stream().eventsource().map(|item| {
             item.map(|event| BeaconNodeEvent {
@@ -1091,21 +1130,6 @@ impl EthBeaconNodeApiClient {
         });
 
         Ok(stream)
-    }
-
-    /// Submits proposal preparations to the beacon node
-    /// (`POST /eth/v1/validator/prepare_beacon_proposer`).
-    ///
-    /// Each preparation tells the beacon node which fee recipient to use when
-    /// it builds a block for the given validator. The information persists for
-    /// the epoch of submission plus the following two epochs, so callers resend
-    /// it periodically (e.g. once per epoch). Mirrors go-eth2-client's
-    /// `SubmitProposalPreparations`.
-    pub async fn submit_proposal_preparations(
-        &self,
-        preparations: &[v1::ProposalPreparation],
-    ) -> Result<(), EthBeaconNodeApiClientError> {
-        Ok(self.prepare_beacon_proposer(preparations).await?)
     }
 }
 
@@ -1190,8 +1214,11 @@ mod tests {
         }
     }
 
-    fn http_error(error: &anyhow::Error) -> &HttpError {
-        HttpError::from_error(error).unwrap_or_else(|| panic!("not an HTTP error: {error:#}"))
+    fn http_error(error: &EthBeaconNodeApiClientError) -> &HttpError {
+        match error {
+            EthBeaconNodeApiClientError::Http(http) => http,
+            other => panic!("not an HTTP error: {other:?}"),
+        }
     }
 
     /// Every endpoint sends the documented method, path, query and headers,
@@ -1647,6 +1674,8 @@ mod tests {
             .expect_err("400 is an error");
         let http = http_error(&error);
         assert_eq!(http.status.as_u16(), 400);
+        assert_eq!(http.method, reqwest::Method::POST);
+        assert_eq!(http.endpoint, "/eth/v2/beacon/pool/attestations");
         assert_eq!(http.body.code, Some(400));
         assert_eq!(http.body.message, "some failed");
         assert_eq!(http.body.failures[0].message, "bad signature");
@@ -1654,6 +1683,8 @@ mod tests {
         let error = client.get_spec().await.expect_err("500 is an error");
         let http = http_error(&error);
         assert_eq!(http.status.as_u16(), 500);
+        assert_eq!(http.method, reqwest::Method::GET);
+        assert_eq!(http.endpoint, "/eth/v1/config/spec");
         assert_eq!(http.body.message, "upstream exploded");
     }
 
@@ -1796,10 +1827,17 @@ mod tests {
             }),
         };
 
-        test_client(&server)
+        let error = test_client(&server)
             .publish_block_v2(&proposal, None)
             .await
             .expect_err("blinded proposal must be rejected");
+        assert!(
+            matches!(
+                error,
+                EthBeaconNodeApiClientError::Payload(PayloadError::BlindedOnUnblindedEndpoint)
+            ),
+            "{error:?}"
+        );
         assert!(
             server
                 .received_requests()
@@ -1879,13 +1917,20 @@ mod tests {
             ),
         };
 
-        test_client(&server)
+        let error = test_client(&server)
             .publish_aggregate_and_proofs_v2(&[
                 aggregate(DataVersion::Deneb),
                 aggregate(DataVersion::Capella),
             ])
             .await
             .expect_err("mixed versions must be rejected");
+        assert!(
+            matches!(
+                error,
+                EthBeaconNodeApiClientError::Payload(PayloadError::MixedVersions)
+            ),
+            "{error:?}"
+        );
         assert!(
             server
                 .received_requests()
@@ -1914,11 +1959,10 @@ mod tests {
             .get_genesis()
             .await
             .expect_err("a non-string genesis_time must fail decoding");
-        assert!(
-            format!("{error:#}").contains("data.genesis_time"),
-            "error does not name the field: {error:#}"
-        );
-        assert!(HttpError::from_error(&error).is_none());
+        let EthBeaconNodeApiClientError::Decode(error) = error else {
+            panic!("expected a decode error, got {error:?}");
+        };
+        assert_eq!(error.path().to_string(), "data.genesis_time");
     }
 
     #[tokio::test]
@@ -1929,7 +1973,10 @@ mod tests {
             .get_spec()
             .await
             .expect_err("connection refused must surface as an error");
-        assert!(HttpError::from_error(&error).is_none());
+        assert!(
+            matches!(error, EthBeaconNodeApiClientError::Transport(_)),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1944,19 +1991,19 @@ mod tests {
         let client = EthBeaconNodeApiClient::with_base_url("http://beacon.example:5052/prefix")
             .expect("valid");
         assert_eq!(
-            client
-                .url(&["eth", "v1", "config", "spec"])
-                .expect("url")
-                .as_str(),
+            client.url(&["eth", "v1", "config", "spec"]).as_str(),
             "http://beacon.example:5052/prefix/eth/v1/config/spec"
         );
     }
 
     #[test]
-    fn url_rejects_a_base_that_cannot_have_a_path() {
-        let client = EthBeaconNodeApiClient::with_base_url("mailto:node@example").expect("valid");
-        let error = client.url(&["eth"]).expect_err("cannot-be-a-base URL");
-        assert!(error.to_string().contains("cannot be a base"), "{error}");
+    fn with_base_url_rejects_a_base_that_cannot_have_a_path() {
+        let error = EthBeaconNodeApiClient::with_base_url("mailto:node@example")
+            .expect_err("cannot-be-a-base URL");
+        assert!(
+            matches!(error, EthBeaconNodeApiClientError::UrlCannotBeABase),
+            "{error:?}"
+        );
     }
 
     const SPEC_PATH: &str = "/eth/v1/config/spec";
@@ -2157,7 +2204,7 @@ mod tests {
     fn fork_version_from_schedule_rejects_empty_schedule() {
         assert!(matches!(
             fork_version_from_schedule(&[], 0),
-            Err(EthBeaconNodeApiClientError::ParseError(_))
+            Err(EthBeaconNodeApiClientError::EmptyForkSchedule)
         ));
     }
 
@@ -2288,13 +2335,10 @@ mod tests {
             .await
             .expect_err("malformed duty should fail the response");
 
-        let EthBeaconNodeApiClientError::RequestError(err) = err else {
-            panic!("expected request error, got {err:?}");
+        let EthBeaconNodeApiClientError::Decode(err) = err else {
+            panic!("expected a decode error, got {err:?}");
         };
-        assert!(
-            format!("{err:#}").contains("data[1].pubkey"),
-            "error does not name the field: {err:#}"
-        );
+        assert_eq!(err.path().to_string(), "data[1].pubkey");
     }
 
     #[tokio::test]
@@ -2318,7 +2362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_proposal_preparations_posts_expected_body() {
+    async fn prepare_beacon_proposer_posts_expected_body() {
         use wiremock::matchers::body_json;
 
         let server = MockServer::start().await;
@@ -2342,7 +2386,7 @@ mod tests {
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
         client
-            .submit_proposal_preparations(&[
+            .prepare_beacon_proposer(&[
                 v1::ProposalPreparation {
                     validator_index: 1,
                     fee_recipient: [0x01; 20],
@@ -2359,7 +2403,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_proposal_preparations_surfaces_error_status() {
+    async fn prepare_beacon_proposer_surfaces_error_status() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -2373,18 +2417,17 @@ mod tests {
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
         let error = client
-            .submit_proposal_preparations(&[v1::ProposalPreparation {
+            .prepare_beacon_proposer(&[v1::ProposalPreparation {
                 validator_index: 1,
                 fee_recipient: [0x01; 20],
             }])
             .await
             .expect_err("a 500 response must surface as an error");
 
-        let EthBeaconNodeApiClientError::RequestError(error) = error else {
-            panic!("expected request error, got {error:?}");
-        };
-        let http = HttpError::from_error(&error).expect("HTTP error");
+        let http = http_error(&error);
         assert_eq!(http.status.as_u16(), 500);
+        assert_eq!(http.method, reqwest::Method::POST);
+        assert_eq!(http.endpoint, "/eth/v1/validator/prepare_beacon_proposer");
         assert_eq!(http.body.message, "internal error");
     }
 }

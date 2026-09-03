@@ -60,11 +60,7 @@ pub async fn propose_block(
 
     let epoch = epoch_from_slot(client, slot).await?;
 
-    let duties = client
-        .get_proposer_duties(epoch)
-        .await
-        .map_err(|err| Error::Malformed(format!("proposer duties: {err:#}")))?
-        .data;
+    let duties = client.get_proposer_duties(epoch).await?.data;
 
     let Some(duty) = duties.iter().find(|d| d.slot == slot) else {
         // Go returns nil when this validator is not the slot proposer.
@@ -94,29 +90,31 @@ pub async fn propose_block(
             skip_randao_verification: false,
             builder_boost_factor: None,
         })
-        .await
-        .map_err(|err| Error::Malformed(format!("vmock beacon block proposal: {err:#}")))?;
+        .await?;
 
     let version = proposal.version();
     let signature = sign_with_proposer(signer, &pubkey, client, epoch, proposal.root()).await?;
 
     match sign_proposal(proposal.block, signature) {
-        SignedBlock::Full(block) => client
-            .publish_block_v2(
-                &VersionedSignedProposal {
-                    version,
-                    blinded: false,
-                    block,
-                },
-                None,
-            )
-            .await
-            .map_err(|err| Error::Malformed(format!("publish-block-v2: {err:#}"))),
-        SignedBlock::Blinded(block) => client
-            .publish_blinded_block_v2(&VersionedSignedBlindedProposal { version, block }, None)
-            .await
-            .map_err(|err| Error::Malformed(format!("publish-blinded-block-v2: {err:#}"))),
+        SignedBlock::Full(block) => {
+            client
+                .publish_block_v2(
+                    &VersionedSignedProposal {
+                        version,
+                        blinded: false,
+                        block,
+                    },
+                    None,
+                )
+                .await?
+        }
+        SignedBlock::Blinded(block) => {
+            client
+                .publish_blinded_block_v2(&VersionedSignedBlindedProposal { version, block }, None)
+                .await?
+        }
     }
+    Ok(())
 }
 
 /// Signs and submits a builder validator registration.
@@ -153,10 +151,7 @@ pub async fn register(
                 signature: sig,
             };
 
-            client
-                .register_validator(&[signed])
-                .await
-                .map_err(|err| Error::Malformed(format!("register-validator: {err:#}")))
+            Ok(client.register_validator(&[signed]).await?)
         }
         BuilderVersion::Unknown => Err(Error::UnsupportedVariant("registration version")),
     }

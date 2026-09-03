@@ -236,11 +236,11 @@ async fn fetch_config(
     let genesis_time = beacon_node
         .fetch_genesis_time()
         .await
-        .map_err(|error| ReadyCheckerError::BeaconNode(error.into()))?;
+        .map_err(ReadyCheckerError::BeaconNode)?;
     let (slot_duration, slots_per_epoch) = beacon_node
         .fetch_slots_config()
         .await
-        .map_err(|error| ReadyCheckerError::BeaconNode(error.into()))?;
+        .map_err(ReadyCheckerError::BeaconNode)?;
 
     // `tokio::time::interval` panics on a zero period, so reject a zero slot
     // duration here rather than letting the checker loop panic.
@@ -421,7 +421,7 @@ impl ReadyChecker {
 #[derive(Debug, thiserror::Error)]
 enum ReadyCheckerError {
     #[error("beacon node request failed: {0}")]
-    BeaconNode(#[source] anyhow::Error),
+    BeaconNode(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
     #[error("beacon node reported a zero slot duration")]
     ZeroSlotDuration,

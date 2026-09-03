@@ -35,9 +35,9 @@ pub use state::{MockState, Validator, ValidatorSet, active_validator, mock_dv_va
 /// Errors returned while configuring `BeaconMock`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The generated beacon API client could not be created for the mock URL.
+    /// The beacon API client could not be created for the mock URL.
     #[error("create beacon node api client: {0}")]
-    Client(#[source] anyhow::Error),
+    Client(#[source] pluto_eth2api::EthBeaconNodeApiClientError),
 }
 
 /// Result type for beacon mock setup.

@@ -144,12 +144,11 @@ impl ValidatorCache {
 
     async fn fetch(&self, state_id: &str) -> Result<ValidatorsResponse> {
         let filter = self.filter();
-        crate::instrument(
+        Ok(crate::instrument(
             "validators",
             self.0.eth2_cl.post_state_validators(state_id, &filter),
         )
-        .await
-        .map_err(|error| EthBeaconNodeApiClientError::RequestError(error).into())
+        .await?)
     }
 
     /// Returns the cached active validators and complete validators response,

@@ -57,7 +57,7 @@ mod tests {
     use vise::{Format, Registry};
 
     use super::*;
-    use crate::{ErrorBody, HttpError};
+    use crate::{ErrorBody, EthBeaconNodeApiClientError, HttpError};
 
     // Encodes the global metrics; tests use unique endpoint labels so their
     // counters never collide even though the global is shared.
@@ -104,9 +104,11 @@ mod tests {
 
     #[tokio::test]
     async fn non_2xx_response_records_error() {
-        let _: anyhow::Result<()> = instrument("test_http_err", async {
+        let _: Result<(), EthBeaconNodeApiClientError> = instrument("test_http_err", async {
             Err(HttpError {
                 status: reqwest::StatusCode::BAD_REQUEST,
+                method: reqwest::Method::GET,
+                endpoint: "/eth/v1/config/spec".into(),
                 body: ErrorBody::default(),
             }
             .into())

@@ -23,7 +23,7 @@ use std::{
 };
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    EthBeaconNodeApiClient,
     spec::{
         altair::{
             ContributionAndProof, SignedContributionAndProof, SyncAggregatorSelectionData,
@@ -268,10 +268,7 @@ async fn prepare_sync_comm_duties(
     }
 
     let indices: Vec<ValidatorIndex> = vals.indices().collect();
-    let response = client
-        .get_sync_committee_duties(epoch, &indices)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    let response = client.get_sync_committee_duties(epoch, &indices).await?;
 
     Ok(response.data)
 }
@@ -297,8 +294,7 @@ async fn subscribe_sync_comm_subnets(
 
     client
         .prepare_sync_committee_subnets(&subscriptions)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+        .await?;
 
     info!(epoch = epoch, "Mock sync committee subscription submitted");
 
@@ -343,10 +339,7 @@ async fn prepare_sync_selections(
         }
     }
 
-    let aggregated = client
-        .submit_sync_committee_selections(&partials)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    let aggregated = client.submit_sync_committee_selections(&partials).await?;
 
     let mut selections = Vec::new();
     for selection in aggregated {
@@ -398,10 +391,7 @@ pub(crate) async fn get_subcommittees(
 }
 
 async fn fetch_head_block_root(client: &EthBeaconNodeApiClient) -> Result<Root> {
-    let response = client
-        .get_block_root("head")
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    let response = client.get_block_root("head").await?;
 
     Ok(response.data)
 }
@@ -431,10 +421,7 @@ async fn submit_sync_messages(
         });
     }
 
-    client
-        .submit_pool_sync_committee_signatures(&msgs)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    client.submit_pool_sync_committee_signatures(&msgs).await?;
 
     info!(slot = slot, "Mock sync committee msg submitted");
 
@@ -465,8 +452,7 @@ async fn agg_contributions(
                 selection.subcommittee_index,
                 block_root,
             )
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+            .await?;
 
         let v_idx = selection.validator_index;
         let contrib_and_proof = ContributionAndProof {
@@ -491,10 +477,7 @@ async fn agg_contributions(
         });
     }
 
-    client
-        .publish_contribution_and_proofs(&signed)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    client.publish_contribution_and_proofs(&signed).await?;
 
     Ok(true)
 }

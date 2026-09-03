@@ -1,7 +1,8 @@
 //! # Eth2Api
 //!
-//! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
-//! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
+//! Client for an Ethereum beacon node. Its external API follows the official
+//! [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
+//! Every failure is an [`EthBeaconNodeApiClientError`] variant.
 
 /// HTTP client for a single beacon node.
 pub mod client;
@@ -16,7 +17,7 @@ pub use types::*;
 /// Error type of the client.
 pub mod error;
 
-pub use error::EthBeaconNodeApiClientError;
+pub use error::{EthBeaconNodeApiClientError, PayloadError};
 
 /// Prometheus metrics for beacon node requests.
 pub mod metrics;
@@ -34,11 +35,6 @@ pub mod versioned;
 
 /// Cache of Validators retrieved from the Beacon node.
 pub mod valcache;
-
-/// Beacon API helpers used by validator duty flows.
-pub mod validator_duty;
-
-pub use validator_duty::*;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;

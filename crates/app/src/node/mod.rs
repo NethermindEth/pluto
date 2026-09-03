@@ -127,7 +127,7 @@ pub enum AppError {
     #[error("priority: {0}")]
     Priority(#[from] pluto_priority::Error),
 
-    /// A beacon node API request failed.
+    /// Building the beacon node API client or a request through it failed.
     #[error("beacon node api: {0}")]
     BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
@@ -153,10 +153,6 @@ pub enum AppError {
         /// hex representation if it matches no known network).
         beacon_node_network: String,
     },
-
-    /// Beacon node client construction failed.
-    #[error("beacon client: {0}")]
-    BeaconClient(#[source] anyhow::Error),
 
     /// Duty gater construction failed.
     #[error("duty gater: {0}")]
@@ -1107,9 +1103,10 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| AppError::BeaconClient(e.into()))?;
-    pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
-        .map_err(AppError::BeaconClient)
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::Transport)?;
+    Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
+        base_url, http,
+    )?)
 }
 
 /// Adapts the simnet validator mock into the abstract [`wire::SlotTickFn`] seam

@@ -7,7 +7,7 @@
 use std::{collections::HashMap, fmt};
 
 use pluto_ssz::serde_utils::Hex0x;
-use reqwest::{StatusCode, header::HeaderName};
+use reqwest::{Method, StatusCode, header::HeaderName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_with::{DisplayFromStr, serde_as};
 use tree_hash::TreeHash;
@@ -27,18 +27,34 @@ pub const ETH_CONSENSUS_VERSION: HeaderName = HeaderName::from_static("eth-conse
 
 /// A beacon node answered with a non-2xx status.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("beacon node returned {status}: {}", body.message)]
 pub struct HttpError {
     /// Status of the response.
     pub status: StatusCode,
+    /// Method of the request.
+    pub method: Method,
+    /// Path of the request URL.
+    pub endpoint: String,
     /// Decoded body, or the raw text as `message` when it is not JSON.
     pub body: ErrorBody,
 }
 
-impl HttpError {
-    /// Returns the HTTP error behind `error`, if that is what it wraps.
-    pub fn from_error(error: &anyhow::Error) -> Option<&HttpError> {
-        error.downcast_ref()
+/// Status and body message, followed by the per-item failures of a batch
+/// submission when the node reports any.
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "beacon node returned {}: {}",
+            self.status, self.body.message
+        )?;
+        let mut failures = self.body.failures.iter();
+        if let Some(first) = failures.next() {
+            write!(f, ": {}", first.message)?;
+            for failure in failures {
+                write!(f, "; {}", failure.message)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -543,6 +559,41 @@ mod tests {
         let value: T = serde_json::from_value(wire.clone()).expect("deserialize");
         assert_eq!(serde_json::to_value(&value).expect("serialize"), wire);
         value
+    }
+
+    #[test]
+    fn http_error_lists_batch_failures() {
+        let mut error = HttpError {
+            status: StatusCode::BAD_REQUEST,
+            method: Method::POST,
+            endpoint: "/eth/v2/beacon/pool/attestations".into(),
+            body: ErrorBody {
+                code: Some(400),
+                message: "some failed".to_string(),
+                stacktraces: Vec::new(),
+                failures: vec![
+                    IndexedFailure {
+                        index: 0,
+                        message: "bad signature".to_string(),
+                    },
+                    IndexedFailure {
+                        index: 2,
+                        message: "unknown validator".to_string(),
+                    },
+                ],
+            },
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "beacon node returned 400 Bad Request: some failed: bad signature; unknown validator"
+        );
+
+        error.body.failures.clear();
+        assert_eq!(
+            error.to_string(),
+            "beacon node returned 400 Bad Request: some failed"
+        );
     }
 
     #[test]

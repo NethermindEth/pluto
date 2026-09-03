@@ -9,7 +9,7 @@ use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, t
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, HttpError, ValidatorId, ValidatorsFilter,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ValidatorId, ValidatorsFilter,
     spec::phase0::{AttestationData, BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
@@ -1612,19 +1612,19 @@ impl Handler for Component {
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err.into()))?;
+                .map_err(|err| upstream_call_failed("slots config", err))?;
         let genesis_time =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
                 .await
                 .map_err(|_| upstream_timeout("genesis time"))?
-                .map_err(|err| upstream_call_failed("genesis time", err.into()))?;
+                .map_err(|err| upstream_call_failed("genesis time", err))?;
         let builder_domain = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
             signing::get_domain(&self.eth2_cl, DomainName::ApplicationBuilder, 0),
         )
         .await
         .map_err(|_| upstream_timeout("application builder domain"))?
-        .map_err(|err| upstream_call_failed("application builder domain", err.into()))?;
+        .map_err(|err| upstream_call_failed("application builder domain", err))?;
 
         for registration in registrations {
             self.submit_one_registration(registration, slot_duration, genesis_time, builder_domain)
@@ -1652,7 +1652,7 @@ impl Handler for Component {
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err.into()))?;
+                .map_err(|err| upstream_call_failed("slots config", err))?;
 
         let exit_epoch = exit.0.message.epoch;
         let duty_slot = slots_per_epoch.saturating_mul(exit_epoch);
@@ -1884,18 +1884,17 @@ fn proposal_timeout() -> ApiError {
     )
 }
 
-/// Builds the `ApiError` returned when an upstream beacon-node call returns a
-/// transport-level error. Boxed so `anyhow::Error` (which doesn't itself
-/// implement `std::error::Error`) can be attached via `.into()`.
+/// Builds the `ApiError` returned when an upstream beacon-node call fails
+/// without an HTTP status.
 fn upstream_call_failed(
     endpoint: &'static str,
-    err: Box<dyn std::error::Error + Send + Sync + 'static>,
+    err: impl std::error::Error + Send + Sync + 'static,
 ) -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         format!("upstream {endpoint} failed"),
     )
-    .with_boxed_source(err)
+    .with_source(err)
 }
 
 /// Upstream statuses the duty endpoints propagate to the VC as-is.
@@ -1908,15 +1907,15 @@ const DUTIES_PROPAGATED_STATUSES: &[StatusCode] =
 /// transport-level failure.
 fn upstream_error(
     endpoint: &'static str,
-    err: anyhow::Error,
+    err: EthBeaconNodeApiClientError,
     propagated: &[StatusCode],
 ) -> ApiError {
-    match HttpError::from_error(&err) {
-        Some(http) if propagated.contains(&http.status) => {
+    match err {
+        EthBeaconNodeApiClientError::Http(http) if propagated.contains(&http.status) => {
             upstream_status_error(http.status, endpoint, &http.body)
         }
-        Some(http) => upstream_unexpected(endpoint, http),
-        None => upstream_call_failed(endpoint, err.into()),
+        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(endpoint, &http),
+        other => upstream_call_failed(endpoint, other),
     }
 }
 
@@ -2641,7 +2640,23 @@ mod tests {
             AttestationDataOpts, SyncCommitteeContributionOpts, SyncCommitteeMessage,
         },
     };
-    use pluto_eth2api::valcache::{CompleteValidators, ValidatorCacheError};
+    use pluto_eth2api::{
+        HttpError,
+        valcache::{CompleteValidators, ValidatorCacheError},
+    };
+
+    /// A 500 from the validators endpoint.
+    fn beacon_node_unavailable() -> EthBeaconNodeApiClientError {
+        EthBeaconNodeApiClientError::from(HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/beacon/states/head/validators".into(),
+            body: pluto_eth2api::ErrorBody {
+                message: "beacon node unavailable".into(),
+                ..pluto_eth2api::ErrorBody::default()
+            },
+        })
+    }
 
     /// In-memory [`CachedValidatorsProvider`] for tests. Holds a fixed
     /// `validator_index -> DV root pubkey` map. `complete_validators` is not
@@ -3102,6 +3117,8 @@ mod tests {
     fn upstream_unexpected_does_not_leak_response_into_message() {
         let http = HttpError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/validator/duties/attester/1".into(),
             body: pluto_eth2api::ErrorBody {
                 message: "secret".to_owned(),
                 ..Default::default()
@@ -3118,8 +3135,10 @@ mod tests {
     #[test]
     fn upstream_error_maps_by_status() {
         let http = |status| {
-            anyhow::Error::from(HttpError {
+            EthBeaconNodeApiClientError::from(HttpError {
                 status,
+                method: reqwest::Method::GET,
+                endpoint: "/eth/v1/validator/duties/proposer/1".into(),
                 body: pluto_eth2api::ErrorBody::default(),
             })
         };
@@ -3139,7 +3158,7 @@ mod tests {
         assert!(err.message.contains("unexpected"));
         let err = upstream_error(
             "duties",
-            anyhow::anyhow!("boom"),
+            EthBeaconNodeApiClientError::EmptyForkSchedule,
             DUTIES_PROPAGATED_STATUSES,
         );
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
@@ -3632,13 +3651,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable(),
                 ))
             }
         }
@@ -4797,13 +4816,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable(),
                 ))
             }
         }

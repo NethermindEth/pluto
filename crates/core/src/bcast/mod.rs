@@ -8,7 +8,7 @@ use std::{any::Any, error::Error as StdError};
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, data_version_is_before_electra,
+    EthBeaconNodeApiClient,
     spec::{altair, phase0},
     v1,
     valcache::ValidatorCache,
@@ -326,7 +326,12 @@ impl Broadcaster {
                 .await?;
         }
 
-        match self.client.submit_attestations(attestations).await {
+        match pluto_eth2api::instrument(
+            "submit_attestations",
+            self.client.submit_pool_attestations_v2(&attestations),
+        )
+        .await
+        {
             Ok(()) => Ok(()),
             Err(source) if source.to_string().contains("PriorAttestationKnown") => Ok(()),
             Err(source) => Err(Error::Client {
@@ -354,21 +359,25 @@ impl Broadcaster {
                 context: "cannot broadcast, expected blinded proposal",
                 source,
             })?;
-            self.client
-                .submit_signed_blinded_proposal(proposal)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit blinded proposal",
-                    source: Box::new(source),
-                })?;
+            pluto_eth2api::instrument(
+                "submit_blinded_proposal",
+                self.client.publish_blinded_block_v2(&proposal, None),
+            )
+            .await
+            .map_err(|source| Error::Client {
+                context: "submit blinded proposal",
+                source: Box::new(source),
+            })?;
         } else {
-            self.client
-                .submit_signed_proposal(block.0)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit proposal",
-                    source: Box::new(source),
-                })?;
+            pluto_eth2api::instrument(
+                "submit_proposal",
+                self.client.publish_block_v2(&block.0, None),
+            )
+            .await
+            .map_err(|source| Error::Client {
+                context: "submit proposal",
+                source: Box::new(source),
+            })?;
         }
 
         tracing::info!(%duty, %pubkey, blinded, "Successfully submitted block proposal to beacon node");
@@ -405,7 +414,12 @@ impl Broadcaster {
         //    failure is always surfaced rather than masked by a later success.
         let mut last_error = None;
         for (pubkey, exit) in set_to_exits(set)? {
-            match self.client.submit_voluntary_exit(exit).await {
+            match pluto_eth2api::instrument(
+                "submit_voluntary_exit",
+                self.client.submit_pool_voluntary_exit(&exit),
+            )
+            .await
+            {
                 Ok(()) => {
                     tracing::info!(%duty, %pubkey, "Successfully submitted voluntary exit to beacon node")
                 }
@@ -428,13 +442,16 @@ impl Broadcaster {
     /// Convert the set to aggregate-and-proofs; submit them.
     async fn broadcast_aggregator(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let aggregate_and_proofs = set_to_agg_and_proof(set)?;
-        self.client
-            .submit_aggregate_attestations(aggregate_and_proofs)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit aggregate attestations",
-                source: Box::new(source),
-            })?;
+        pluto_eth2api::instrument(
+            "submit_aggregate_attestations",
+            self.client
+                .publish_aggregate_and_proofs_v2(&aggregate_and_proofs),
+        )
+        .await
+        .map_err(|source| Error::Client {
+            context: "submit aggregate attestations",
+            source: Box::new(source),
+        })?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestation aggregations to beacon node");
         Ok(())
@@ -445,13 +462,15 @@ impl Broadcaster {
     /// Convert the set to sync committee messages; submit them.
     async fn broadcast_sync_messages(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let messages = set_to_sync_messages(set)?;
-        self.client
-            .submit_sync_committee_messages(messages)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee messages",
-                source: Box::new(source),
-            })?;
+        pluto_eth2api::instrument(
+            "submit_sync_committee_messages",
+            self.client.submit_pool_sync_committee_signatures(&messages),
+        )
+        .await
+        .map_err(|source| Error::Client {
+            context: "submit sync committee messages",
+            source: Box::new(source),
+        })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee messages to beacon node");
         Ok(())
@@ -462,13 +481,15 @@ impl Broadcaster {
     /// Convert the set to sync committee contributions; submit them.
     async fn broadcast_sync_contributions(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let contributions = set_to_sync_contributions(set)?;
-        self.client
-            .submit_sync_committee_contributions(contributions)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee contributions",
-                source: Box::new(source),
-            })?;
+        pluto_eth2api::instrument(
+            "submit_sync_committee_contributions",
+            self.client.publish_contribution_and_proofs(&contributions),
+        )
+        .await
+        .map_err(|source| Error::Client {
+            context: "submit sync committee contributions",
+            source: Box::new(source),
+        })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee contributions to beacon node");
         Ok(())
@@ -624,7 +645,7 @@ fn set_to_sync_contributions(
 
 fn attestations_need_validator_indices(attestations: &[versioned::VersionedAttestation]) -> bool {
     for attestation in attestations {
-        if data_version_is_before_electra(attestation.version) {
+        if attestation.version.is_before_electra() {
             break;
         }
 

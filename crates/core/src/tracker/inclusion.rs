@@ -685,11 +685,7 @@ impl InclusionChecker {
 
     /// Reports whether a block was proposed at `slot`.
     async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
-        let block = self
-            .eth2_cl
-            .get_block_v2(&slot.to_string())
-            .await
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
+        let block = self.eth2_cl.get_block_v2(&slot.to_string()).await?;
 
         Ok(block.is_some())
     }
@@ -740,10 +736,9 @@ impl InclusionChecker {
 /// retried on the next tick.
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
-    /// The beacon-node request failed. Boxed because the client surfaces
-    /// `anyhow::Error`, which `pluto-core` avoids.
+    /// The beacon-node request failed.
     #[error("beacon node request failed: {0}")]
-    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Request(#[from] EthBeaconNodeApiClientError),
 }
 
 #[cfg(test)]

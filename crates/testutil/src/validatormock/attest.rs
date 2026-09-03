@@ -19,7 +19,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    EthBeaconNodeApiClient,
     spec::{
         electra,
         phase0::{AttestationData, BLSPubKey, Root, Slot, ValidatorIndex},
@@ -210,10 +210,7 @@ async fn prepare_attesters(
     let epoch = epoch_from_slot(eth2_cl, slot).await?;
     let indices: Vec<ValidatorIndex> = vals.indices().collect();
 
-    let response = eth2_cl
-        .get_attester_duties(epoch, &indices)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    let response = eth2_cl.get_attester_duties(epoch, &indices).await?;
 
     Ok(response
         .data
@@ -256,8 +253,7 @@ async fn prepare_aggregators(
 
     let aggregate_selections = eth2_cl
         .submit_beacon_committee_selections(&partials)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+        .await?;
 
     let mut selections = Vec::new();
     for selection in aggregate_selections {
@@ -310,10 +306,7 @@ async fn attest(
             .get(comm_idx)
             .ok_or_else(|| malformed("duty group missing"))?;
 
-        let data = eth2_cl
-            .produce_attestation_data(slot, *comm_idx)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+        let data = eth2_cl.produce_attestation_data(slot, *comm_idx).await?;
         datas.push(data.clone());
 
         let root = data.tree_hash_root().0;
@@ -346,10 +339,7 @@ async fn attest(
         }
     }
 
-    eth2_cl
-        .submit_pool_attestations_v2(&atts)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    eth2_cl.submit_pool_attestations_v2(&atts).await?;
 
     Ok(datas)
 }
@@ -421,10 +411,7 @@ async fn aggregate(
         });
     }
 
-    eth2_cl
-        .publish_aggregate_and_proofs_v2(&aggs)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
+    eth2_cl.publish_aggregate_and_proofs_v2(&aggs).await?;
 
     Ok(true)
 }
@@ -442,8 +429,7 @@ async fn get_aggregate_attestation(
         let root: Root = data.tree_hash_root().0;
         let aggregate = eth2_cl
             .get_aggregated_attestation_v2(data.slot, comm_idx, root)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+            .await?;
 
         return match aggregate.attestation {
             Some(AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) => Ok(att),

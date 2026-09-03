@@ -819,8 +819,7 @@ async fn wait_beacon_sync(client: &pluto_eth2api::EthBeaconNodeApiClient) -> Res
         let state = fetch
             .retry(fetch_backoff)
             .notify(|err, _| tracing::error!(err = ?err, "Failure getting syncing status"))
-            .await
-            .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+            .await?;
 
         if state.is_syncing {
             tracing::info!(
@@ -874,8 +873,7 @@ async fn fetch_attester_duties(
         "attester_duties",
         client.get_attester_duties(slot.epoch(), &indices),
     )
-    .await
-    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
+    .await?
     .data;
 
     let mut remaining = validators
@@ -994,8 +992,7 @@ async fn fetch_sync_committee_duties(
         "sync_committee_duties",
         client.get_sync_committee_duties(slot.epoch(), &indices),
     )
-    .await
-    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
+    .await?
     .data;
 
     let mut result = vec![];

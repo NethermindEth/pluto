@@ -9,7 +9,7 @@ pub use graffiti::{GraffitiBuilder, GraffitiError};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, ProduceBlockOpts,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ProduceBlockOpts,
     spec::{altair, bellatrix::ExecutionAddress, phase0},
     versioned,
 };
@@ -349,9 +349,7 @@ impl Fetcher {
             };
 
             let proposal =
-                pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(&opts))
-                    .await
-                    .map_err(EthBeaconNodeApiClientError::RequestError)?;
+                pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(&opts)).await?;
 
             // Builders set the fee recipient to themselves, so it always
             // differs from the validator's; only verify when the
@@ -433,9 +431,9 @@ impl Fetcher {
             self.eth2_cl.produce_attestation_data(slot, comm_idx),
         )
         .await
-        .map_err(|err| match HttpError::from_error(&err) {
-            Some(_) => FetcherError::NilAttestationData,
-            None => EthBeaconNodeApiClientError::RequestError(err).into(),
+        .map_err(|err| match err {
+            EthBeaconNodeApiClientError::Http(_) => FetcherError::NilAttestationData,
+            other => other.into(),
         })
     }
 
@@ -452,11 +450,11 @@ impl Fetcher {
                 .get_aggregated_attestation_v2(slot, comm_idx, data_root),
         )
         .await
-        .map_err(|err| match HttpError::from_error(&err) {
+        .map_err(|err| match err {
             // Some beacon nodes answer 404 when the root is not found; surface
             // a retryable error.
-            Some(_) => FetcherError::AggregateAttestationNotFound,
-            None => EthBeaconNodeApiClientError::RequestError(err).into(),
+            EthBeaconNodeApiClientError::Http(_) => FetcherError::AggregateAttestationNotFound,
+            other => other.into(),
         })
     }
 
@@ -473,12 +471,12 @@ impl Fetcher {
                 .produce_sync_committee_contribution(slot, subcomm_idx, block_root),
         )
         .await
-        .map_err(|err| match HttpError::from_error(&err) {
-            Some(http) if http.status == StatusCode::NOT_FOUND => {
+        .map_err(|err| match err {
+            EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
                 FetcherError::SyncContributionNotFound
             }
-            Some(_) => FetcherError::UnexpectedResponse,
-            None => EthBeaconNodeApiClientError::RequestError(err).into(),
+            EthBeaconNodeApiClientError::Http(_) => FetcherError::UnexpectedResponse,
+            other => other.into(),
         })
     }
 

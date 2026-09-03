@@ -86,7 +86,7 @@ mod tests {
         ];
 
         mock.client()
-            .submit_proposal_preparations(&preparations)
+            .prepare_beacon_proposer(&preparations)
             .await
             .expect("submit succeeds");
 
@@ -110,11 +110,11 @@ mod tests {
         };
 
         mock.client()
-            .submit_proposal_preparations(std::slice::from_ref(&first))
+            .prepare_beacon_proposer(std::slice::from_ref(&first))
             .await
             .expect("first submit succeeds");
         mock.client()
-            .submit_proposal_preparations(std::slice::from_ref(&second))
+            .prepare_beacon_proposer(std::slice::from_ref(&second))
             .await
             .expect("second submit succeeds");
 

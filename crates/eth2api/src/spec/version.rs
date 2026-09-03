@@ -78,6 +78,19 @@ impl DataVersion {
             _ => Err(VersionError::UnknownDataVersion),
         }
     }
+
+    /// Whether attestations of this version use the pre-Electra wire shape.
+    pub const fn is_before_electra(self) -> bool {
+        matches!(
+            self,
+            DataVersion::Unknown
+                | DataVersion::Phase0
+                | DataVersion::Altair
+                | DataVersion::Bellatrix
+                | DataVersion::Capella
+                | DataVersion::Deneb
+        )
+    }
 }
 
 impl fmt::Display for DataVersion {

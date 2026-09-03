@@ -5027,7 +5027,6 @@ dependencies = [
 name = "pluto-app"
 version = "1.7.1"
 dependencies = [
- "anyhow",
  "axum",
  "backon",
  "bon",
@@ -5323,7 +5322,6 @@ name = "pluto-eth2api"
 version = "1.7.1"
 dependencies = [
  "alloy",
- "anyhow",
  "async-trait",
  "chrono",
  "ethereum_ssz",
@@ -5343,6 +5341,7 @@ dependencies = [
  "tokio-stream",
  "tree_hash",
  "tree_hash_derive",
+ "url",
  "vise",
  "wiremock",
 ]
@@ -5623,7 +5622,6 @@ dependencies = [
 name = "pluto-testutil"
 version = "1.7.1"
 dependencies = [
- "anyhow",
  "assert-json-diff",
  "async-trait",
  "bon",
