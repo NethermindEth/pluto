@@ -18,7 +18,6 @@ use crossbeam::channel as mpmc;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fmt::Write as _,
-    panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex,
         atomic::{AtomicIsize, AtomicUsize, Ordering},
@@ -47,7 +46,13 @@ const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 // protocol progress, so slow-but-progressing parallel runs should not fail.
 const TEST_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-type RunOutcome = std::thread::Result<Result<()>>;
+/// What one `qbft::run` thread reported back.
+///
+/// `run` no longer panics on an internal sanity-check failure — it returns
+/// [`QbftError::SanityCheck`] — so the harness collects a plain [`Result`]
+/// instead of catching unwinds. Charon's `qbft.Run` behaves the same way after
+/// its `recover` in `core/qbft/qbft.go:187-198`.
+type RunOutcome = Result<()>;
 type TestMsgRef = Msg<TestQbft>;
 
 struct TestQbft;
@@ -393,17 +398,15 @@ fn test_qbft(test: Test) {
                 }
 
                 let keepalive = (keep_value_sender, vs_chan_tx);
-                let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    qbft::run(
-                        &token,
-                        &defs,
-                        &trans,
-                        &test.instance,
-                        i,
-                        input_value_rx,
-                        vs_chan_rx,
-                    )
-                }));
+                let run_result = qbft::run(
+                    &token,
+                    &defs,
+                    &trans,
+                    &test.instance,
+                    i,
+                    input_value_rx,
+                    vs_chan_rx,
+                );
                 drop(keepalive);
                 run_chan_tx.send((i, run_result)).expect(WRITE_CHAN_ERR);
             });
@@ -606,7 +609,7 @@ fn test_qbft(test: Test) {
                     let (node, outcome) = res.expect(READ_CHAN_ERR);
                     last_progress = time::Instant::now();
 
-                    if !matches!(outcome, Ok(Ok(()))) {
+                    if outcome.is_err() {
                         if !decided {
                             cts.cancel();
                             clock.cancel();
@@ -710,22 +713,13 @@ impl Trace {
 
 fn format_run_outcome(outcome: &RunOutcome) -> String {
     match outcome {
-        Ok(Ok(())) => "ok".to_string(),
-        Ok(Err(err)) => format!("error {err:?}"),
-        Err(payload) => {
-            if let Some(msg) = payload.downcast_ref::<&str>() {
-                format!("panic {msg}")
-            } else if let Some(msg) = payload.downcast_ref::<String>() {
-                format!("panic {msg}")
-            } else {
-                "panic <non-string payload>".to_string()
-            }
-        }
+        Ok(()) => "ok".to_string(),
+        Err(err) => format!("error {err:?}"),
     }
 }
 
 fn outcome_is_error(outcome: &RunOutcome, expected: fn(&QbftError) -> bool) -> bool {
-    matches!(outcome, Ok(Err(err)) if expected(err))
+    matches!(outcome, Err(err) if expected(err))
 }
 
 fn assert_upon_rule(expected: UponRule, actual: UponRule) {
@@ -954,7 +948,7 @@ fn deterministic_unit(seed: u64, msg: &Msg<TestQbft>, target: i64, stream_id: u6
 
 fn deterministic_msg_u64(seed: u64, msg: &Msg<TestQbft>, target: i64, stream_id: u64) -> u64 {
     let mut value = splitmix64(seed ^ stream_id);
-    value = splitmix64(value ^ i64_to_u64(msg.type_().0));
+    value = splitmix64(value ^ i64_to_u64(i64::from(msg.type_())));
     value = splitmix64(value ^ i64_to_u64(msg.instance()));
     value = splitmix64(value ^ i64_to_u64(msg.source()));
     value = splitmix64(value ^ i64_to_u64(msg.round()));
@@ -1470,7 +1464,7 @@ fn is_justified_pre_prepare_mixed_round_change_prepare_fixture() {
     def.nodes = 4;
     def.is_leader = Box::new(make_is_leader(4));
 
-    assert!(is_justified_pre_prepare(&def, &1, &preprepare, 0));
+    assert!(is_justified_pre_prepare(&def, &1, &preprepare, 0).unwrap());
 }
 
 // Tests duplicate PRE-PREPARE rule handling after compare failure.
@@ -1699,14 +1693,16 @@ fn classify_rules() {
     let preprepare = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 1, 0, 0, 0, None);
     assert_upon_rule(
         UPON_JUSTIFIED_PRE_PREPARE,
-        classify(&def, &0, 1, 2, &HashMap::new(), &preprepare).0,
+        classify(&def, &0, 1, 2, &HashMap::new(), &preprepare)
+            .unwrap()
+            .0,
     );
 
     let prepares = new_prepare_quorum(1, 2);
     let buffer = buffer_by_source(&prepares);
     assert_upon_rule(
         UPON_QUORUM_PREPARES,
-        classify(&def, &0, 1, 2, &buffer, &prepares[2]).0,
+        classify(&def, &0, 1, 2, &buffer, &prepares[2]).unwrap().0,
     );
 
     let commits = vec![
@@ -1717,7 +1713,7 @@ fn classify_rules() {
     let buffer = buffer_by_source(&commits);
     assert_upon_rule(
         UPON_QUORUM_COMMITS,
-        classify(&def, &0, 1, 2, &buffer, &commits[2]).0,
+        classify(&def, &0, 1, 2, &buffer, &commits[2]).unwrap().0,
     );
 
     let future_round_changes = vec![
@@ -1726,14 +1722,19 @@ fn classify_rules() {
     ];
     let buffer = buffer_by_source(&future_round_changes);
     assert!(
-        classify(&def, &0, 1, 2, &buffer, &future_round_changes[1]).0 == UPON_F_PLUS1_ROUND_CHANGES
+        classify(&def, &0, 1, 2, &buffer, &future_round_changes[1])
+            .unwrap()
+            .0
+            == UPON_F_PLUS1_ROUND_CHANGES
     );
 
     let unjust_round_changes = new_round_change_quorum(1, 2, 9);
     let buffer = buffer_by_source(&unjust_round_changes);
     assert_upon_rule(
         UPON_UNJUST_QUORUM_ROUND_CHANGES,
-        classify(&def, &0, 1, 2, &buffer, &unjust_round_changes[2]).0,
+        classify(&def, &0, 1, 2, &buffer, &unjust_round_changes[2])
+            .unwrap()
+            .0,
     );
 }
 
@@ -1803,7 +1804,7 @@ fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites(invalid_pr:
         value,
         Some(&invalid_prepares),
     );
-    assert!(!is_justified_round_change(&def, &invalid_round_change));
+    assert!(!is_justified_round_change(&def, &invalid_round_change).unwrap());
 
     let mut only_invalid = new_round_change_quorum(target_round, invalid_pr, value);
     only_invalid.extend(invalid_prepares);
@@ -2356,9 +2357,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
                 v_tx.send(value_source).expect(WRITE_CHAN_ERR);
                 vs_tx.send(value_source).expect(WRITE_CHAN_ERR);
-                let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    qbft::run(&token, &defs, &transport, &instance, i, v_rx, vs_rx)
-                }));
+                let run_result = qbft::run(&token, &defs, &transport, &instance, i, v_rx, vs_rx);
                 drop(v_tx);
                 drop(vs_tx);
                 run_chan_tx.send((i, run_result)).expect(WRITE_CHAN_ERR);
@@ -2546,4 +2545,239 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             }
         }
     });
+}
+
+// === Regression tests for the former `panic!("bug: ...")` sites ============
+//
+// Each of the eleven internal sanity checks in `mod.rs` used to abort the
+// process; they now return `QbftError::SanityCheck`, mirroring charon's
+// `recover` in `core/qbft/qbft.go:187-198`. Ten of them are reachable from a
+// test; the eleventh (`run`'s `match rule` arm) is unreachable by construction
+// because `classify` can return neither `Nothing` (filtered directly above the
+// match) nor `RoundTimeout` (produced only by the timer branch), which is
+// exactly what the exhaustive match now records in the type system.
+
+fn assert_sanity_check<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
+    match result {
+        Err(QbftError::SanityCheck(msg)) => assert_eq!(msg, expected),
+        other => panic!("want sanity check {expected:?}, got {other:?}"),
+    }
+}
+
+/// Builds a message whose justification entries themselves carry
+/// justifications. `new_msg` deliberately strips that nesting, so the nested
+/// shape has to be assembled by hand.
+fn new_nested_msg(type_: MessageType, source: i64, round: i64) -> Msg<TestQbft> {
+    let leaf = TestMsg {
+        msg_type: MSG_PREPARE,
+        instance: 0,
+        peer_idx: source,
+        round,
+        value: 1,
+        value_source: 0,
+        pr: 0,
+        pv: 0,
+        justify: Some(vec![]),
+    };
+    let mut inner = leaf.clone();
+    inner.msg_type = MSG_ROUND_CHANGE;
+    inner.justify = Some(vec![leaf]);
+
+    Arc::new(TestMsg {
+        msg_type: type_,
+        instance: 0,
+        peer_idx: source,
+        round,
+        value: 1,
+        value_source: 0,
+        pr: 0,
+        pv: 0,
+        justify: Some(vec![inner]),
+    })
+}
+
+/// Former `mod.rs:398`. The round-1 leader caches its PRE-PREPARE
+/// justification while it has no input value; a quorum of `ROUND_CHANGE` for
+/// round 1 then drives a second `broadcast_own_pre_prepare` with the cache
+/// still set.
+///
+/// This is the only one of the eleven sites reachable from the wire, and
+/// reaching it needs a quorum of distinctly-signed messages — above the
+/// Byzantine threshold, so it is not a single-peer trigger. What changes here
+/// is that the failure is now a typed `QbftError` the caller can classify
+/// instead of an unwind.
+#[test]
+fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let (receive_tx, receive_rx) = mpmc::bounded::<Msg<TestQbft>>(4);
+    for source in 1..=3 {
+        receive_tx
+            .send(new_round_change(source, 1, 0, 0))
+            .expect(WRITE_CHAN_ERR);
+    }
+    // Close the channel: if the sanity check ever stops firing, `run` gets
+    // `ChannelError` once the queue drains instead of blocking forever.
+    drop(receive_tx);
+
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
+    def.is_leader = Box::new(make_is_leader(4));
+
+    let transport = Transport {
+        broadcast: Box::new(|_| Ok(())),
+        receive: receive_rx,
+    };
+
+    // Process 1 leads instance 0 round 1 and never receives an input value, so
+    // its Algorithm 1:11 PRE-PREPARE only fills the justification cache.
+    let outcome = qbft::run(
+        &token,
+        &def,
+        &transport,
+        &0,
+        1,
+        mpmc::never(),
+        mpmc::never(),
+    );
+
+    assert_sanity_check(outcome, "bug: justification cache must be nil");
+}
+
+/// Former `mod.rs:902`. Unreachable from the wire — `verify_msg` rejects every
+/// type outside `1..=5` — so it is driven through the internal API.
+#[test]
+fn classify_reports_sanity_check_for_unknown_message_type() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let msg = new_msg(MessageType::Unknown, 0, 1, 1, 1, 0, 0, 0, None);
+
+    assert_sanity_check(
+        classify(&def, &0, 1, 2, &HashMap::new(), &msg),
+        "bug: invalid type",
+    );
+}
+
+/// Former `mod.rs:913`. `classify` only produces `UPON_F_PLUS1_ROUND_CHANGES`
+/// with at least `f+1` messages, so a shorter set is caller error.
+#[test]
+fn next_min_round_reports_sanity_check_for_short_justification() {
+    let mut def = noop_definition();
+    def.nodes = 4; // f+1 == 2
+
+    let frc = vec![new_round_change(1, 3, 0, 0)];
+
+    assert_sanity_check(next_min_round(&def, &frc, 1), "bug: Frc too short");
+}
+
+/// Former `mod.rs:921`. `get_fplus1_round_changes` filters on
+/// `MSG_ROUND_CHANGE`, so a foreign type can only arrive by caller error.
+#[test]
+fn next_min_round_reports_sanity_check_for_non_round_change() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let frc = vec![
+        new_msg(MSG_PREPARE, 0, 1, 3, 1, 0, 0, 0, None),
+        new_round_change(2, 3, 0, 0),
+    ];
+
+    assert_sanity_check(
+        next_min_round(&def, &frc, 1),
+        "bug: Frc contain non-round change",
+    );
+}
+
+/// Former `mod.rs:923`. `get_fplus1_round_changes` only collects rounds above
+/// the current one.
+#[test]
+fn next_min_round_reports_sanity_check_for_non_future_round() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let frc = vec![new_round_change(1, 1, 0, 0), new_round_change(2, 1, 0, 0)];
+
+    assert_sanity_check(
+        next_min_round(&def, &frc, 1),
+        "bug: Frc round not in future",
+    );
+}
+
+/// Former `mod.rs:947`. The first of the two core type gates; like
+/// `classify`'s, unreachable from the wire.
+#[test]
+fn is_justified_reports_sanity_check_for_unknown_message_type() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let msg = new_msg(MessageType::Unknown, 0, 1, 1, 1, 0, 0, 0, None);
+
+    assert_sanity_check(is_justified(&def, &0, &msg, 0), "bug: invalid message type");
+}
+
+/// Former `mod.rs:955`. Only `is_justified`'s `RoundChange` arm calls this.
+#[test]
+fn is_justified_round_change_reports_sanity_check_for_other_types() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let msg = new_msg(MSG_PREPARE, 0, 1, 1, 1, 0, 0, 0, None);
+
+    assert_sanity_check(
+        is_justified_round_change(&def, &msg),
+        "bug: not a round change message",
+    );
+}
+
+/// Former `mod.rs:1024`. Only `is_justified`'s `Decided` arm calls this.
+#[test]
+fn is_justified_decided_reports_sanity_check_for_other_types() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let msg = new_msg(MSG_COMMIT, 0, 1, 1, 1, 0, 0, 0, None);
+
+    assert_sanity_check(
+        is_justified_decided(&def, &msg),
+        "bug: not a decided message",
+    );
+}
+
+/// Former `mod.rs:1048`. Only `is_justified`'s `PrePrepare` arm calls this.
+#[test]
+fn is_justified_pre_prepare_reports_sanity_check_for_other_types() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.is_leader = Box::new(make_is_leader(4));
+
+    let msg = new_msg(MSG_ROUND_CHANGE, 0, 1, 1, 1, 0, 0, 0, None);
+
+    assert_sanity_check(
+        is_justified_pre_prepare(&def, &0, &msg, 0),
+        "bug: not a preprepare message",
+    );
+}
+
+/// Former `mod.rs:1397`. Nesting is not expressible on the wire: `QBFTMsg` has
+/// no justification field and `consensus::qbft::msg::Msg::new` builds every
+/// justification with an empty justification list. The nested shape therefore
+/// has to be built directly.
+#[test]
+fn flatten_reports_sanity_check_for_nested_justifications() {
+    let nested = new_nested_msg(MSG_ROUND_CHANGE, 1, 1);
+    let buffer = buffer_by_source(&[nested]);
+
+    assert_sanity_check(flatten(&buffer), "bug: nested justifications");
+}
+
+/// `flatten` accepts the one-level shape the wire actually produces.
+#[test]
+fn flatten_accepts_single_level_justifications() {
+    let prepares = new_prepare_quorum(1, 1);
+    let round_change = new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 1, 1, Some(&prepares));
+    let buffer = buffer_by_source(&[round_change]);
+
+    assert_eq!(flatten(&buffer).unwrap().len(), 4);
 }

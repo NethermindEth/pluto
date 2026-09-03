@@ -63,6 +63,15 @@ pub enum QbftError {
     #[error("bug: expected only comparison or timeout error, got {0}")]
     UnexpectedCompareError(Box<QbftError>),
 
+    /// An internal sanity check failed.
+    ///
+    /// Mirrors charon `core/qbft/qbft.go:187-198`, which recovers exactly the
+    /// panics whose message contains "bug" and turns them into
+    /// `fmt.Errorf("qbft sanity check: %v", r)`. The payload keeps charon's
+    /// original panic string so log output stays greppable.
+    #[error("qbft sanity check: {0}")]
+    SanityCheck(&'static str),
+
     /// Parent cancellation token was canceled.
     #[error("context canceled")]
     ContextCanceled,
@@ -187,56 +196,104 @@ impl<T: QbftTypes> Definition<T> {
     }
 }
 
-/// Defines the QBFT message types
+/// Defines the QBFT message types.
+///
+/// NOTE: message type ordering MUST not change, since it breaks backwards
+/// compatibility. The discriminants are the wire values, so they are frozen and
+/// always written explicitly; they mirror charon `core/qbft/qbft.go` `MsgType`.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct MessageType(i64);
+#[repr(i64)]
+pub enum MessageType {
+    /// Unknown message type.
+    Unknown = 0,
+    /// PRE-PREPARE message type.
+    PrePrepare = 1,
+    /// PREPARE message type.
+    Prepare = 2,
+    /// COMMIT message type.
+    Commit = 3,
+    /// ROUND-CHANGE message type.
+    RoundChange = 4,
+    /// DECIDED catch-up message type.
+    Decided = 5,
+}
 
-// NOTE: message type ordering MUST not change, since it breaks backwards
-// compatibility.
 /// Unknown message type.
-pub const MSG_UNKNOWN: MessageType = MessageType(0);
+pub const MSG_UNKNOWN: MessageType = MessageType::Unknown;
 /// PRE-PREPARE message type.
-pub const MSG_PRE_PREPARE: MessageType = MessageType(1);
+pub const MSG_PRE_PREPARE: MessageType = MessageType::PrePrepare;
 /// PREPARE message type.
-pub const MSG_PREPARE: MessageType = MessageType(2);
+pub const MSG_PREPARE: MessageType = MessageType::Prepare;
 /// COMMIT message type.
-pub const MSG_COMMIT: MessageType = MessageType(3);
+pub const MSG_COMMIT: MessageType = MessageType::Commit;
 /// ROUND-CHANGE message type.
-pub const MSG_ROUND_CHANGE: MessageType = MessageType(4);
+pub const MSG_ROUND_CHANGE: MessageType = MessageType::RoundChange;
 /// DECIDED catch-up message type.
-pub const MSG_DECIDED: MessageType = MessageType(5);
+pub const MSG_DECIDED: MessageType = MessageType::Decided;
 
-const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
+/// Wire integer that does not name a valid QBFT message type.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("invalid QBFT message type: {0}")]
+pub struct InvalidMessageType(
+    /// The rejected wire value.
+    pub i64,
+);
 
 impl MessageType {
-    /// Converts a stable wire integer into a message type without clamping.
+    /// Converts a stable wire integer into a message type, mapping every value
+    /// outside `1..=5` (including `0`) to [`MessageType::Unknown`].
+    ///
+    /// This is the lossy, infallible conversion for the places that must
+    /// produce a message type without failing: [`SomeMsg::type_`] and debug
+    /// formatting. Use [`TryFrom<i64>`] to reject an unknown wire value.
     pub fn from_wire(value: i64) -> Self {
-        Self(value)
+        Self::try_from(value).unwrap_or(Self::Unknown)
     }
 
     /// Returns true when the message type is one of the known QBFT wire types.
+    ///
+    /// Equivalent to charon's `t > MsgUnknown && t < msgSentinel`:
+    /// `msgSentinel` (wire value 6) is not representable as a variant, so
+    /// the only invalid value left is [`MessageType::Unknown`].
     pub fn valid(&self) -> bool {
-        self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
+        !matches!(self, Self::Unknown)
+    }
+}
+
+impl TryFrom<i64> for MessageType {
+    type Error = InvalidMessageType;
+
+    /// Converts a wire integer into a message type, rejecting exactly what
+    /// [`MessageType::valid`] rejects. This is the wire boundary's single
+    /// admission check.
+    fn try_from(value: i64) -> std::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::PrePrepare),
+            2 => Ok(Self::Prepare),
+            3 => Ok(Self::Commit),
+            4 => Ok(Self::RoundChange),
+            5 => Ok(Self::Decided),
+            _ => Err(InvalidMessageType(value)),
+        }
     }
 }
 
 impl From<MessageType> for i64 {
     fn from(value: MessageType) -> Self {
-        value.0
+        value as Self
     }
 }
 
 impl Display for MessageType {
     /// Formats the message type using the stable wire/debug label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self.0 {
-            0 => "unknown",
-            1 => "pre_prepare",
-            2 => "prepare",
-            3 => "commit",
-            4 => "round_change",
-            5 => "decided",
-            _ => "",
+        let s = match self {
+            Self::Unknown => "unknown",
+            Self::PrePrepare => "pre_prepare",
+            Self::Prepare => "prepare",
+            Self::Commit => "commit",
+            Self::RoundChange => "round_change",
+            Self::Decided => "decided",
         };
         write!(f, "{s}")
     }
@@ -271,42 +328,71 @@ pub trait SomeMsg<T: QbftTypes>: Send + Sync + fmt::Debug {
 pub type Msg<T> = sync::Arc<dyn SomeMsg<T>>;
 
 /// Defines the event based rules that are triggered when messages are received.
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-pub struct UponRule(i64);
+///
+/// NOTE: rule ordering MUST not change: the discriminants mirror charon
+/// `core/qbft/qbft.go` `UponRule`'s `iota` order, and the [`Display`] labels
+/// appear in operator logs. Discriminants are always written explicitly.
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+#[repr(i64)]
+pub enum UponRule {
+    /// No upon-rule fired.
+    Nothing = 0,
+    /// PRE-PREPARE was justified.
+    JustifiedPrePrepare = 1,
+    /// Quorum PREPARE messages was received.
+    QuorumPrepares = 2,
+    /// Quorum COMMIT messages was received.
+    QuorumCommits = 3,
+    /// Quorum ROUND-CHANGE messages was received but not justified.
+    UnjustQuorumRoundChanges = 4,
+    /// F+1 future ROUND-CHANGE messages was received.
+    FPlus1RoundChanges = 5,
+    /// Quorum ROUND-CHANGE messages was received.
+    QuorumRoundChanges = 6,
+    /// DECIDED message was justified.
+    JustifiedDecided = 7,
+    /// Round timer expired. This is not triggered by a message, but by a timer.
+    RoundTimeout = 8,
+}
 
 /// No upon-rule fired.
-pub const UPON_NOTHING: UponRule = UponRule(0);
+pub const UPON_NOTHING: UponRule = UponRule::Nothing;
 /// PRE-PREPARE was justified.
-pub const UPON_JUSTIFIED_PRE_PREPARE: UponRule = UponRule(1);
+pub const UPON_JUSTIFIED_PRE_PREPARE: UponRule = UponRule::JustifiedPrePrepare;
 /// Quorum PREPARE messages was received.
-pub const UPON_QUORUM_PREPARES: UponRule = UponRule(2);
+pub const UPON_QUORUM_PREPARES: UponRule = UponRule::QuorumPrepares;
 /// Quorum COMMIT messages was received.
-pub const UPON_QUORUM_COMMITS: UponRule = UponRule(3);
+pub const UPON_QUORUM_COMMITS: UponRule = UponRule::QuorumCommits;
 /// Quorum ROUND-CHANGE messages was received but not justified.
-pub const UPON_UNJUST_QUORUM_ROUND_CHANGES: UponRule = UponRule(4);
+pub const UPON_UNJUST_QUORUM_ROUND_CHANGES: UponRule = UponRule::UnjustQuorumRoundChanges;
 /// F+1 future ROUND-CHANGE messages was received.
-pub const UPON_F_PLUS1_ROUND_CHANGES: UponRule = UponRule(5);
+pub const UPON_F_PLUS1_ROUND_CHANGES: UponRule = UponRule::FPlus1RoundChanges;
 /// Quorum ROUND-CHANGE messages was received.
-pub const UPON_QUORUM_ROUND_CHANGES: UponRule = UponRule(6);
+pub const UPON_QUORUM_ROUND_CHANGES: UponRule = UponRule::QuorumRoundChanges;
 /// DECIDED message was justified.
-pub const UPON_JUSTIFIED_DECIDED: UponRule = UponRule(7);
+pub const UPON_JUSTIFIED_DECIDED: UponRule = UponRule::JustifiedDecided;
 /// Round timer expired.
-pub const UPON_ROUND_TIMEOUT: UponRule = UponRule(8); // This is not triggered by a message, but by a timer.
+pub const UPON_ROUND_TIMEOUT: UponRule = UponRule::RoundTimeout; // This is not triggered by a message, but by a timer.
+
+impl From<UponRule> for i64 {
+    fn from(value: UponRule) -> Self {
+        value as Self
+    }
+}
 
 impl Display for UponRule {
     /// Formats the upon-rule using the stable debug label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self.0 {
-            0 => "nothing",
-            1 => "justified_pre_prepare",
-            2 => "quorum_prepares",
-            3 => "quorum_commits",
-            4 => "unjust_quorum_round_changes",
-            5 => "f_plus_1_round_changes",
-            6 => "quorum_round_changes",
-            7 => "justified_decided",
-            8 => "round_timeout",
-            _ => "",
+        let s = match self {
+            Self::Nothing => "nothing",
+            Self::JustifiedPrePrepare => "justified_pre_prepare",
+            Self::QuorumPrepares => "quorum_prepares",
+            Self::QuorumCommits => "quorum_commits",
+            Self::UnjustQuorumRoundChanges => "unjust_quorum_round_changes",
+            Self::FPlus1RoundChanges => "f_plus_1_round_changes",
+            Self::QuorumRoundChanges => "quorum_round_changes",
+            Self::JustifiedDecided => "justified_decided",
+            Self::RoundTimeout => "round_timeout",
         };
         write!(f, "{s}")
     }
@@ -395,7 +481,9 @@ pub fn run<T: QbftTypes>(
     // to be used when the input value becomes available.
     let broadcast_own_pre_prepare = |justification: Vec<Msg<T>>| {
         if ppj_cache.borrow().is_some() {
-            panic!("bug: justification cache must be none")
+            return Err(QbftError::SanityCheck(
+                "bug: justification cache must be none",
+            ));
         }
 
         if *input_value.borrow() == Default::default() {
@@ -504,7 +592,7 @@ pub fn run<T: QbftTypes>(
                 }
 
                 // Drop unjust messages
-                if !is_justified(d, instance, &msg, compare_failure_round) {
+                if !is_justified(d, instance, &msg, compare_failure_round)? {
                     (d.logger.unjust)(UnjustLog {
                         instance,
                         process,
@@ -516,7 +604,7 @@ pub fn run<T: QbftTypes>(
                 buffer_msg(&msg);
 
                 let (rule, justification) =
-                    classify(d, instance, round.get(), process, &buffer.borrow(), &msg);
+                    classify(d, instance, round.get(), process, &buffer.borrow(), &msg)?;
                 if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
                     // Do nothing more if no rule or duplicate rule was triggered
                     continue;
@@ -532,7 +620,7 @@ pub fn run<T: QbftTypes>(
 
                 match rule {
                     // Algorithm 2:1
-                    UPON_JUSTIFIED_PRE_PREPARE => {
+                    UponRule::JustifiedPrePrepare => {
                         change_round(msg.round(), rule);
 
                         stop_timer();
@@ -585,7 +673,7 @@ pub fn run<T: QbftTypes>(
                             }
                         }
                     }
-                    UPON_QUORUM_PREPARES => {
+                    UponRule::QuorumPrepares => {
                         // Algorithm 2:4
                         // Only applicable to current round
                         prepared_round.set(round.get()); /* == msg.round() */
@@ -594,7 +682,7 @@ pub fn run<T: QbftTypes>(
 
                         broadcast_msg(MSG_COMMIT, &prepared_value.borrow(), None)?;
                     }
-                    UPON_QUORUM_COMMITS | UPON_JUSTIFIED_DECIDED => {
+                    UponRule::QuorumCommits | UponRule::JustifiedDecided => {
                         // Algorithm 2:8
                         change_round(msg.round(), rule);
                         q_commit = justification;
@@ -611,7 +699,7 @@ pub fn run<T: QbftTypes>(
                             qcommit: justification,
                         });
                     }
-                    UPON_F_PLUS1_ROUND_CHANGES => {
+                    UponRule::FPlus1RoundChanges => {
                         // Algorithm 3:5
 
                         let justification = justification.expect(
@@ -620,7 +708,7 @@ pub fn run<T: QbftTypes>(
 
                         // Only applicable to future rounds
                         change_round(
-                            next_min_round(d, &justification, round.get() /* < msg.round() */),
+                            next_min_round(d, &justification, round.get() /* < msg.round() */)?,
                             rule,
                         );
 
@@ -631,7 +719,7 @@ pub fn run<T: QbftTypes>(
 
                         broadcast_round_change()?;
                     }
-                    UPON_QUORUM_ROUND_CHANGES => {
+                    UponRule::QuorumRoundChanges => {
                         // Algorithm 3:11
 
                         let justification = justification
@@ -645,10 +733,15 @@ pub fn run<T: QbftTypes>(
                             _ => broadcast_own_pre_prepare(justification)?,
                         }
                     }
-                    UPON_UNJUST_QUORUM_ROUND_CHANGES => {
+                    UponRule::UnjustQuorumRoundChanges => {
                         // Ignore bug or byzantine
                     }
-                    _ => panic!("bug: invalid rule"),
+                    // `classify` never returns these two: `Nothing` is
+                    // filtered above and `RoundTimeout` is timer-only. Charon
+                    // recovers the equivalent panic into an error.
+                    UponRule::Nothing | UponRule::RoundTimeout => {
+                        return Err(QbftError::SanityCheck("bug: invalid rule"));
+                    }
                 }
             },
 
@@ -821,71 +914,71 @@ fn classify<T: QbftTypes>(
     process: i64,
     buffer: &HashMap<i64, Vec<Msg<T>>>,
     msg: &Msg<T>,
-) -> (UponRule, Option<Vec<Msg<T>>>) {
+) -> Result<(UponRule, Option<Vec<Msg<T>>>)> {
     match msg.type_() {
-        MSG_DECIDED => (UPON_JUSTIFIED_DECIDED, Some(msg.justification())),
-        MSG_PRE_PREPARE => {
+        MessageType::Decided => Ok((UPON_JUSTIFIED_DECIDED, Some(msg.justification()))),
+        MessageType::PrePrepare => {
             if msg.round() < round {
-                (UPON_NOTHING, None)
+                Ok((UPON_NOTHING, None))
             } else {
-                (UPON_JUSTIFIED_PRE_PREPARE, None)
+                Ok((UPON_JUSTIFIED_PRE_PREPARE, None))
             }
         }
-        MSG_PREPARE => {
+        MessageType::Prepare => {
             // Ignore other rounds, since PREPARE isn't justified.
             if msg.round() != round {
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
             let prepares =
-                filter_by_round_and_value(&flatten(buffer), MSG_PREPARE, msg.round(), msg.value());
+                filter_by_round_and_value(&flatten(buffer)?, MSG_PREPARE, msg.round(), msg.value());
 
             if prepares.len() >= d.quorum_count() {
-                (UPON_QUORUM_PREPARES, Some(prepares))
+                Ok((UPON_QUORUM_PREPARES, Some(prepares)))
             } else {
-                (UPON_NOTHING, None)
+                Ok((UPON_NOTHING, None))
             }
         }
-        MSG_COMMIT => {
+        MessageType::Commit => {
             // Ignore other rounds, since COMMIT isn't justified.
             if msg.round() != round {
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
             let commits =
-                filter_by_round_and_value(&flatten(buffer), MSG_COMMIT, msg.round(), msg.value());
+                filter_by_round_and_value(&flatten(buffer)?, MSG_COMMIT, msg.round(), msg.value());
             if commits.len() >= d.quorum_count() {
-                (UPON_QUORUM_COMMITS, Some(commits))
+                Ok((UPON_QUORUM_COMMITS, Some(commits)))
             } else {
-                (UPON_NOTHING, None)
+                Ok((UPON_NOTHING, None))
             }
         }
-        MSG_ROUND_CHANGE => {
+        MessageType::RoundChange => {
             // Only ignore old rounds.
             if msg.round() < round {
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
-            let all = flatten(buffer);
+            let all = flatten(buffer)?;
 
             if msg.round() > round {
                 // Jump ahead if we received F+1 higher ROUND-CHANGEs.
                 if let Some(frc) = get_fplus1_round_changes(d, &all, round) {
-                    return (UPON_F_PLUS1_ROUND_CHANGES, Some(frc));
+                    return Ok((UPON_F_PLUS1_ROUND_CHANGES, Some(frc)));
                 }
 
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
             /* else msg.round() == round */
 
             let qrc = filter_round_change(&all, msg.round());
             if qrc.len() < d.quorum_count() {
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
             let Some(qrc) = get_justified_qrc(d, &all, msg.round()) else {
-                return (UPON_UNJUST_QUORUM_ROUND_CHANGES, None);
+                return Ok((UPON_UNJUST_QUORUM_ROUND_CHANGES, None));
             };
 
             if !(d.is_leader)(LeaderRequest {
@@ -893,24 +986,24 @@ fn classify<T: QbftTypes>(
                 round: msg.round(),
                 process,
             }) {
-                return (UPON_NOTHING, None);
+                return Ok((UPON_NOTHING, None));
             }
 
-            (UPON_QUORUM_ROUND_CHANGES, Some(qrc))
+            Ok((UPON_QUORUM_ROUND_CHANGES, Some(qrc)))
         }
-        _ => {
-            panic!("bug: invalid type");
-        }
+        // Unreachable from the wire: `verify_msg` rejects any type outside
+        // `1..=5`, and `is_justified` sees the same value first.
+        MessageType::Unknown => Err(QbftError::SanityCheck("bug: invalid type")),
     }
 }
 
 /// Implements algorithm 3:6 and returns the next minimum round from received
 /// round change messages.
-fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64) -> i64 {
+fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64) -> Result<i64> {
     // Get all RoundChange messages with round (rj) higher than current round
     // (ri)
     if frc.len() < d.faulty_plus_one_count() {
-        panic!("bug: Frc too short");
+        return Err(QbftError::SanityCheck("bug: Frc too short"));
     }
 
     // Get the smallest round in the set.
@@ -918,9 +1011,9 @@ fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64
 
     for msg in frc {
         if msg.type_() != MSG_ROUND_CHANGE {
-            panic!("bug: Frc contain non-round change");
+            return Err(QbftError::SanityCheck("bug: Frc contain non-round change"));
         } else if msg.round() <= round {
-            panic!("bug: Frc round not in future");
+            return Err(QbftError::SanityCheck("bug: Frc round not in future"));
         }
 
         if rmin > msg.round() {
@@ -928,7 +1021,7 @@ fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64
         }
     }
 
-    rmin
+    Ok(rmin)
 }
 
 /// Returns true if message is justified or if it does not need justification.
@@ -937,22 +1030,26 @@ fn is_justified<T: QbftTypes>(
     instance: &T::Instance,
     msg: &Msg<T>,
     compare_failure_round: i64,
-) -> bool {
+) -> Result<bool> {
     match msg.type_() {
-        MSG_PRE_PREPARE => is_justified_pre_prepare(d, instance, msg, compare_failure_round),
-        MSG_PREPARE => true,
-        MSG_COMMIT => true,
-        MSG_ROUND_CHANGE => is_justified_round_change(d, msg),
-        MSG_DECIDED => is_justified_decided(d, msg),
-        _ => panic!("bug: invalid message type"),
+        MessageType::PrePrepare => {
+            is_justified_pre_prepare(d, instance, msg, compare_failure_round)
+        }
+        MessageType::Prepare => Ok(true),
+        MessageType::Commit => Ok(true),
+        MessageType::RoundChange => is_justified_round_change(d, msg),
+        MessageType::Decided => is_justified_decided(d, msg),
+        // Unreachable from the wire: `verify_msg` rejects any type outside
+        // `1..=5`. This is the first of the two type gates in the core.
+        MessageType::Unknown => Err(QbftError::SanityCheck("bug: invalid message type")),
     }
 }
 
 /// Returns true if the ROUND_CHANGE message's prepared round and value is
 /// justified.
-fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> bool {
+fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> Result<bool> {
     if msg.type_() != MSG_ROUND_CHANGE {
-        panic!("bug: not a round change message");
+        return Err(QbftError::SanityCheck("bug: not a round change message"));
     }
 
     // ROUND-CHANGE justification contains quorum PREPARE messages that
@@ -965,40 +1062,40 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
     // round`. See `valid_round_change_prepared_round` for the full parity
     // note.
     if !valid_round_change_prepared_round(msg) {
-        return false;
+        return Ok(false);
     }
 
     if prepares.is_empty() {
-        return pr == 0 && pv == Default::default();
+        return Ok(pr == 0 && pv == Default::default());
     }
 
     // No need to check for all possible combinations, since justified should
     // only contain a one.
 
     if prepares.len() < d.quorum_count() {
-        return false;
+        return Ok(false);
     }
 
     let mut uniq = uniq_source();
     for prepare in prepares {
         if !uniq(&prepare) {
-            return false;
+            return Ok(false);
         }
 
         if prepare.type_() != MSG_PREPARE {
-            return false;
+            return Ok(false);
         }
 
         if prepare.round() != pr {
-            return false;
+            return Ok(false);
         }
 
         if prepare.value() != pv {
-            return false;
+            return Ok(false);
         }
     }
 
-    true
+    Ok(true)
 }
 
 /// Returns true if a ROUND-CHANGE's prepared round is in the valid range
@@ -1019,9 +1116,9 @@ fn valid_round_change_prepared_round<T: QbftTypes>(msg: &Msg<T>) -> bool {
 
 /// Returns true if the decided message is justified by quorum COMMIT messages
 /// of identical round and value.
-fn is_justified_decided<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> bool {
+fn is_justified_decided<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> Result<bool> {
     if msg.type_() != MSG_DECIDED {
-        panic!("bug: not a decided message");
+        return Err(QbftError::SanityCheck("bug: not a decided message"));
     }
 
     let v = msg.value();
@@ -1034,7 +1131,7 @@ fn is_justified_decided<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> bool {
         None,
     );
 
-    commits.len() >= d.quorum_count()
+    Ok(commits.len() >= d.quorum_count())
 }
 
 /// Returns true if the PRE-PREPARE message is justified.
@@ -1043,9 +1140,9 @@ fn is_justified_pre_prepare<T: QbftTypes>(
     instance: &T::Instance,
     msg: &Msg<T>,
     compare_failure_round: i64,
-) -> bool {
+) -> Result<bool> {
     if msg.type_() != MSG_PRE_PREPARE {
-        panic!("bug: not a preprepare message");
+        return Err(QbftError::SanityCheck("bug: not a preprepare message"));
     }
 
     if !(d.is_leader)(LeaderRequest {
@@ -1053,7 +1150,7 @@ fn is_justified_pre_prepare<T: QbftTypes>(
         round: msg.round(),
         process: msg.source(),
     }) {
-        return false;
+        return Ok(false);
     }
 
     // Justified if PrePrepare is the first round OR if comparison failed
@@ -1062,18 +1159,18 @@ fn is_justified_pre_prepare<T: QbftTypes>(
         .checked_add(1)
         .expect("compare failure round permits increment");
     if msg.round() == 1 || (msg.round() == next_compare_round) {
-        return true;
+        return Ok(true);
     }
 
     let Some(pv) = contains_justified_qrc(d, &msg.justification(), msg.round()) else {
-        return false;
+        return Ok(false);
     };
 
     if pv == Default::default() {
-        return true; // New value being proposed
+        return Ok(true); // New value being proposed
     }
 
-    msg.value() == pv // Ensure Pv is being proposed
+    Ok(msg.value() == pv) // Ensure Pv is being proposed
 }
 
 /// Implements algorithm 4:1 and returns true and pv if the messages contains a
@@ -1385,7 +1482,7 @@ fn filter_msgs<T: QbftTypes>(
 
 /// Produce a vector containing all the buffered messages as well as all their
 /// justifications.
-fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Vec<Msg<T>> {
+fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Result<Vec<Msg<T>>> {
     let mut resp: Vec<Msg<T>> = Vec::new();
 
     for msgs in buffer.values() {
@@ -1394,13 +1491,17 @@ fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Vec<Msg<T>> {
             for j in msg.justification() {
                 resp.push(j.clone());
                 if !j.justification().is_empty() {
-                    panic!("bug: nested justifications");
+                    // Unreachable from the wire: `QBFTMsg` has no justification
+                    // field, so nesting is not expressible, and
+                    // `consensus::qbft::msg::Msg::new` builds every wire
+                    // justification with an empty justification list.
+                    return Err(QbftError::SanityCheck("bug: nested justifications"));
                 }
             }
         }
     }
 
-    resp
+    Ok(resp)
 }
 
 /// Construct a function that returns true if the message is from a unique
@@ -1414,29 +1515,167 @@ fn uniq_source<T: QbftTypes>() -> impl FnMut(&Msg<T>) -> bool {
 mod tests {
     use super::*;
 
+    /// The wire discriminants are frozen: changing one breaks backwards
+    /// compatibility with every deployed peer. Pin all six.
     #[test]
-    fn message_type_from_wire_preserves_known_types() {
-        assert_eq!(MessageType::from_wire(0), MSG_UNKNOWN);
-        assert_eq!(MessageType::from_wire(1), MSG_PRE_PREPARE);
-        assert_eq!(MessageType::from_wire(2), MSG_PREPARE);
-        assert_eq!(MessageType::from_wire(3), MSG_COMMIT);
-        assert_eq!(MessageType::from_wire(4), MSG_ROUND_CHANGE);
-        assert_eq!(MessageType::from_wire(5), MSG_DECIDED);
+    fn message_type_discriminants_are_frozen() {
+        assert_eq!(i64::from(MessageType::Unknown), 0);
+        assert_eq!(i64::from(MessageType::PrePrepare), 1);
+        assert_eq!(i64::from(MessageType::Prepare), 2);
+        assert_eq!(i64::from(MessageType::Commit), 3);
+        assert_eq!(i64::from(MessageType::RoundChange), 4);
+        assert_eq!(i64::from(MessageType::Decided), 5);
+    }
+
+    /// The `MSG_*` aliases must keep naming the same wire values they did when
+    /// they were `MessageType(i64)` constants.
+    #[test]
+    fn message_type_aliases_match_variants() {
+        assert_eq!(MSG_UNKNOWN, MessageType::Unknown);
+        assert_eq!(MSG_PRE_PREPARE, MessageType::PrePrepare);
+        assert_eq!(MSG_PREPARE, MessageType::Prepare);
+        assert_eq!(MSG_COMMIT, MessageType::Commit);
+        assert_eq!(MSG_ROUND_CHANGE, MessageType::RoundChange);
+        assert_eq!(MSG_DECIDED, MessageType::Decided);
+    }
+
+    /// `Display` output reaches logs and metric labels, so the strings are as
+    /// frozen as the discriminants.
+    #[test]
+    fn message_type_display_strings_are_frozen() {
+        assert_eq!(MessageType::Unknown.to_string(), "unknown");
+        assert_eq!(MessageType::PrePrepare.to_string(), "pre_prepare");
+        assert_eq!(MessageType::Prepare.to_string(), "prepare");
+        assert_eq!(MessageType::Commit.to_string(), "commit");
+        assert_eq!(MessageType::RoundChange.to_string(), "round_change");
+        assert_eq!(MessageType::Decided.to_string(), "decided");
     }
 
     #[test]
-    fn message_type_from_wire_preserves_unknown_wire_value() {
-        let message_type = MessageType::from_wire(99);
+    fn message_type_try_from_accepts_known_wire_values() {
+        assert_eq!(MessageType::try_from(1), Ok(MessageType::PrePrepare));
+        assert_eq!(MessageType::try_from(2), Ok(MessageType::Prepare));
+        assert_eq!(MessageType::try_from(3), Ok(MessageType::Commit));
+        assert_eq!(MessageType::try_from(4), Ok(MessageType::RoundChange));
+        assert_eq!(MessageType::try_from(5), Ok(MessageType::Decided));
+    }
 
-        assert_eq!(message_type, MessageType(99));
-        assert_eq!(i64::from(message_type), 99);
-        assert!(!message_type.valid());
-        assert_eq!(message_type.to_string(), "");
+    /// `TryFrom` rejects exactly what `valid` rejects, including the old
+    /// `msgSentinel` value `6`, the unknown value `0`, and both extremes.
+    #[test]
+    fn message_type_try_from_rejects_out_of_range_wire_values() {
+        for value in [0, 6, 99, -1, i64::MIN, i64::MAX] {
+            assert_eq!(
+                MessageType::try_from(value),
+                Err(InvalidMessageType(value)),
+                "wire value {value} must be rejected"
+            );
+        }
+
+        assert_eq!(
+            InvalidMessageType(6).to_string(),
+            "invalid QBFT message type: 6"
+        );
+    }
+
+    /// `from_wire` is the lossy sibling of `TryFrom`: it maps every rejected
+    /// value onto `Unknown` rather than failing.
+    #[test]
+    fn message_type_from_wire_maps_unknown_values_to_unknown() {
+        assert_eq!(MessageType::from_wire(1), MessageType::PrePrepare);
+        assert_eq!(MessageType::from_wire(5), MessageType::Decided);
+
+        for value in [0, 6, 99, -1, i64::MIN, i64::MAX] {
+            assert_eq!(MessageType::from_wire(value), MessageType::Unknown);
+        }
+    }
+
+    /// `valid` accepts precisely the set `TryFrom` accepts, which is what lets
+    /// the wire boundary do one conversion instead of a conversion plus a
+    /// separate validity check.
+    #[test]
+    fn message_type_valid_matches_try_from() {
+        assert!(!MessageType::Unknown.valid());
+
+        for message_type in [
+            MessageType::PrePrepare,
+            MessageType::Prepare,
+            MessageType::Commit,
+            MessageType::RoundChange,
+            MessageType::Decided,
+        ] {
+            assert!(message_type.valid());
+            assert_eq!(
+                MessageType::try_from(i64::from(message_type)),
+                Ok(message_type)
+            );
+        }
+    }
+
+    /// `UponRule` is never serialised, but its discriminants are the values the
+    /// original `UponRule(i64)` constants carried; keep them stable so the
+    /// `Debug`/`Display` output in logs does not silently shift.
+    #[test]
+    fn upon_rule_discriminants_are_frozen() {
+        assert_eq!(i64::from(UponRule::Nothing), 0);
+        assert_eq!(i64::from(UponRule::JustifiedPrePrepare), 1);
+        assert_eq!(i64::from(UponRule::QuorumPrepares), 2);
+        assert_eq!(i64::from(UponRule::QuorumCommits), 3);
+        assert_eq!(i64::from(UponRule::UnjustQuorumRoundChanges), 4);
+        assert_eq!(i64::from(UponRule::FPlus1RoundChanges), 5);
+        assert_eq!(i64::from(UponRule::QuorumRoundChanges), 6);
+        assert_eq!(i64::from(UponRule::JustifiedDecided), 7);
+        assert_eq!(i64::from(UponRule::RoundTimeout), 8);
     }
 
     #[test]
-    fn upon_rule_display_unknown_value_does_not_panic() {
-        assert_eq!(UponRule(99).to_string(), "");
+    fn upon_rule_aliases_match_variants() {
+        assert_eq!(UPON_NOTHING, UponRule::Nothing);
+        assert_eq!(UPON_JUSTIFIED_PRE_PREPARE, UponRule::JustifiedPrePrepare);
+        assert_eq!(UPON_QUORUM_PREPARES, UponRule::QuorumPrepares);
+        assert_eq!(UPON_QUORUM_COMMITS, UponRule::QuorumCommits);
+        assert_eq!(
+            UPON_UNJUST_QUORUM_ROUND_CHANGES,
+            UponRule::UnjustQuorumRoundChanges
+        );
+        assert_eq!(UPON_F_PLUS1_ROUND_CHANGES, UponRule::FPlus1RoundChanges);
+        assert_eq!(UPON_QUORUM_ROUND_CHANGES, UponRule::QuorumRoundChanges);
+        assert_eq!(UPON_JUSTIFIED_DECIDED, UponRule::JustifiedDecided);
+        assert_eq!(UPON_ROUND_TIMEOUT, UponRule::RoundTimeout);
+    }
+
+    #[test]
+    fn upon_rule_display_strings_are_frozen() {
+        assert_eq!(UponRule::Nothing.to_string(), "nothing");
+        assert_eq!(
+            UponRule::JustifiedPrePrepare.to_string(),
+            "justified_pre_prepare"
+        );
+        assert_eq!(UponRule::QuorumPrepares.to_string(), "quorum_prepares");
+        assert_eq!(UponRule::QuorumCommits.to_string(), "quorum_commits");
+        assert_eq!(
+            UponRule::UnjustQuorumRoundChanges.to_string(),
+            "unjust_quorum_round_changes"
+        );
+        assert_eq!(
+            UponRule::FPlus1RoundChanges.to_string(),
+            "f_plus_1_round_changes"
+        );
+        assert_eq!(
+            UponRule::QuorumRoundChanges.to_string(),
+            "quorum_round_changes"
+        );
+        assert_eq!(UponRule::JustifiedDecided.to_string(), "justified_decided");
+        assert_eq!(UponRule::RoundTimeout.to_string(), "round_timeout");
+    }
+
+    /// The sanity-check error keeps charon's original panic text so operator
+    /// greps written against charon logs keep matching.
+    #[test]
+    fn sanity_check_error_mirrors_charon_wording() {
+        let err = QbftError::SanityCheck("bug: invalid rule");
+
+        assert_eq!(err.to_string(), "qbft sanity check: bug: invalid rule");
     }
 }
 

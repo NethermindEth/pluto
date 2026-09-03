@@ -21,9 +21,10 @@
 //! protobuf bytes of the inner message.
 //!
 //! Inbound callers validate message type, duty type, peer membership, rounds,
-//! and signatures before constructing `Msg`. This adapter preserves raw
-//! message types, while invalid duty wire values project to
-//! `DutyType::Unknown`.
+//! and signatures before constructing `Msg`. Only the stored protobuf keeps
+//! the raw wire integers: `Msg::type_` collapses any message type outside
+//! `1..=5` to `MessageType::Unknown`, and invalid duty wire values project
+//! to `DutyType::Unknown`.
 
 use std::{any, collections::HashMap, fmt, sync};
 
@@ -203,7 +204,11 @@ impl Msg {
 }
 
 impl SomeMsg<ConsensusQbftTypes> for Msg {
-    /// Returns the QBFT message type preserved from the wire value.
+    /// Returns the QBFT message type decoded from the stored protobuf.
+    ///
+    /// Wire values outside `1..=5` collapse to `MessageType::Unknown`; the
+    /// raw integer survives only in the protobuf that `to_consensus_msg`
+    /// rebuilds.
     fn type_(&self) -> MessageType {
         MessageType::from_wire(self.msg.r#type)
     }
@@ -537,7 +542,12 @@ mod tests {
 
         let debug = format!("{msg:?}");
 
-        assert!(debug.contains("type: \"\""));
+        // `MessageType` can no longer hold `99`, so the label is `unknown`
+        // rather than charon's empty string for an out-of-range `MsgType`
+        // (`typeLabels` map miss, `core/qbft/qbft.go:89-101`). A message with
+        // such a type never reaches production: `verify_msg` rejects it before
+        // `Msg::new` is called.
+        assert!(debug.contains("type: \"unknown\""), "got {debug}");
     }
 
     #[test]
