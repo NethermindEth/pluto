@@ -124,29 +124,30 @@ pub trait RoundTimer: Send + Sync {
     fn timer(&self, round: i64) -> Result<RoundTimerFuture>;
 }
 
+/// Duty a timer is bound to, paired with the feature set consulted for the
+/// round-one proposal-timeout override.
+#[derive(Debug, Clone)]
+struct BoundDuty {
+    duty: Duty,
+    feature_set: &'static FeatureSet,
+}
+
 /// Implements a linearly increasing round timer.
 #[derive(Debug, Clone, Default)]
 pub struct IncreasingRoundTimer {
-    duty: Option<Duty>,
-    /// `None` until bound to a duty; the round-one proposal-timeout override is
-    /// the only thing that reads it, and it never fires without a duty.
-    feature_set: Option<&'static FeatureSet>,
+    duty: Option<BoundDuty>,
 }
 
 impl IncreasingRoundTimer {
     /// Creates an increasing round timer.
     pub fn new() -> Self {
-        Self {
-            duty: None,
-            feature_set: None,
-        }
+        Self { duty: None }
     }
 
     /// Creates an increasing round timer for a duty.
     pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set: Some(feature_set),
+            duty: Some(BoundDuty { duty, feature_set }),
         }
     }
 }
@@ -157,7 +158,7 @@ impl RoundTimer for IncreasingRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, self.feature_set) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None => increasing_round_timeout(round)?,
         };
@@ -186,9 +187,7 @@ impl RoundTimer for IncreasingRoundTimer {
 /// number: 1s, 2s, 3s, etc.
 #[derive(Debug, Default)]
 pub struct EagerDoubleLinearRoundTimer {
-    duty: Option<Duty>,
-    /// `None` until bound to a duty; see [`IncreasingRoundTimer`].
-    feature_set: Option<&'static FeatureSet>,
+    duty: Option<BoundDuty>,
     first_deadlines: Mutex<HashMap<i64, Instant>>,
 }
 
@@ -197,7 +196,6 @@ impl EagerDoubleLinearRoundTimer {
     pub fn new() -> Self {
         Self {
             duty: None,
-            feature_set: None,
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
@@ -205,8 +203,7 @@ impl EagerDoubleLinearRoundTimer {
     /// Creates an eager double linear round timer for a duty.
     pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set: Some(feature_set),
+            duty: Some(BoundDuty { duty, feature_set }),
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
@@ -218,7 +215,7 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, self.feature_set) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None => linear_round_timeout(round)?,
         };
@@ -251,25 +248,19 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
 /// increase linearly.
 #[derive(Debug, Clone, Default)]
 pub struct LinearRoundTimer {
-    duty: Option<Duty>,
-    /// `None` until bound to a duty; see [`IncreasingRoundTimer`].
-    feature_set: Option<&'static FeatureSet>,
+    duty: Option<BoundDuty>,
 }
 
 impl LinearRoundTimer {
     /// Creates a linear round timer.
     pub fn new() -> Self {
-        Self {
-            duty: None,
-            feature_set: None,
-        }
+        Self { duty: None }
     }
 
     /// Creates a linear round timer for a duty.
     pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set: Some(feature_set),
+            duty: Some(BoundDuty { duty, feature_set }),
         }
     }
 }
@@ -280,7 +271,7 @@ impl RoundTimer for LinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, self.feature_set) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None if round == 1 => Duration::from_secs(1),
             None => linear_subsequent_round_timeout(round)?,
@@ -321,14 +312,9 @@ fn is_proposer(duty: &Duty) -> bool {
 
 /// Returns the proposer round-one override duration, when `ProposalTimeout` is
 /// enabled and the duty is a proposer in round one.
-fn proposal_timeout_duration(
-    duty: Option<&Duty>,
-    round: i64,
-    feature_set: Option<&FeatureSet>,
-) -> Option<Duration> {
-    if round == 1
-        && duty.is_some_and(is_proposer)
-        && feature_set.is_some_and(|fs| fs.enabled(Feature::ProposalTimeout))
+fn proposal_timeout_duration(bound: Option<&BoundDuty>, round: i64) -> Option<Duration> {
+    let bound = bound?;
+    if round == 1 && is_proposer(&bound.duty) && bound.feature_set.enabled(Feature::ProposalTimeout)
     {
         Some(PROPOSAL_TIMEOUT)
     } else {

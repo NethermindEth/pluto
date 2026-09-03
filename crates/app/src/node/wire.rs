@@ -174,7 +174,7 @@ impl DeadlineCalculator for OffsetCalculator {
 /// core panics if fed those submissions. So mask the (alpha, off-by-default)
 /// `AttestationInclusion` feature off until that path lands, keeping the
 /// analyser and the checker consistent.
-fn tracker_feature_set(feature_set: &'static FeatureSet) -> &'static FeatureSet {
+fn tracker_feature_set(feature_set: &FeatureSet) -> &FeatureSet {
     if !feature_set.enabled(Feature::AttestationInclusion) {
         return feature_set;
     }

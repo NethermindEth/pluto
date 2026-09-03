@@ -25,6 +25,11 @@
 //! juggling), there is no lock on the (hot) read path, and tests construct —
 //! and leak — their own set instead of mutating shared state. Any derived set
 //! (e.g. a masked variant) leaks its own small static too.
+//!
+//! Spell `'static` out only where the reference is *stored* — struct fields and
+//! the constructors feeding them, or closures outliving their caller. Functions
+//! that merely read a feature during the call take a plain `&FeatureSet`; a
+//! `&'static` one coerces on the way in.
 
 use std::{collections::HashMap, fmt};
 

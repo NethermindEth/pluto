@@ -41,7 +41,7 @@ pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
 
 /// Duty types for which on-chain inclusion is tracked: always proposers, plus
 /// attesters and aggregators when `AttestationInclusion` is enabled.
-pub(crate) fn incl_supported(fs: &'static FeatureSet) -> HashSet<DutyType> {
+pub(crate) fn incl_supported(fs: &FeatureSet) -> HashSet<DutyType> {
     let mut set = HashSet::new();
     set.insert(DutyType::Proposer);
     if fs.enabled(Feature::AttestationInclusion) {
@@ -53,7 +53,7 @@ pub(crate) fn incl_supported(fs: &'static FeatureSet) -> HashSet<DutyType> {
 
 /// Returns the terminal step for a duty type — either `Bcast` or
 /// `ChainInclusion` depending on whether inclusion checks are supported.
-pub(crate) fn last_step(duty_type: &DutyType, feature_set: &'static FeatureSet) -> Step {
+pub(crate) fn last_step(duty_type: &DutyType, feature_set: &FeatureSet) -> Step {
     if incl_supported(feature_set).contains(duty_type) {
         Step::ChainInclusion
     } else {
@@ -97,10 +97,7 @@ pub(crate) struct DutyFailedStep {
 ///
 /// An empty event slice indicates a duty
 /// that failed before any event was recorded (returns `step = Zero`).
-pub(crate) fn duty_failed_step(
-    events: &[Event],
-    feature_set: &'static FeatureSet,
-) -> DutyFailedStep {
+pub(crate) fn duty_failed_step(events: &[Event], feature_set: &FeatureSet) -> DutyFailedStep {
     if events.is_empty() {
         return DutyFailedStep {
             failed: true,
@@ -168,7 +165,7 @@ pub(crate) fn analyse_duty_failed(
     all_events: &HashMap<Duty, Vec<Event>>,
     failed_step: &DutyFailedStep,
     msg_root_consistent: bool,
-    feature_set: &'static FeatureSet,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     if !failed_step.failed {
         return None;
@@ -259,7 +256,7 @@ pub(crate) fn analyse_fetcher_failed(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
-    feature_set: &'static FeatureSet,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     match &duty.duty_type {
         DutyType::Proposer => Some(analyse_fetcher_failed_proposer(
@@ -311,7 +308,7 @@ fn analyse_fetcher_failed_proposer(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
-    feature_set: &'static FeatureSet,
+    feature_set: &FeatureSet,
 ) -> DutyFailure {
     let randao_duty = Duty::new_randao_duty(duty.slot);
     let randao_events = all_events
@@ -342,7 +339,7 @@ fn analyse_fetcher_failed_aggregator(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
-    feature_set: &'static FeatureSet,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     fetch_err.as_ref()?;
 
@@ -391,7 +388,7 @@ fn analyse_fetcher_failed_sync_contribution(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
-    feature_set: &'static FeatureSet,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     fetch_err.as_ref()?;
 
@@ -610,15 +607,9 @@ mod tests {
         events: &HashMap<Duty, Vec<Event>>,
         msg_root_consistent: bool,
     ) -> Option<DutyFailure> {
-        let fs = default_feature_set();
+        let fs = &FeatureSet::new();
         let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), fs);
         analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, fs)
-    }
-
-    /// Leaks a default feature set for tests, matching the process-lifetime
-    /// `&'static` convention (`Box::leak` once per call is equally cheap).
-    fn default_feature_set() -> &'static FeatureSet {
-        Box::leak(Box::new(FeatureSet::new()))
     }
 
     fn evt(duty: Duty, step: Step) -> Event {
@@ -866,10 +857,7 @@ mod tests {
     #[test]
     fn analyse_duty_failed_attester_success() {
         let att = Duty::new_attester_duty(SlotNumber::new(1));
-        assert_eq!(
-            last_step(&att.duty_type, default_feature_set()),
-            Step::Bcast
-        );
+        assert_eq!(last_step(&att.duty_type, &FeatureSet::new()), Step::Bcast);
 
         // Events for every step up to (but not including) chainInclusion.
         let steps = [
@@ -910,12 +898,12 @@ mod tests {
         ];
         let events: Vec<Event> = steps.iter().map(|s| evt(att.clone(), *s)).collect();
 
-        let r = duty_failed_step(&events, default_feature_set());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
 
-        let r = duty_failed_step(&[], default_feature_set());
+        let r = duty_failed_step(&[], &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -945,7 +933,7 @@ mod tests {
             }
         }
 
-        let r = duty_failed_step(&events, default_feature_set());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Bcast);
         assert!(r.err.is_some());
@@ -955,7 +943,7 @@ mod tests {
         for s in steps {
             events.push(evt(att.clone(), s));
         }
-        let r = duty_failed_step(&events, default_feature_set());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -1266,7 +1254,7 @@ mod tests {
                 // slot) must surface as `Step::Fetcher` so the metrics reporter
                 // skips them rather than counting a success.
                 assert_eq!(
-                    duty_failed_step(&c.events[&c.duty], default_feature_set()).step,
+                    duty_failed_step(&c.events[&c.duty], &FeatureSet::new()).step,
                     Step::Fetcher,
                     "{}: expected fetcher no-op step",
                     c.name

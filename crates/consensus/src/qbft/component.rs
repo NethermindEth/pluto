@@ -1428,7 +1428,7 @@ pub(crate) mod tests {
             DeadlinerTask::start(cancel, "qbft-test", FutureCalculator)
         };
 
-        let fs: &'static pluto_featureset::FeatureSet =
+        let fs: &pluto_featureset::FeatureSet =
             Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
         Config {
             peers: vec![],
