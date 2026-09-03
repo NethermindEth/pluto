@@ -463,7 +463,7 @@ mod tests {
     }
 
     fn fork_epochs_at_zero_spec() -> Value {
-        json!({
+        crate::default_spec_with(json!({
             "CONFIG_NAME": "charon-simnet",
             "SLOTS_PER_EPOCH": "16",
             "SECONDS_PER_SLOT": "12",
@@ -492,7 +492,7 @@ mod tests {
             "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
             "DOMAIN_APPLICATION_BUILDER": "0x00000001",
             "EPOCHS_PER_SYNC_COMMITTEE_PERIOD": "256",
-        })
+        }))
     }
 
     async fn electra_beacon_mock() -> BeaconMock {

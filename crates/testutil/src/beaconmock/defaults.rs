@@ -718,7 +718,8 @@ fn static_endpoint_data(endpoint: &str) -> serde_json::Map<String, Value> {
         .unwrap_or_default()
 }
 
-pub(crate) fn default_spec() -> Value {
+/// The simnet spec served by the default mock.
+pub fn default_spec() -> Value {
     // Start from the Holesky snapshot baseline (~80 mainnet keys) and overlay
     // the simnet overrides used by tests.
     let mut spec = static_endpoint_data("/eth/v1/config/spec");
@@ -765,6 +766,18 @@ pub(crate) fn default_spec() -> Value {
     );
 
     Value::Object(spec)
+}
+
+/// [`default_spec`] with the keys of `overrides` replaced.
+pub fn default_spec_with(overrides: Value) -> Value {
+    let mut spec = default_spec();
+    let Some(overrides) = overrides.as_object() else {
+        panic!("spec overrides must be a JSON object");
+    };
+    for (key, value) in overrides {
+        spec[key] = value.clone();
+    }
+    spec
 }
 
 pub(crate) fn default_genesis() -> Value {

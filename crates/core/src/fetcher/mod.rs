@@ -655,12 +655,12 @@ mod tests {
     /// `is_att_aggregator`, matching the values the prysm selection-proof test
     /// vectors were generated against.
     fn aggregator_spec() -> serde_json::Value {
-        serde_json::json!({
+        pluto_testutil::default_spec_with(serde_json::json!({
             "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
             "SYNC_COMMITTEE_SIZE": "512",
             "SYNC_COMMITTEE_SUBNET_COUNT": "4",
             "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16",
-        })
+        }))
     }
 
     /// Decodes a 96-byte BLS signature from hex.

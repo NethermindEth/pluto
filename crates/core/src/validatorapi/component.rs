@@ -3354,7 +3354,7 @@ mod tests {
     /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
     /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
     fn signing_spec_fixture() -> serde_json::Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "SECONDS_PER_SLOT": "12",
             "SLOTS_PER_EPOCH": "16",
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
@@ -3377,7 +3377,7 @@ mod tests {
             "ELECTRA_FORK_EPOCH": "50",
             "FULU_FORK_VERSION": "0x06070809",
             "FULU_FORK_EPOCH": "60"
-        })
+        }))
     }
 
     async fn mock_beacon_for_signing() -> BeaconMock {

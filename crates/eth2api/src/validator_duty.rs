@@ -52,12 +52,9 @@ impl EthBeaconNodeApiClient {
         &self,
         epoch: phase0::Epoch,
     ) -> Result<phase0::Domain> {
-        let domain_type = self
-            .fetch_domain_type("DOMAIN_BEACON_ATTESTER")
-            .await
-            .map_err(error_message)?;
+        let spec = self.fetch_spec().await.map_err(error_message)?;
 
-        self.fetch_domain(domain_type, epoch)
+        self.fetch_domain(spec.domain_beacon_attester, epoch)
             .await
             .map_err(error_message)
     }

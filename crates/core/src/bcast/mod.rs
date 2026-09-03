@@ -925,7 +925,7 @@ mod tests {
     }
 
     fn deterministic_electra_spec() -> Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "SECONDS_PER_SLOT": "12",
             "SLOTS_PER_EPOCH": "16",
             "GENESIS_FORK_VERSION": "0x01017000",
@@ -943,7 +943,7 @@ mod tests {
             "FULU_FORK_EPOCH": u64::MAX.to_string(),
             "DOMAIN_BEACON_ATTESTER": "0x01000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-        })
+        }))
     }
 
     fn attestation_data(slot: u64, epoch: u64) -> phase0::AttestationData {

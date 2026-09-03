@@ -376,15 +376,9 @@ pub(crate) async fn get_subcommittees(
 ) -> Result<Vec<u64>> {
     let spec = client.fetch_spec().await.map_err(Error::BeaconNode)?;
 
-    let comm_size = spec
-        .u64("SYNC_COMMITTEE_SIZE")
-        .ok_or_else(|| Error::Malformed("missing spec field SYNC_COMMITTEE_SIZE".to_string()))?;
-    let subnet_count = spec.u64("SYNC_COMMITTEE_SUBNET_COUNT").ok_or_else(|| {
-        Error::Malformed("missing spec field SYNC_COMMITTEE_SUBNET_COUNT".to_string())
-    })?;
-
-    let divisor = comm_size
-        .checked_div(subnet_count)
+    let divisor = spec
+        .sync_committee_size
+        .checked_div(spec.sync_committee_subnet_count)
         .ok_or_else(|| Error::Malformed("zero SYNC_COMMITTEE_SUBNET_COUNT".to_string()))?;
     if divisor == 0 {
         return Err(Error::Malformed(

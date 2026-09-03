@@ -1332,7 +1332,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/eth/v1/config/spec"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({ "data": { "SLOTS": "32" } })),
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "data": crate::test_fixtures::spec_json() })),
             )
             .mount(&server)
             .await;
@@ -1347,7 +1348,7 @@ mod tests {
         let client = test_client(&server);
 
         let spec = client.get_spec().await.expect("request succeeds");
-        assert_eq!(spec.u64("SLOTS"), Some(32));
+        assert_eq!(spec.slots_per_epoch, 32);
         assert_eq!(client.get_node_version().await.unwrap(), "Lighthouse/v8");
     }
 
@@ -1356,13 +1357,16 @@ mod tests {
     async fn success_ignores_content_type() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/eth/v1/config/spec"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"data":{}}"#, "text/plain"))
+            .and(path("/eth/v1/node/version"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(r#"{"data":{"version":"Lighthouse/v8"}}"#, "text/plain"),
+            )
             .mount(&server)
             .await;
 
         test_client(&server)
-            .get_spec()
+            .get_node_version()
             .await
             .expect("request succeeds");
     }

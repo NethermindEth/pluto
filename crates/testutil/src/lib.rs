@@ -18,7 +18,8 @@ pub mod beaconmock;
 pub mod validatormock;
 
 pub use beaconmock::{
-    BeaconMock, MockState, Validator, ValidatorSet, active_validator, mock_dv_validator,
+    BeaconMock, MockState, Validator, ValidatorSet, active_validator, default_spec,
+    default_spec_with, mock_dv_validator,
 };
 pub use random::{
     random_deneb_versioned_attestation, random_eth2_signature, random_eth2_signature_bytes,

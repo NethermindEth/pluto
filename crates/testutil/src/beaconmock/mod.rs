@@ -20,7 +20,7 @@ use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0::Root};
 use serde_json::Value;
 use wiremock::MockServer;
 
-use defaults::{default_genesis, default_genesis_time, default_spec, mount_defaults};
+use defaults::{default_genesis, default_genesis_time, mount_defaults};
 use fuzzer::mount_fuzzer;
 use headproducer::HeadProducer;
 use options::{
@@ -29,6 +29,7 @@ use options::{
 };
 use state::{hex_0x, set_object_field, write_lock};
 
+pub use defaults::{default_spec, default_spec_with};
 pub use state::{MockState, Validator, ValidatorSet, active_validator, mock_dv_validator};
 
 /// Errors returned while configuring `BeaconMock`.

@@ -4,16 +4,17 @@
 //! Values follow the API's JSON conventions: integers are quoted decimal
 //! strings and byte values are `0x`-prefixed hex strings.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
+use pluto_ssz::serde_utils::Hex0x;
 use reqwest::{StatusCode, header::HeaderName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_with::serde_as;
+use serde_with::{DisplayFromStr, serde_as};
 
 use crate::{
     spec::{
         DataVersion,
-        phase0::{BLSPubKey, BLSSignature, Root, Slot, ValidatorIndex, Version},
+        phase0::{BLSPubKey, BLSSignature, DomainType, Epoch, Root, Slot, ValidatorIndex, Version},
     },
     v1, versioned,
 };
@@ -224,33 +225,149 @@ pub struct ValidatorsFilter {
     pub statuses: Vec<v1::ValidatorStatus>,
 }
 
-/// Chain configuration as served by `GET /eth/v1/config/spec`: a flat map of
-/// spec constants, presets and configuration values, most of them encoded as
-/// strings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Spec(pub serde_json::Map<String, serde_json::Value>);
+/// Chain configuration as served by `GET /eth/v1/config/spec`, narrowed to the
+/// values Pluto reads. Keys the node serves beyond these are ignored.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub struct Spec {
+    /// Seconds per slot.
+    #[serde_as(as = "DisplayFromStr")]
+    pub seconds_per_slot: u64,
+    /// Slots per epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub slots_per_epoch: u64,
+
+    /// Altair fork version.
+    #[serde_as(as = "Hex0x")]
+    pub altair_fork_version: Version,
+    /// Altair activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub altair_fork_epoch: Epoch,
+    /// Bellatrix fork version.
+    #[serde_as(as = "Hex0x")]
+    pub bellatrix_fork_version: Version,
+    /// Bellatrix activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub bellatrix_fork_epoch: Epoch,
+    /// Capella fork version.
+    #[serde_as(as = "Hex0x")]
+    pub capella_fork_version: Version,
+    /// Capella activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub capella_fork_epoch: Epoch,
+    /// Deneb fork version.
+    #[serde_as(as = "Hex0x")]
+    pub deneb_fork_version: Version,
+    /// Deneb activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub deneb_fork_epoch: Epoch,
+    /// Electra fork version.
+    #[serde_as(as = "Hex0x")]
+    pub electra_fork_version: Version,
+    /// Electra activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub electra_fork_epoch: Epoch,
+    /// Fulu fork version.
+    #[serde_as(as = "Hex0x")]
+    pub fulu_fork_version: Version,
+    /// Fulu activation epoch.
+    #[serde_as(as = "DisplayFromStr")]
+    pub fulu_fork_epoch: Epoch,
+
+    /// Target number of aggregators per beacon committee.
+    #[serde_as(as = "DisplayFromStr")]
+    pub target_aggregators_per_committee: u64,
+    /// Sync committee size.
+    #[serde_as(as = "DisplayFromStr")]
+    pub sync_committee_size: u64,
+    /// Number of sync committee subnets.
+    #[serde_as(as = "DisplayFromStr")]
+    pub sync_committee_subnet_count: u64,
+    /// Target number of aggregators per sync subcommittee.
+    #[serde_as(as = "DisplayFromStr")]
+    pub target_aggregators_per_sync_subcommittee: u64,
+
+    /// Domain type for block proposals.
+    #[serde_as(as = "Hex0x")]
+    pub domain_beacon_proposer: DomainType,
+    /// Domain type for attestations.
+    #[serde_as(as = "Hex0x")]
+    pub domain_beacon_attester: DomainType,
+    /// Domain type for RANDAO reveals.
+    #[serde_as(as = "Hex0x")]
+    pub domain_randao: DomainType,
+    /// Domain type for deposits.
+    #[serde_as(as = "Hex0x")]
+    pub domain_deposit: DomainType,
+    /// Domain type for voluntary exits.
+    #[serde_as(as = "Hex0x")]
+    pub domain_voluntary_exit: DomainType,
+    /// Domain type for aggregator selection proofs.
+    #[serde_as(as = "Hex0x")]
+    pub domain_selection_proof: DomainType,
+    /// Domain type for aggregate and proof messages.
+    #[serde_as(as = "Hex0x")]
+    pub domain_aggregate_and_proof: DomainType,
+    /// Domain type for sync committee messages.
+    #[serde_as(as = "Hex0x")]
+    pub domain_sync_committee: DomainType,
+    /// Domain type for sync committee selection proofs.
+    #[serde_as(as = "Hex0x")]
+    pub domain_sync_committee_selection_proof: DomainType,
+    /// Domain type for sync committee contribution and proof messages.
+    #[serde_as(as = "Hex0x")]
+    pub domain_contribution_and_proof: DomainType,
+    /// Domain type for builder registrations. Defaults to the builder-specs
+    /// constant when the node omits it, as go-eth2-client does.
+    #[serde_as(as = "Hex0x")]
+    #[serde(default = "application_builder_domain_type")]
+    pub domain_application_builder: DomainType,
+}
+
+const fn application_builder_domain_type() -> DomainType {
+    [0x00, 0x00, 0x00, 0x01]
+}
+
+/// Fork version and activation epoch of one fork.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSchedule {
+    /// The fork version.
+    pub version: Version,
+    /// The epoch at which the fork activates.
+    pub epoch: Epoch,
+}
 
 impl Spec {
-    /// Returns the raw value of `key`.
-    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
-        self.0.get(key)
-    }
-
-    /// Returns `key` decoded from its decimal string form.
-    pub fn u64(&self, key: &str) -> Option<u64> {
-        self.get(key)?.as_str()?.parse().ok()
-    }
-
-    /// Returns `key` decoded from its `0x` hex string form.
-    pub fn bytes<const N: usize>(&self, key: &str) -> Option<[u8; N]> {
-        let hex = pluto_ssz::serde_utils::trim_0x_prefix(self.get(key)?.as_str()?);
-        hex::decode(hex).ok()?.try_into().ok()
-    }
-
-    /// Returns `key` decoded as a fork version.
-    pub fn version(&self, key: &str) -> Option<Version> {
-        self.bytes(key)
+    /// Returns the version and activation epoch of every fork after phase0.
+    pub fn fork_schedule(&self) -> HashMap<DataVersion, ForkSchedule> {
+        let fork = |version, epoch| ForkSchedule { version, epoch };
+        HashMap::from([
+            (
+                DataVersion::Altair,
+                fork(self.altair_fork_version, self.altair_fork_epoch),
+            ),
+            (
+                DataVersion::Bellatrix,
+                fork(self.bellatrix_fork_version, self.bellatrix_fork_epoch),
+            ),
+            (
+                DataVersion::Capella,
+                fork(self.capella_fork_version, self.capella_fork_epoch),
+            ),
+            (
+                DataVersion::Deneb,
+                fork(self.deneb_fork_version, self.deneb_fork_epoch),
+            ),
+            (
+                DataVersion::Electra,
+                fork(self.electra_fork_version, self.electra_fork_epoch),
+            ),
+            (
+                DataVersion::Fulu,
+                fork(self.fulu_fork_version, self.fulu_fork_epoch),
+            ),
+        ])
     }
 }
 
@@ -420,21 +537,34 @@ mod tests {
     }
 
     #[test]
-    fn spec_accessors_decode_strings() {
-        let spec: Spec = serde_json::from_value(json!({
-            "SLOTS_PER_EPOCH": "32",
-            "DOMAIN_BEACON_ATTESTER": "0x01000000",
-            "ALTAIR_FORK_VERSION": "0x01000000",
-            "BLOB_SCHEDULE": [{ "EPOCH": "1", "MAX_BLOBS_PER_BLOCK": "6" }],
-        }))
-        .expect("deserialize");
+    fn spec_decodes_wire_encoding_and_ignores_unknown_keys() {
+        let spec: Spec =
+            serde_json::from_value(crate::test_fixtures::spec_json()).expect("deserialize");
 
-        assert_eq!(spec.u64("SLOTS_PER_EPOCH"), Some(32));
-        assert_eq!(spec.bytes("DOMAIN_BEACON_ATTESTER"), Some([1, 0, 0, 0]));
-        assert_eq!(spec.version("ALTAIR_FORK_VERSION"), Some([1, 0, 0, 0]));
-        assert_eq!(spec.u64("BLOB_SCHEDULE"), None);
-        assert_eq!(spec.u64("MISSING"), None);
-        assert_eq!(spec.bytes::<8>("DOMAIN_BEACON_ATTESTER"), None);
+        assert_eq!(spec.seconds_per_slot, 12);
+        assert_eq!(spec.slots_per_epoch, 32);
+        assert_eq!(spec.domain_beacon_attester, [1, 0, 0, 0]);
+        assert_eq!(spec.target_aggregators_per_committee, 16);
+        assert_eq!(
+            spec.fork_schedule()[&DataVersion::Capella],
+            ForkSchedule {
+                version: [3, 4, 5, 6],
+                epoch: 30,
+            }
+        );
+        assert_eq!(spec.fork_schedule().len(), 6);
+    }
+
+    #[test]
+    fn spec_defaults_the_builder_domain_type() {
+        let mut wire = crate::test_fixtures::spec_json();
+        wire.as_object_mut()
+            .expect("object")
+            .remove("DOMAIN_APPLICATION_BUILDER");
+
+        let spec: Spec = serde_json::from_value(wire).expect("deserialize");
+
+        assert_eq!(spec.domain_application_builder, [0, 0, 0, 1]);
     }
 
     #[test]

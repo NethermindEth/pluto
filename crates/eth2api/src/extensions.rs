@@ -1,5 +1,5 @@
 use crate::{
-    EthBeaconNodeApiClient, EventTopic, Spec,
+    EthBeaconNodeApiClient, EventTopic, ForkSchedule, Spec,
     spec::{DataVersion, phase0},
     v1,
 };
@@ -49,10 +49,6 @@ pub enum EthBeaconNodeApiClientError {
         epoch: phase0::Epoch,
     },
 
-    /// Domain type not found in the beacon spec response
-    #[error("Domain type not found: {0}")]
-    DomainTypeNotFound(String),
-
     /// Error while opening the beacon node SSE event stream (request send or
     /// non-success status).
     #[error("Event stream request error: {0}")]
@@ -72,50 +68,6 @@ pub struct BeaconNodeEvent {
     pub topic: String,
     /// The raw JSON data payload.
     pub data: String,
-}
-
-// Ordered oldest-to-newest.
-const FORKS: [DataVersion; 6] = [
-    DataVersion::Altair,
-    DataVersion::Bellatrix,
-    DataVersion::Capella,
-    DataVersion::Deneb,
-    DataVersion::Electra,
-    DataVersion::Fulu,
-];
-
-/// The schedule of given fork, containing the fork version and the epoch at
-/// which it activates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForkSchedule {
-    /// The fork version, as a 4-byte array.
-    pub version: phase0::Version,
-    /// The epoch at which the fork activates.
-    pub epoch: phase0::Epoch,
-}
-
-fn spec_u64(spec: &Spec, key: &str) -> Result<u64, EthBeaconNodeApiClientError> {
-    spec.u64(key)
-        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing or invalid {key}")))
-}
-
-fn spec_version(spec: &Spec, key: &str) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-    spec.version(key)
-        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing or invalid {key}")))
-}
-
-fn fork_schedule_from_spec(
-    spec: &Spec,
-) -> Result<HashMap<DataVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
-    let mut result = HashMap::new();
-    for fork in FORKS {
-        let name = fork.as_str().to_uppercase();
-        let version = spec_version(spec, &format!("{name}_FORK_VERSION"))?;
-        let epoch = spec_u64(spec, &format!("{name}_FORK_EPOCH"))?;
-        result.insert(fork, ForkSchedule { version, epoch });
-    }
-
-    Ok(result)
 }
 
 /// Computes the final 32-byte beacon domain from domain type, fork version, and
@@ -153,21 +105,6 @@ pub fn compute_builder_domain(
     compute_domain(domain_type, genesis_fork_version, phase0::Root::default())
 }
 
-/// Resolves the domain type from the beacon spec.
-pub fn resolve_domain_type(
-    spec: &Spec,
-    spec_key: &str,
-) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
-    if spec.get(spec_key).is_none() {
-        return Err(EthBeaconNodeApiClientError::DomainTypeNotFound(
-            spec_key.to_string(),
-        ));
-    }
-
-    spec.bytes(spec_key)
-        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("decode {spec_key}")))
-}
-
 /// Resolves the fork version active at `epoch` from the fork-schedule
 /// endpoint entries, mirroring go-eth2-client's `forkAtEpoch` (which backs
 /// Charon's `Domain()`): entries are scanned in server order, the last entry
@@ -195,23 +132,6 @@ fn fork_version_from_schedule(
     }
 
     Ok(current.current_version)
-}
-
-/// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
-/// the Capella fork (spec-derived), falling back to the genesis fork version
-/// when the spec has no Capella entry.
-///
-/// Reading the version from the beacon node's own spec keeps devnets and other
-/// custom networks working. The genesis fallback is defensive: a spec without
-/// a Capella version already fails while the schedule is built.
-fn voluntary_exit_fork_version(
-    spec: &Spec,
-    genesis_fork_version: phase0::Version,
-) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-    Ok(fork_schedule_from_spec(spec)?
-        .get(&DataVersion::Capella)
-        .map(|fork| fork.version)
-        .unwrap_or(genesis_fork_version))
 }
 
 /// Cached static chain config for one beacon endpoint: spec, genesis, and
@@ -262,7 +182,8 @@ pub fn purge_chain_config_cache(base_url: &Url) {
 }
 
 impl EthBeaconNodeApiClient {
-    async fn fetch_spec_data(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
+    /// Fetches the chain spec (cached per endpoint).
+    pub async fn fetch_spec(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
         let cache = config_cache_for(&self.base_url);
         cache
             .spec
@@ -298,25 +219,20 @@ impl EthBeaconNodeApiClient {
             })
     }
 
-    /// Fetches the chain spec (cached per endpoint).
-    pub async fn fetch_spec(&self) -> Result<Arc<Spec>, EthBeaconNodeApiClientError> {
-        self.fetch_spec_data().await
-    }
-
     /// Fetches the slot duration and slots per epoch.
     pub async fn fetch_slots_config(
         &self,
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
+        let spec = self.fetch_spec().await?;
 
-        let slot_duration = time::Duration::from_secs(spec_u64(&spec, "SECONDS_PER_SLOT")?);
-        let slots_per_epoch = spec_u64(&spec, "SLOTS_PER_EPOCH")?;
-
-        if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
+        if spec.seconds_per_slot == 0 || spec.slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
         }
 
-        Ok((slot_duration, slots_per_epoch))
+        Ok((
+            time::Duration::from_secs(spec.seconds_per_slot),
+            spec.slots_per_epoch,
+        ))
     }
 
     /// Fetches the proposer duties for `epoch`, keeping only the duties that
@@ -366,17 +282,7 @@ impl EthBeaconNodeApiClient {
     pub async fn fetch_fork_config(
         &self,
     ) -> Result<HashMap<DataVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
-        fork_schedule_from_spec(&spec)
-    }
-
-    /// Fetches the domain type with the provided config/spec key.
-    pub async fn fetch_domain_type(
-        &self,
-        spec_key: &str,
-    ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
-        resolve_domain_type(&spec, spec_key)
+        Ok(self.fetch_spec().await?.fork_schedule())
     }
 
     /// Fetches the genesis domain for the provided domain type.
@@ -428,18 +334,18 @@ impl EthBeaconNodeApiClient {
     /// epoch. Non-exit domains resolve the fork version from the
     /// fork-schedule endpoint (go-eth2-client parity, see
     /// `fork_version_from_schedule`); voluntary exits stay pinned to the
-    /// Capella fork per EIP-7044.
+    /// Capella fork per EIP-7044, read from the node's own spec so devnets
+    /// and other custom networks keep working.
     pub async fn fetch_domain(
         &self,
         domain_type: phase0::DomainType,
         epoch: phase0::Epoch,
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
+        let spec = self.fetch_spec().await?;
         let genesis = self.fetch_genesis_data().await?;
-        let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
 
-        let fork_version = if domain_type == voluntary_exit_domain_type {
-            voluntary_exit_fork_version(&spec, genesis.genesis_fork_version)?
+        let fork_version = if domain_type == spec.domain_voluntary_exit {
+            spec.capella_fork_version
         } else {
             let schedule = self.fetch_fork_schedule_data().await?;
             fork_version_from_schedule(&schedule, epoch)?
@@ -557,11 +463,7 @@ mod tests {
     }
 
     fn cache_spec_body() -> serde_json::Value {
-        let mut spec = spec_fixture_json();
-        spec["SECONDS_PER_SLOT"] = json!("12");
-        spec["SLOTS_PER_EPOCH"] = json!("32");
-        spec["DOMAIN_BEACON_ATTESTER"] = json!("0x01000000");
-        json!({ "data": spec })
+        json!({ "data": crate::test_fixtures::spec_json() })
     }
 
     fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {
@@ -593,10 +495,8 @@ mod tests {
         }
         let client = test_client(&server);
 
-        let domain_type = client
-            .fetch_domain_type("DOMAIN_BEACON_ATTESTER")
-            .await
-            .unwrap();
+        let spec = client.fetch_spec().await.unwrap();
+        let domain_type = spec.domain_beacon_attester;
         let first = client.fetch_domain(domain_type, 20).await.unwrap();
         assert_eq!(first, client.fetch_domain(domain_type, 20).await.unwrap());
         // Fork selection across the epoch-10 boundary yields distinct domains.
@@ -605,6 +505,22 @@ mod tests {
         client.fetch_fork_config().await.unwrap();
         client.fetch_genesis_time().await.unwrap();
         client.fetch_fork_schedule_versions().await.unwrap();
+        // Voluntary exits are pinned to the Capella fork version.
+        assert_eq!(
+            client
+                .fetch_domain(spec.domain_voluntary_exit, 20)
+                .await
+                .unwrap(),
+            compute_domain(
+                spec.domain_voluntary_exit,
+                spec.capella_fork_version,
+                client
+                    .fetch_genesis_data()
+                    .await
+                    .unwrap()
+                    .genesis_validators_root,
+            )
+        );
 
         // Constructed directly (`test_client` purges): a second client for
         // the same endpoint shares the already-warmed entries.
@@ -674,40 +590,6 @@ mod tests {
         purge_chain_config_cache(&client.base_url);
     }
 
-    fn spec_fixture_json() -> serde_json::Value {
-        json!({
-            "DOMAIN_BEACON_PROPOSER": "0x00000000",
-            "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
-            "ALTAIR_FORK_VERSION": "0x01020304",
-            "ALTAIR_FORK_EPOCH": "10",
-            "BELLATRIX_FORK_VERSION": "0x02030405",
-            "BELLATRIX_FORK_EPOCH": "20",
-            "CAPELLA_FORK_VERSION": "0x03040506",
-            "CAPELLA_FORK_EPOCH": "30",
-            "DENEB_FORK_VERSION": "0x04050607",
-            "DENEB_FORK_EPOCH": "40",
-            "ELECTRA_FORK_VERSION": "0x05060708",
-            "ELECTRA_FORK_EPOCH": "50",
-            "FULU_FORK_VERSION": "0x06070809",
-            "FULU_FORK_EPOCH": "60"
-        })
-    }
-
-    fn spec_fixture() -> Spec {
-        serde_json::from_value(spec_fixture_json()).expect("spec fixture")
-    }
-
-    #[test]
-    fn fork_schedule_from_spec_reports_missing_keys() {
-        let spec: Spec =
-            serde_json::from_value(json!({ "ALTAIR_FORK_VERSION": "0x01020304" })).unwrap();
-        assert!(matches!(
-            fork_schedule_from_spec(&spec),
-            Err(EthBeaconNodeApiClientError::ParseError(key)) if key.contains("ALTAIR_FORK_EPOCH")
-        ));
-    }
-
     #[test]
     fn compute_builder_domain_stays_constant() {
         let genesis_fork_version = [0x01, 0x01, 0x70, 0x00];
@@ -720,30 +602,6 @@ mod tests {
             hex::encode(at_genesis),
             "000000015b83a23759c560b2d0c64576e1dcfc34ea94c4988f3e0d9f77f05387"
         );
-    }
-
-    #[test]
-    fn voluntary_exit_fork_version_pins_capella() {
-        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-
-        assert_eq!(
-            voluntary_exit_fork_version(&spec_fixture(), genesis_fork_version).unwrap(),
-            [0x03, 0x04, 0x05, 0x06]
-        );
-    }
-
-    #[test]
-    fn resolve_domain_type_distinguishes_missing_from_malformed() {
-        let spec: Spec =
-            serde_json::from_value(json!({ "DOMAIN_BEACON_ATTESTER": "0xzz" })).unwrap();
-        assert!(matches!(
-            resolve_domain_type(&spec, "DOMAIN_BEACON_ATTESTER"),
-            Err(EthBeaconNodeApiClientError::ParseError(_))
-        ));
-        assert!(matches!(
-            resolve_domain_type(&spec, "DOMAIN_MISSING"),
-            Err(EthBeaconNodeApiClientError::DomainTypeNotFound(_))
-        ));
     }
 
     /// Fork-schedule entries as served by Charon's beaconmock static.json:
