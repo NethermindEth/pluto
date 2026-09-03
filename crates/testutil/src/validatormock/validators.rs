@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ValidatorsFilter, ValidatorsResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ValidatorsFilter,
     spec::phase0::{BLSPubKey, ValidatorIndex},
 };
 
@@ -70,14 +70,10 @@ pub async fn active_validators(client: &EthBeaconNodeApiClient) -> Result<Active
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-    Ok(filter_active(response))
-}
-
-fn filter_active(response: ValidatorsResponse) -> ActiveValidators {
-    response
+    Ok(response
         .data
         .into_iter()
         .filter(|validator| validator.status.is_active())
         .map(|validator| (validator.index, validator.validator.pubkey))
-        .collect()
+        .collect())
 }

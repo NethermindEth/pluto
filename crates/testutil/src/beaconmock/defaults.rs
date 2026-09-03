@@ -10,7 +10,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
-use super::state::{MockState, hex_0x, last_path_segment_u64, read_lock};
+use super::state::{self, MockState};
 
 pub(crate) const ZERO_ROOT: &str =
     "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -232,7 +232,7 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         server,
         "GET",
         r"^/eth/v3/validator/blocks/[0-9]+$",
-        |request| produce_block_response(last_path_segment_u64(request.url.path())),
+        |request| produce_block_response(state::last_path_segment_u64(request.url.path())),
     )
     .await;
 
@@ -367,7 +367,7 @@ pub(crate) async fn mount_status(
 }
 
 fn validators_response(state: &MockState) -> Value {
-    let data = read_lock(&state.validator_set).validators();
+    let data = state::read_lock(&state.validator_set).validators();
 
     json!({
         "data": data,
@@ -461,7 +461,7 @@ fn sync_committee_contribution_response(request: &Request) -> Value {
 }
 
 fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
-    let Some(factor) = *read_lock(&state.deterministic_attester_duties) else {
+    let Some(factor) = *state::read_lock(&state.deterministic_attester_duties) else {
         return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
@@ -469,7 +469,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
     let mut indices = indices_from_body(request);
     indices.sort_unstable();
 
-    let validator_set = read_lock(&state.validator_set).clone();
+    let validator_set = state::read_lock(&state.validator_set).clone();
     let slots_per_epoch = match slots_per_epoch(state) {
         Ok(value) => value,
         Err(message) => return error_response(500, message),
@@ -489,7 +489,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
                 .checked_add(slot_offset)?;
 
             Some(json!({
-                "pubkey": hex_0x(validator.validator.pubkey),
+                "pubkey": state::hex_0x(validator.validator.pubkey),
                 "slot": slot.to_string(),
                 "validator_index": index.to_string(),
                 "committee_index": index.to_string(),
@@ -504,7 +504,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
 }
 
 fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
-    let Some(factor) = *read_lock(&state.deterministic_proposer_duties) else {
+    let Some(factor) = *state::read_lock(&state.deterministic_proposer_duties) else {
         return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
@@ -515,7 +515,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
     };
     // Only validators with an Active* status are eligible to propose, so the
     // deterministic assignment iterates active validators only.
-    let validators: Vec<_> = read_lock(&state.validator_set)
+    let validators: Vec<_> = state::read_lock(&state.validator_set)
         .validators()
         .into_iter()
         .filter(|validator| validator.status.is_active())
@@ -547,7 +547,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
         };
 
         data.push(json!({
-            "pubkey": hex_0x(validator.validator.pubkey),
+            "pubkey": state::hex_0x(validator.validator.pubkey),
             "slot": slot.to_string(),
             "validator_index": validator.index.to_string(),
         }));
@@ -630,7 +630,7 @@ fn duties_response(data: Vec<Value>) -> Value {
 }
 
 fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value {
-    let Some((n, k)) = *read_lock(&state.deterministic_sync_comm_duties) else {
+    let Some((n, k)) = *state::read_lock(&state.deterministic_sync_comm_duties) else {
         return sync_duties_response(Vec::new());
     };
 
@@ -643,7 +643,7 @@ fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value
     }
 
     let indices = indices_from_body(request);
-    let validator_set = read_lock(&state.validator_set).clone();
+    let validator_set = state::read_lock(&state.validator_set).clone();
 
     let data = indices
         .into_iter()
@@ -651,7 +651,7 @@ fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value
         .filter_map(|(position, index)| {
             let validator = validator_set.by_index(index)?;
             Some(json!({
-                "pubkey": hex_0x(validator.validator.pubkey),
+                "pubkey": state::hex_0x(validator.validator.pubkey),
                 "validator_index": index.to_string(),
                 "validator_sync_committee_indices": [position.to_string()],
             }))
@@ -680,13 +680,13 @@ fn indices_from_body(request: &Request) -> Vec<ValidatorIndex> {
 }
 
 fn epoch_from_path(path: &str) -> Epoch {
-    last_path_segment_u64(path)
+    state::last_path_segment_u64(path)
 }
 
 /// Reads `SLOTS_PER_EPOCH` from the spec, surfacing an error when the key is
 /// missing or not a positive integer rather than silently defaulting.
 pub(crate) fn slots_per_epoch(state: &MockState) -> Result<u64, &'static str> {
-    read_lock(&state.spec)
+    state::read_lock(&state.spec)
         .get("SLOTS_PER_EPOCH")
         .and_then(Value::as_str)
         .and_then(|value| value.parse().ok())

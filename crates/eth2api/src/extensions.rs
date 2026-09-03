@@ -74,8 +74,7 @@ pub struct BeaconNodeEvent {
     pub data: String,
 }
 
-// Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
-// break equal-epoch ties (the latest fork wins), so keep it chronological.
+// Ordered oldest-to-newest.
 const FORKS: [DataVersion; 6] = [
     DataVersion::Altair,
     DataVersion::Bellatrix,
@@ -167,25 +166,6 @@ pub fn resolve_domain_type(
 
     spec.bytes(spec_key)
         .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("decode {spec_key}")))
-}
-
-/// Resolves the active fork version at the given epoch.
-pub fn resolve_fork_version(
-    epoch: phase0::Epoch,
-    genesis_fork_version: phase0::Version,
-    fork_schedule: &HashMap<DataVersion, ForkSchedule>,
-) -> phase0::Version {
-    let mut active_version = genesis_fork_version;
-    for fork in FORKS {
-        let Some(schedule) = fork_schedule.get(&fork) else {
-            continue;
-        };
-        if schedule.epoch <= epoch {
-            active_version = schedule.version;
-        }
-    }
-
-    active_version
 }
 
 /// Resolves the fork version active at `epoch` from the fork-schedule
@@ -411,20 +391,6 @@ impl EthBeaconNodeApiClient {
             genesis.genesis_fork_version,
             phase0::Root::default(),
         ))
-    }
-
-    /// Fetches the genesis validators root from the beacon node.
-    pub async fn fetch_genesis_validators_root(
-        &self,
-    ) -> Result<phase0::Root, EthBeaconNodeApiClientError> {
-        Ok(self.fetch_genesis_data().await?.genesis_validators_root)
-    }
-
-    /// Fetches the genesis fork version from the beacon node.
-    pub async fn fetch_genesis_fork_version(
-        &self,
-    ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-        Ok(self.fetch_genesis_data().await?.genesis_fork_version)
     }
 
     /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
@@ -730,54 +696,6 @@ mod tests {
 
     fn spec_fixture() -> Spec {
         serde_json::from_value(spec_fixture_json()).expect("spec fixture")
-    }
-
-    #[test]
-    fn resolve_fork_version_uses_genesis_version_before_first_fork() {
-        let fork_schedule = fork_schedule_from_spec(&spec_fixture()).unwrap();
-        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-
-        assert_eq!(
-            resolve_fork_version(0, genesis_fork_version, &fork_schedule),
-            genesis_fork_version
-        );
-    }
-
-    #[test]
-    fn resolve_fork_version_uses_latest_active_fork_version() {
-        let fork_schedule = fork_schedule_from_spec(&spec_fixture()).unwrap();
-        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-
-        assert_eq!(
-            resolve_fork_version(25, genesis_fork_version, &fork_schedule),
-            [0x02, 0x03, 0x04, 0x05]
-        );
-    }
-
-    #[test]
-    fn resolve_fork_version_breaks_equal_epoch_ties_by_fork_order() {
-        let spec: Spec = serde_json::from_value(json!({
-            "ALTAIR_FORK_VERSION": "0x01020304",
-            "ALTAIR_FORK_EPOCH": "0",
-            "BELLATRIX_FORK_VERSION": "0x02030405",
-            "BELLATRIX_FORK_EPOCH": "0",
-            "CAPELLA_FORK_VERSION": "0x03040506",
-            "CAPELLA_FORK_EPOCH": "0",
-            "DENEB_FORK_VERSION": "0x04050607",
-            "DENEB_FORK_EPOCH": "0",
-            "ELECTRA_FORK_VERSION": "0x05060708",
-            "ELECTRA_FORK_EPOCH": "2048",
-            "FULU_FORK_VERSION": "0x06070809",
-            "FULU_FORK_EPOCH": u64::MAX.to_string(),
-        }))
-        .unwrap();
-        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
-        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-
-        assert_eq!(
-            resolve_fork_version(0, genesis_fork_version, &fork_schedule),
-            [0x04, 0x05, 0x06, 0x07]
-        );
     }
 
     #[test]

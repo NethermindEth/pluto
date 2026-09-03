@@ -3353,9 +3353,6 @@ mod tests {
 
     /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
     /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
-    /// Each fork has a distinct epoch so `resolve_fork_version` is
-    /// deterministic (the fork_schedule HashMap iteration order does not
-    /// affect the result).
     fn signing_spec_fixture() -> serde_json::Value {
         json!({
             "SECONDS_PER_SLOT": "12",

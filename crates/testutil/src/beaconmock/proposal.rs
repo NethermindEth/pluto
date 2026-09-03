@@ -52,17 +52,13 @@ pub(crate) async fn mount(server: &MockServer, state: Arc<MockState>) {
 }
 
 fn response(state: &MockState, request: &Request) -> ResponseTemplate {
-    match parse_body(&request.body) {
+    match serde_json::from_slice::<Vec<ProposalPreparation>>(&request.body) {
         Ok(preparations) => {
             state.proposal_preparation_store.record(preparations);
             ResponseTemplate::new(200)
         }
-        Err(message) => error_response(400, message),
+        Err(_) => error_response(400, "invalid prepare_beacon_proposer body"),
     }
-}
-
-fn parse_body(body: &[u8]) -> Result<Vec<ProposalPreparation>, &'static str> {
-    serde_json::from_slice(body).map_err(|_| "invalid prepare_beacon_proposer body")
 }
 
 #[cfg(test)]
