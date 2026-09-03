@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 alloy.workspace = true
-anyhow.workspace = true
 backon.workspace = true
 async-trait.workspace = true
 bon.workspace = true

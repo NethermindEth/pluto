@@ -126,86 +126,72 @@ impl DeadlineCalculator for DutyDeadlineCalculator {
 mod tests {
     use super::*;
 
-    use anyhow::{Context, Result, ensure};
-
     use crate::deadline::DeadlineError;
 
-    fn test_calculator(slot_duration_secs: i64) -> Result<DutyDeadlineCalculator> {
+    fn test_calculator(slot_duration_secs: i64) -> DutyDeadlineCalculator {
         let genesis_time =
-            DateTime::from_timestamp(1606824023, 0).context("invalid genesis timestamp")?;
+            DateTime::from_timestamp(1606824023, 0).expect("invalid genesis timestamp");
         let slot_duration =
-            Duration::try_seconds(slot_duration_secs).context("invalid slot duration")?;
-        Ok(DutyDeadlineCalculator {
+            Duration::try_seconds(slot_duration_secs).expect("invalid slot duration");
+        DutyDeadlineCalculator {
             genesis_time,
             slot_duration,
-        })
+        }
     }
 
     #[test]
-    fn slot_start_at_slot_zero_equals_genesis() -> Result<()> {
-        let calc = test_calculator(12)?;
-        let start = calc.slot_start(SlotNumber::new(0))?;
-        ensure!(start == calc.genesis_time, "slot 0 must equal genesis");
-        Ok(())
+    fn slot_start_at_slot_zero_equals_genesis() {
+        let calc = test_calculator(12);
+        let start = calc.slot_start(SlotNumber::new(0)).expect("slot 0 start");
+        assert_eq!(start, calc.genesis_time, "slot 0 must equal genesis");
     }
 
     #[test]
-    fn slot_start_advances_by_slot_times_duration() -> Result<()> {
+    fn slot_start_advances_by_slot_times_duration() {
         let slot_duration_secs = 12i64;
         let slot_index = 100u64;
-        let calc = test_calculator(slot_duration_secs)?;
+        let calc = test_calculator(slot_duration_secs);
         let slot = SlotNumber::new(slot_index);
 
-        let start = calc.slot_start(slot)?;
+        let start = calc.slot_start(slot).expect("slot start");
 
-        let slot_index_i64 = i64::try_from(slot_index).context("slot index doesn't fit in i64")?;
+        let slot_index_i64 = i64::try_from(slot_index).expect("slot index doesn't fit in i64");
         let offset_secs = slot_duration_secs
             .checked_mul(slot_index_i64)
-            .context("offset overflow")?;
-        let offset = Duration::try_seconds(offset_secs).context("offset out of chrono range")?;
+            .expect("offset overflow");
+        let offset = Duration::try_seconds(offset_secs).expect("offset out of chrono range");
         let expected = calc
             .genesis_time
             .checked_add_signed(offset)
-            .context("expected overflow")?;
-        ensure!(
-            start == expected,
-            "slot_start mismatch: got {start}, expected {expected}"
-        );
-        Ok(())
+            .expect("expected overflow");
+        assert_eq!(start, expected, "slot_start mismatch");
     }
 
     #[test]
-    fn slot_start_overflows_on_huge_slot() -> Result<()> {
-        let calc = test_calculator(12)?;
+    fn slot_start_overflows_on_huge_slot() {
+        let calc = test_calculator(12);
         let slot = SlotNumber::new(u64::MAX);
         let result = calc.slot_start(slot);
-        ensure!(
+        assert!(
             matches!(result, Err(DeadlineError::ArithmeticOverflow)),
             "expected ArithmeticOverflow, got {result:?}"
         );
-        Ok(())
     }
 
     #[test]
-    fn margin_is_slot_duration_divided_by_margin_factor() -> Result<()> {
+    fn margin_is_slot_duration_divided_by_margin_factor() {
         let slot_duration_secs = 12i64;
-        let calc = test_calculator(slot_duration_secs)?;
+        let calc = test_calculator(slot_duration_secs);
 
-        let margin = calc.margin()?;
+        let margin = calc.margin().expect("margin");
 
-        let slot_duration_ms = slot_duration_secs
-            .checked_mul(1000)
-            .context("ms overflow")?;
+        let slot_duration_ms = slot_duration_secs.checked_mul(1000).expect("ms overflow");
         let expected_ms = slot_duration_ms
             .checked_div(MARGIN_FACTOR)
-            .context("margin div overflow")?;
+            .expect("margin div overflow");
         let expected = Msecs::new(expected_ms);
-        let margin_offset = margin.add_to(calc.genesis_time)?;
-        let expected_offset = expected.add_to(calc.genesis_time)?;
-        ensure!(
-            margin_offset == expected_offset,
-            "margin mismatch: got offset {margin_offset}, expected {expected_offset}"
-        );
-        Ok(())
+        let margin_offset = margin.add_to(calc.genesis_time).expect("margin offset");
+        let expected_offset = expected.add_to(calc.genesis_time).expect("expected offset");
+        assert_eq!(margin_offset, expected_offset, "margin mismatch");
     }
 }
