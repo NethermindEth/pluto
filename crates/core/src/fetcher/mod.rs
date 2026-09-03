@@ -84,21 +84,13 @@ pub enum FetcherError {
     #[error("invalid sync committee message")]
     InvalidSyncCommitteeMessage,
 
-    /// The beacon node returned a nil attestation data response.
-    #[error("attestation data cannot be nil")]
-    NilAttestationData,
-
-    /// The beacon node could not find an aggregate attestation for the root.
+    /// The beacon node has no aggregate attestation for the root.
     #[error("aggregate attestation not found by root (retryable)")]
     AggregateAttestationNotFound,
 
-    /// The beacon node could not find a sync committee contribution.
+    /// The beacon node has no sync committee contribution for the root.
     #[error("sync committee contribution not found by root (retryable)")]
     SyncContributionNotFound,
-
-    /// The beacon node returned an unexpected (non-success) response.
-    #[error("unexpected beacon node response")]
-    UnexpectedResponse,
 
     /// AggSigDB / DutyDB callback (or a subscriber) returned an error.
     #[error("{0}")]
@@ -428,10 +420,7 @@ impl Fetcher {
         self.eth2_cl
             .produce_attestation_data(slot, comm_idx)
             .await
-            .map_err(|err| match err {
-                EthBeaconNodeApiClientError::Http(_) => FetcherError::NilAttestationData,
-                other => other.into(),
-            })
+            .map_err(FetcherError::from)
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
@@ -445,9 +434,12 @@ impl Fetcher {
             .get_aggregated_attestation_v2(slot, comm_idx, data_root)
             .await
             .map_err(|err| match err {
-                // Some beacon nodes answer 404 when the root is not found; surface
-                // a retryable error.
-                EthBeaconNodeApiClientError::Http(_) => FetcherError::AggregateAttestationNotFound,
+                // A 404 means the node has no aggregate for that root yet, e.g.
+                // because it is not subscribed to the committee's subnet; the
+                // duty is retried.
+                EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
+                    FetcherError::AggregateAttestationNotFound
+                }
                 other => other.into(),
             })
     }
@@ -466,7 +458,6 @@ impl Fetcher {
                 EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
                     FetcherError::SyncContributionNotFound
                 }
-                EthBeaconNodeApiClientError::Http(_) => FetcherError::UnexpectedResponse,
                 other => other.into(),
             })
     }
@@ -1360,9 +1351,61 @@ mod tests {
             .await
             .expect_err("expected error");
         assert!(
-            err.to_string()
-                .contains("aggregate attestation not found by root (retryable)"),
-            "got: {err}"
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(**source, FetcherError::AggregateAttestationNotFound)
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_attester_propagates_beacon_node_error() {
+        const SLOT: u64 = 1;
+        let pk_a = PubKey::new([2u8; PK_LEN]);
+        let def_set = DutyDefinitionSet::from([(pk_a, attester_def(2, 1))]);
+
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/eth/v1/validator/attestation_data",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({ "code": 500, "message": "internal error" })),
+            )
+            .with_priority(1)
+            .mount(mock.server())
+            .await;
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(stub_agg_sig_db())
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
+
+        let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
+        let err = fetcher
+            .fetch(duty, def_set)
+            .await
+            .expect_err("expected error");
+        assert!(
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(
+                        &**source,
+                        FetcherError::BeaconNode(EthBeaconNodeApiClientError::Http(http))
+                            if http.status == StatusCode::INTERNAL_SERVER_ERROR
+                    )
+            ),
+            "got: {err:?}"
         );
     }
 
@@ -1473,6 +1516,89 @@ mod tests {
             assert_eq!(contrib.0.subcommittee_index, expected_subcomm);
             assert_eq!(contrib.0.beacon_block_root, expected_root);
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_sync_contribution_not_found() {
+        const SLOT: u64 = 1;
+        let pk_a = PubKey::new([2u8; PK_LEN]);
+
+        let mut def_set = DutyDefinitionSet::new();
+        def_set.insert(
+            pk_a,
+            DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                pubkey: pk_a.0,
+                validator_index: 0,
+                validator_sync_committee_indices: vec![],
+            }),
+        );
+
+        let mock = BeaconMock::builder()
+            .spec(aggregator_spec())
+            .build()
+            .await
+            .expect("build mock");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/eth/v1/validator/sync_committee_contribution",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({ "code": 404, "message": "not found" })),
+            )
+            .with_priority(1)
+            .mount(mock.server())
+            .await;
+
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |duty: Duty, _pubkey: PubKey| {
+            Box::pin(async move {
+                let data: Box<dyn SignedData> = match duty.duty_type {
+                    DutyType::PrepareSyncContribution => {
+                        Box::new(SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
+                            slot: SLOT,
+                            validator_index: 2,
+                            subcommittee_index: 4,
+                            selection_proof: bls_sig(SYNC_AGG_SIG_A),
+                        }))
+                    }
+                    DutyType::SyncMessage => {
+                        Box::new(SignedSyncMessage::new(altair::SyncCommitteeMessage {
+                            slot: SLOT,
+                            beacon_block_root: [10u8; 32],
+                            validator_index: 2,
+                            signature: [0u8; 96],
+                        }))
+                    }
+                    _ => return Err("unsupported duty".into()),
+                };
+                Ok(data)
+            })
+        });
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
+
+        let duty = Duty::new_sync_contribution_duty(SlotNumber::new(SLOT));
+        let err = fetcher
+            .fetch(duty, def_set)
+            .await
+            .expect_err("expected error");
+        assert!(
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(**source, FetcherError::SyncContributionNotFound)
+            ),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test]

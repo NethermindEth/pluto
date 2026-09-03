@@ -226,8 +226,8 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     // (`produce_block_v3` → GET /eth/v3/validator/blocks/{slot}). Returns a
     // deterministic Deneb proposal (identical across nodes for a given
     // slot, so QBFT can agree on the proposer duty). Distinct from the
-    // signed-block *retrieval* endpoint above; without it the fetcher gets
-    // `UnexpectedResponse` and the proposer duty never decides.
+    // signed-block *retrieval* endpoint above; without it the fetcher gets a
+    // 404 and the proposer duty never decides.
     mount_json(
         server,
         "GET",
@@ -244,15 +244,15 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
 
     // Block publish: the broadcaster POSTs the group-signed proposal here after
     // proposer consensus decides. A real beacon node just acks; without a mount
-    // the POST 404s and the broadcaster sees `Unknown`. The blinded variant is
-    // mounted for parity.
+    // the POST 404s and the broadcaster fails with `Error::Client`. The
+    // blinded variant is mounted for parity.
     mount_status(server, "POST", "/eth/v2/beacon/blocks", 200).await;
     mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
 
     // Sync-committee submissions: the broadcaster POSTs sync-committee messages
     // and (for aggregators) contribution-and-proofs after sync consensus. A
-    // real beacon node just acks; without these the broadcaster sees
-    // `Unknown`.
+    // real beacon node just acks; without these the POSTs 404 and the
+    // broadcaster fails with `Error::Client`.
     mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
     mount_status(
         server,
@@ -280,8 +280,8 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
 
     // Aggregate-and-proofs submit: same broadcaster path for the group-signed
     // aggregate; a real beacon node just acks. Without this mount wiremock 404s
-    // and every aggregator duty's final broadcast fails with "submit aggregate
-    // attestations: Unknown".
+    // and every aggregator duty's final broadcast fails with `Error::Client`
+    // in the "submit aggregate attestations" context.
     mount_status(
         server,
         "POST",

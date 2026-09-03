@@ -3,15 +3,15 @@
 mod metrics;
 mod recast;
 
-use std::{any::Any, error::Error as StdError};
+use std::any::Any;
 
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
     spec::{altair, phase0},
     v1,
-    valcache::ValidatorCache,
+    valcache::{ValidatorCache, ValidatorCacheError},
     versioned,
 };
 use tree_hash::TreeHash;
@@ -28,23 +28,20 @@ use crate::{
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
 
-/// Boxed client/provider error.
-pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
-
 /// Broadcaster result.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Broadcaster error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Beacon client/provider error.
+    /// Beacon node client error.
     #[error("{context}: {source}")]
     Client {
         /// Operation context.
         context: &'static str,
         /// Underlying error.
         #[source]
-        source: BoxError,
+        source: EthBeaconNodeApiClientError,
     },
 
     /// Signed-data conversion error.
@@ -217,7 +214,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "fetch genesis time",
-                source: Box::new(source),
+                source,
             })?;
         let (slot_duration, _) =
             client
@@ -225,7 +222,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "fetch slots config",
-                    source: Box::new(source),
+                    source,
                 })?;
         let slot_duration =
             Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
@@ -328,10 +325,21 @@ impl Broadcaster {
 
         match self.client.submit_pool_attestations_v2(&attestations).await {
             Ok(()) => Ok(()),
-            Err(source) if source.to_string().contains("PriorAttestationKnown") => Ok(()),
+            // Lighthouse is not idempotent: an attestation it already knows is
+            // rejected, not acknowledged.
+            Err(EthBeaconNodeApiClientError::Http(http))
+                if http.body.message.contains("PriorAttestationKnown")
+                    || http
+                        .body
+                        .failures
+                        .iter()
+                        .any(|failure| failure.message.contains("PriorAttestationKnown")) =>
+            {
+                Ok(())
+            }
             Err(source) => Err(Error::Client {
                 context: "submit attestations",
-                source: Box::new(source),
+                source,
             }),
         }?;
 
@@ -359,7 +367,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "submit blinded proposal",
-                    source: Box::new(source),
+                    source,
                 })?;
         } else {
             self.client
@@ -367,7 +375,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "submit proposal",
-                    source: Box::new(source),
+                    source,
                 })?;
         }
 
@@ -385,7 +393,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit validator registrations",
-                source: Box::new(source),
+                source,
             })?;
 
         tracing::info!(%duty, "Successfully submitted validator registrations to beacon node");
@@ -416,7 +424,7 @@ impl Broadcaster {
         if let Some(source) = last_error {
             return Err(Error::Client {
                 context: "submit voluntary exit",
-                source: Box::new(source),
+                source,
             });
         }
 
@@ -433,7 +441,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit aggregate attestations",
-                source: Box::new(source),
+                source,
             })?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestation aggregations to beacon node");
@@ -450,7 +458,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit sync committee messages",
-                source: Box::new(source),
+                source,
             })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee messages to beacon node");
@@ -467,7 +475,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit sync committee contributions",
-                source: Box::new(source),
+                source,
             })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee contributions to beacon node");
@@ -500,7 +508,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "fetch attester duties",
-                source: Box::new(source),
+                source,
             })?;
         let domain = self
             .client
@@ -508,7 +516,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "fetch beacon attester domain",
-                source: Box::new(source),
+                source,
             })?;
 
         // Try to find the matching attester duty and attestation by verifying
@@ -640,13 +648,12 @@ async fn resolve_active_validators_indices(
     validator_cache: &ValidatorCache,
     epoch: phase0::Epoch,
 ) -> Result<Vec<phase0::ValidatorIndex>> {
-    let (_, validators) = validator_cache
-        .get_by_head()
-        .await
-        .map_err(|source| Error::Client {
+    let (_, validators) = validator_cache.get_by_head().await.map_err(
+        |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client {
             context: "complete validators",
-            source: Box::new(source),
-        })?;
+            source,
+        },
+    )?;
     let mut indices = Vec::new();
 
     for (index, validator) in validators.iter() {
@@ -696,7 +703,7 @@ async fn first_slot_in_current_epoch(
         .await
         .map_err(|source| Error::Client {
             context: "fetch genesis time",
-            source: Box::new(source),
+            source,
         })?;
     let (slot_duration, slots_per_epoch) =
         client
@@ -704,7 +711,7 @@ async fn first_slot_in_current_epoch(
             .await
             .map_err(|source| Error::Client {
                 context: "fetch slots config",
-                source: Box::new(source),
+                source,
             })?;
     let slot_duration =
         Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
@@ -884,19 +891,41 @@ mod tests {
         }
     }
 
-    async fn mount_prior_attestation_known(server: &MockServer) {
+    /// Broadcasts one Deneb attestation against a node answering the pool
+    /// submit with a 400 carrying `body`, and returns the POSTed paths.
+    async fn broadcast_attester_rejected_with(body: Value) -> Vec<String> {
+        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
         Mock::given(method("POST"))
             .and(path("/eth/v2/beacon/pool/attestations"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "code": 400,
-                "message": "invalid attestation",
-                "failures": [
-                    { "index": 0, "message": "Verification: PriorAttestationKnown" }
-                ]
-            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(body))
             .with_priority(1)
-            .mount(server)
+            .mount(beacon.server())
             .await;
+        let broadcaster = Broadcaster::new(
+            beacon.client().clone(),
+            ValidatorCache::new(beacon.client().clone(), vec![]),
+        )
+        .await
+        .expect("broadcaster");
+        let set = signed_set(
+            pubkey(1),
+            VersionedAttestation::new(deneb_attestation()).expect("attestation"),
+        );
+
+        broadcaster
+            .broadcast(Duty::new_attester_duty(SlotNumber::new(1)), set)
+            .await
+            .expect("prior known swallowed");
+
+        beacon
+            .server()
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST")
+            .map(|request| request.url.path().to_string())
+            .collect()
     }
 
     fn attester_duties_body(
@@ -1154,34 +1183,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_attester_submits_and_swallows_prior_known() {
-        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
-        mount_prior_attestation_known(beacon.server()).await;
-        let broadcaster = Broadcaster::new(
-            beacon.client().clone(),
-            ValidatorCache::new(beacon.client().clone(), vec![]),
-        )
-        .await
-        .expect("broadcaster");
-        let set = signed_set(
-            pubkey(1),
-            VersionedAttestation::new(deneb_attestation()).expect("attestation"),
-        );
+    async fn broadcast_attester_swallows_prior_known_in_failures() {
+        let post_paths = broadcast_attester_rejected_with(json!({
+            "code": 400,
+            "message": "invalid attestation",
+            "failures": [
+                { "index": 0, "message": "Verification: PriorAttestationKnown" }
+            ]
+        }))
+        .await;
+        assert_eq!(post_paths, vec!["/eth/v2/beacon/pool/attestations"]);
+    }
 
-        broadcaster
-            .broadcast(Duty::new_attester_duty(SlotNumber::new(1)), set)
-            .await
-            .expect("prior known swallowed");
-
-        let post_paths = beacon
-            .server()
-            .received_requests()
-            .await
-            .expect("requests")
-            .into_iter()
-            .filter(|request| request.method.as_str() == "POST")
-            .map(|request| request.url.path().to_string())
-            .collect::<Vec<_>>();
+    #[tokio::test]
+    async fn broadcast_attester_swallows_prior_known_in_message() {
+        let post_paths = broadcast_attester_rejected_with(json!({
+            "code": 400,
+            "message": "Verification: PriorAttestationKnown"
+        }))
+        .await;
         assert_eq!(post_paths, vec!["/eth/v2/beacon/pool/attestations"]);
     }
 
