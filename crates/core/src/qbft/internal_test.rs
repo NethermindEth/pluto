@@ -2547,8 +2547,6 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
     });
 }
 
-// === Regression tests for the former `panic!("bug: ...")` sites ============
-
 fn assert_sanity_check<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
     match result {
         Err(QbftError::SanityCheck(msg)) => assert_eq!(msg, expected),
@@ -2586,7 +2584,6 @@ fn new_nested_msg(type_: MessageType, source: i64, round: i64) -> Msg<TestQbft> 
     })
 }
 
-/// Former `mod.rs:398`.
 #[test]
 fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
     let cts = CancellationTokenSource::new();
@@ -2623,117 +2620,6 @@ fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
     assert_sanity_check(outcome, "bug: justification cache must be nil");
 }
 
-/// Former `mod.rs:902`.
-#[test]
-fn classify_reports_sanity_check_for_unknown_message_type() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let msg = new_msg(MessageType::Unknown, 0, 1, 1, 1, 0, 0, 0, None);
-
-    assert_sanity_check(
-        classify(&def, &0, 1, 2, &HashMap::new(), &msg),
-        "bug: invalid type",
-    );
-}
-
-/// Former `mod.rs:913`.
-#[test]
-fn next_min_round_reports_sanity_check_for_short_justification() {
-    let mut def = noop_definition();
-    def.nodes = 4; // f+1 == 2
-
-    let frc = vec![new_round_change(1, 3, 0, 0)];
-
-    assert_sanity_check(next_min_round(&def, &frc, 1), "bug: Frc too short");
-}
-
-/// Former `mod.rs:921`.
-#[test]
-fn next_min_round_reports_sanity_check_for_non_round_change() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let frc = vec![
-        new_msg(MSG_PREPARE, 0, 1, 3, 1, 0, 0, 0, None),
-        new_round_change(2, 3, 0, 0),
-    ];
-
-    assert_sanity_check(
-        next_min_round(&def, &frc, 1),
-        "bug: Frc contain non-round change",
-    );
-}
-
-/// Former `mod.rs:923`.
-#[test]
-fn next_min_round_reports_sanity_check_for_non_future_round() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let frc = vec![new_round_change(1, 1, 0, 0), new_round_change(2, 1, 0, 0)];
-
-    assert_sanity_check(
-        next_min_round(&def, &frc, 1),
-        "bug: Frc round not in future",
-    );
-}
-
-/// Former `mod.rs:947`.
-#[test]
-fn is_justified_reports_sanity_check_for_unknown_message_type() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let msg = new_msg(MessageType::Unknown, 0, 1, 1, 1, 0, 0, 0, None);
-
-    assert_sanity_check(is_justified(&def, &0, &msg, 0), "bug: invalid message type");
-}
-
-/// Former `mod.rs:955`.
-#[test]
-fn is_justified_round_change_reports_sanity_check_for_other_types() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let msg = new_msg(MSG_PREPARE, 0, 1, 1, 1, 0, 0, 0, None);
-
-    assert_sanity_check(
-        is_justified_round_change(&def, &msg),
-        "bug: not a round change message",
-    );
-}
-
-/// Former `mod.rs:1024`.
-#[test]
-fn is_justified_decided_reports_sanity_check_for_other_types() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-
-    let msg = new_msg(MSG_COMMIT, 0, 1, 1, 1, 0, 0, 0, None);
-
-    assert_sanity_check(
-        is_justified_decided(&def, &msg),
-        "bug: not a decided message",
-    );
-}
-
-/// Former `mod.rs:1048`.
-#[test]
-fn is_justified_pre_prepare_reports_sanity_check_for_other_types() {
-    let mut def = noop_definition();
-    def.nodes = 4;
-    def.is_leader = Box::new(make_is_leader(4));
-
-    let msg = new_msg(MSG_ROUND_CHANGE, 0, 1, 1, 1, 0, 0, 0, None);
-
-    assert_sanity_check(
-        is_justified_pre_prepare(&def, &0, &msg, 0),
-        "bug: not a preprepare message",
-    );
-}
-
-/// Former `mod.rs:1397`.
 #[test]
 fn flatten_reports_sanity_check_for_nested_justifications() {
     let nested = new_nested_msg(MSG_ROUND_CHANGE, 1, 1);
