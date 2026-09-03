@@ -44,7 +44,7 @@ pub enum Error {
 
     /// Hex decoding error.
     #[error("hex decoding error: {0}")]
-    HexDecode(#[from] hex::FromHexError),
+    HexDecode(#[from] pluto_ssz::HexDecodeError),
 
     /// Empty hex string.
     #[error("empty hex string")]

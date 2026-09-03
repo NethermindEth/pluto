@@ -174,7 +174,6 @@ const EVENT_BUFFER: usize = 1024;
 ///
 /// `par_sig` is only set by `ParSigDBInternal`, `ParSigEx`, and
 /// `ParSigDBExternal` events, matching Go's `event.parSig`.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct Event {
     pub duty: Duty,
@@ -204,6 +203,8 @@ pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
     /// Kept so callers can detect task completion or panics by awaiting it.
     /// Dropping the handle detaches the task; call `.abort()` to cancel it.
+    // Read only from tests, so `expect(dead_code)` would be unfulfilled under
+    // `--all-targets`; use `allow` to keep the field in non-test builds.
     #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<()>,
 }
@@ -357,7 +358,10 @@ impl TrackerService {
     /// Both `analyser` and `deleter` must have been started with the same
     /// `cancel` token as passed here, so that all three components shut down
     /// together.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tracker startup wires all deadliner handles, receivers, and config in one call"
+    )]
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
@@ -382,7 +386,10 @@ impl TrackerService {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal tracker startup wires all deadliner handles, receivers, sinks, and config in one call"
+    )]
     fn start_with_buffer_and_sinks(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,

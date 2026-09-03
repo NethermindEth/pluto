@@ -36,7 +36,6 @@ use pluto_eth2util::keymanager::{self, KeymanagerError};
 use pluto_p2p::{
     bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
 };
-use pluto_tracing::TracingConfig;
 use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
@@ -275,10 +274,6 @@ pub struct Config {
     #[builder(default = default_p2p_config())]
     pub p2p: P2PConfig,
 
-    /// Shared tracing configuration for the DKG entrypoint.
-    #[builder(default = default_tracing_config())]
-    pub log: pluto_tracing::TracingConfig,
-
     /// Keymanager configuration.
     #[builder(default)]
     pub keymanager: KeymanagerConfig,
@@ -367,13 +362,6 @@ fn default_p2p_config() -> P2PConfig {
         relays: pluto_p2p::config::default_relays(),
         ..Default::default()
     }
-}
-
-fn default_tracing_config() -> TracingConfig {
-    TracingConfig::builder()
-        .with_default_console()
-        .override_env_filter("info")
-        .build()
 }
 
 /// Runs the DKG entrypoint.
@@ -624,7 +612,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     result
 }
 
-#[allow(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+#[expect(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
 async fn run_ceremony<T: frost::FTransport>(
     conf: &Config,
     eth1: &EthClient,
@@ -1091,8 +1079,6 @@ mod tests {
         assert!(!config.no_verify);
         assert_eq!(config.data_dir, path::PathBuf::from(DEFAULT_DATA_DIR));
         assert_eq!(config.p2p.relays, pluto_p2p::config::default_relays());
-        assert_eq!(config.log.override_env_filter.as_deref(), Some("info"));
-        assert!(config.log.console.is_some());
         assert_eq!(config.publish.address, DEFAULT_PUBLISH_ADDRESS);
         assert_eq!(config.publish.timeout, DEFAULT_PUBLISH_TIMEOUT);
         assert!(!config.publish.enabled);

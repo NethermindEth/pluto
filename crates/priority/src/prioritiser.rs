@@ -97,7 +97,7 @@ struct Shared {
     /// Cluster peers participating in the protocol.
     peers: Vec<PeerId>,
     /// Validates received messages (peer membership + signature).
-    msg_validator: Arc<MsgVerifier>,
+    msg_validator: MsgVerifier,
     /// Cancelled when the engine shuts down, signalling instances to stop.
     quit: CancellationToken,
     /// Deadline scheduler; expired duties drop their request buffers.
@@ -177,7 +177,7 @@ impl Shared {
             return Err(Error::InvalidPeerId);
         }
 
-        (self.msg_validator)(&msg)?; // Arc<Box<dyn Fn>> auto-derefs for call.
+        (self.msg_validator)(&msg)?;
 
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
@@ -241,7 +241,10 @@ impl Prioritiser {
     /// handler and its exchange silently skipped, so the instance could
     /// otherwise reach consensus on a partial message set. Callers using this
     /// seam directly must uphold that invariant.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal constructor wires the full engine; each argument is a distinct collaborator"
+    )]
     pub fn new_internal(
         local_id: PeerId,
         peers: Vec<PeerId>,
@@ -258,7 +261,7 @@ impl Prioritiser {
         // feeds the remaining `Inner` fields — no construction cycle.
         let shared = Arc::new(Shared {
             peers,
-            msg_validator: Arc::new(msg_validator),
+            msg_validator,
             quit: CancellationToken::new(),
             deadliner,
             req_buffers: Mutex::new(HashMap::new()),

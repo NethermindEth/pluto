@@ -116,14 +116,6 @@ pub enum CliError {
     #[error("Eth2util deposit error: {0}")]
     Eth2utilDepositError(#[from] pluto_eth2util::deposit::DepositError),
 
-    /// Tracing initialization error.
-    #[error("Tracing initialization error: {0}")]
-    TracingInitError(#[from] pluto_tracing::init::Error),
-
-    /// Command parsing error.
-    #[error("Command parsing error: {0}")]
-    CommandParsingError(#[from] clap::Error),
-
     /// Create DKG error.
     #[error("Create DKG error: {0}")]
     CreateDKGError(#[from] crate::commands::create_dkg::CreateDkgError),
@@ -304,13 +296,6 @@ pub enum CreateClusterError {
     /// Crypto error.
     #[error("Crypto error: {0}")]
     CryptoError(#[from] pluto_crypto::types::Error),
-
-    /// Value exceeds u8::MAX.
-    #[error("Value {value} exceeds u8::MAX (255)")]
-    ValueExceedsU8 {
-        /// The value that exceeds u8::MAX.
-        value: u64,
-    },
 
     /// Value exceeds usize::MAX.
     #[error("Value {value} exceeds usize::MAX")]

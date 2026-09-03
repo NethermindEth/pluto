@@ -4,7 +4,7 @@ use libp2p::PeerId;
 
 /// Event emitted while the FROST P2P transport progresses through its rounds.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "observation event fields not yet consumed")]
 pub(crate) enum FrostP2PEvent {
     /// A FROST transport round started.
     RoundStarted {

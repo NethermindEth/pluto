@@ -84,8 +84,8 @@ pub enum K1UtilError {
 type Result<T> = std::result::Result<T, K1UtilError>;
 
 /// Converts a libp2p PublicKey to a secp256k1 PublicKey.
-pub fn public_key_from_libp2p(pk: &Libp2pPublicKey) -> Result<PublicKey> {
-    let secp_key = pk.clone().try_into_secp256k1()?;
+pub fn public_key_from_libp2p(pk: Libp2pPublicKey) -> Result<PublicKey> {
+    let secp_key = pk.try_into_secp256k1()?;
     PublicKey::from_sec1_bytes(&secp_key.to_bytes())
         .map_err(K1UtilError::FailedToParseSecp256k1PublicKey)
 }

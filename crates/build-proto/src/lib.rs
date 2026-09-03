@@ -27,6 +27,11 @@ pub fn compile_protos(proto_dir: &str) -> Result<()> {
         .bytes(["."])
         .enable_type_names()
         .type_name_domain(["."], "type.googleapis.com")
+        // Route generated code through the `pluto-proto` shim, whose map encoders
+        // always emit both key and value fields to match charon's Go marshaler
+        // (see the `pluto-proto` crate docs). Every crate that compiles protos via
+        // this function must depend on `pluto-proto`.
+        .prost_path("::pluto_proto::prost")
         .out_dir(proto_dir);
 
     config.compile_protos(

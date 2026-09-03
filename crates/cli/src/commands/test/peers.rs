@@ -57,7 +57,13 @@ struct TestBehaviour {
 #[derive(Debug)]
 enum TestBehaviourEvent {
     Relay(relay::client::Event),
-    RelayManager(#[allow(dead_code)] pluto_p2p::relay::RelayManagerEvent),
+    RelayManager(
+        #[expect(
+            dead_code,
+            reason = "event payload is never read; only the variant tag matters"
+        )]
+        pluto_p2p::relay::RelayManagerEvent,
+    ),
 }
 
 impl From<relay::client::Event> for TestBehaviourEvent {
@@ -98,9 +104,10 @@ pub struct TestPeersArgs {
     pub test_config: TestConfigArgs,
 
     /// [REQUIRED] Comma-separated list of each peer ENR address.
-    // Doc comment doubles as clap help text, so the brackets must stay
-    // literal rather than becoming a rustdoc link.
-    #[allow(rustdoc::broken_intra_doc_links)]
+    #[expect(
+        rustdoc::broken_intra_doc_links,
+        reason = "doc comment doubles as clap help text, so the brackets must stay literal rather than becoming a rustdoc link"
+    )]
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
 
@@ -657,7 +664,10 @@ struct PeerState {
     identify_received: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "drives the peer test event loop from many independent inputs; grouping them into a struct would not improve clarity"
+)]
 async fn run_peer_event_loop(
     mut node: Node<TestBehaviour>,
     cluster_peers: &[Peer],
@@ -1047,7 +1057,10 @@ async fn keep_node_alive(
     ct: CancellationToken,
 ) {
     tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a bounded keep-alive interval to a fresh Instant cannot overflow in practice"
+    )]
     let deadline = tokio::time::Instant::now() + keep_alive;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

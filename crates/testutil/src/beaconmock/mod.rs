@@ -65,7 +65,6 @@ impl Drop for BeaconMock {
 impl BeaconMock {
     /// Builds a beacon mock with charon-compatible defaults, overriding any
     /// provided fields.
-    #[allow(clippy::too_many_arguments)]
     #[builder]
     pub async fn new(
         validator_set: Option<ValidatorSet>,
