@@ -542,11 +542,6 @@ mod tests {
 
         let debug = format!("{msg:?}");
 
-        // `MessageType` can no longer hold `99`, so the label is `unknown`
-        // rather than charon's empty string for an out-of-range `MsgType`
-        // (`typeLabels` map miss, `core/qbft/qbft.go:89-101`). A message with
-        // such a type never reaches production: `verify_msg` rejects it before
-        // `Msg::new` is called.
         assert!(debug.contains("type: \"unknown\""), "got {debug}");
     }
 

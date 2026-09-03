@@ -2548,14 +2548,6 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
 }
 
 // === Regression tests for the former `panic!("bug: ...")` sites ============
-//
-// Each of the eleven internal sanity checks in `mod.rs` used to abort the
-// process; they now return `QbftError::SanityCheck`, mirroring charon's
-// `recover` in `core/qbft/qbft.go:187-198`. Ten of them are reachable from a
-// test; the eleventh (`run`'s `match rule` arm) is unreachable by construction
-// because `classify` can return neither `Nothing` (filtered directly above the
-// match) nor `RoundTimeout` (produced only by the timer branch), which is
-// exactly what the exhaustive match now records in the type system.
 
 fn assert_sanity_check<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
     match result {
@@ -2564,9 +2556,7 @@ fn assert_sanity_check<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
     }
 }
 
-/// Builds a message whose justification entries themselves carry
-/// justifications. `new_msg` deliberately strips that nesting, so the nested
-/// shape has to be assembled by hand.
+/// Builds a message whose justifications themselves carry justifications.
 fn new_nested_msg(type_: MessageType, source: i64, round: i64) -> Msg<TestQbft> {
     let leaf = TestMsg {
         msg_type: MSG_PREPARE,
@@ -2596,16 +2586,7 @@ fn new_nested_msg(type_: MessageType, source: i64, round: i64) -> Msg<TestQbft> 
     })
 }
 
-/// Former `mod.rs:398`. The round-1 leader caches its PRE-PREPARE
-/// justification while it has no input value; a quorum of `ROUND_CHANGE` for
-/// round 1 then drives a second `broadcast_own_pre_prepare` with the cache
-/// still set.
-///
-/// This is the only one of the eleven sites reachable from the wire, and
-/// reaching it needs a quorum of distinctly-signed messages — above the
-/// Byzantine threshold, so it is not a single-peer trigger. What changes here
-/// is that the failure is now a typed `QbftError` the caller can classify
-/// instead of an unwind.
+/// Former `mod.rs:398`.
 #[test]
 fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
     let cts = CancellationTokenSource::new();
@@ -2616,8 +2597,7 @@ fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
             .send(new_round_change(source, 1, 0, 0))
             .expect(WRITE_CHAN_ERR);
     }
-    // Close the channel: if the sanity check ever stops firing, `run` gets
-    // `ChannelError` once the queue drains instead of blocking forever.
+    // Closed so a regression fails with `ChannelError` instead of hanging.
     drop(receive_tx);
 
     let mut def = noop_definition();
@@ -2630,8 +2610,6 @@ fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
         receive: receive_rx,
     };
 
-    // Process 1 leads instance 0 round 1 and never receives an input value, so
-    // its Algorithm 1:11 PRE-PREPARE only fills the justification cache.
     let outcome = qbft::run(
         &token,
         &def,
@@ -2645,8 +2623,7 @@ fn run_reports_sanity_check_when_pre_prepare_justification_is_already_cached() {
     assert_sanity_check(outcome, "bug: justification cache must be nil");
 }
 
-/// Former `mod.rs:902`. Unreachable from the wire — `verify_msg` rejects every
-/// type outside `1..=5` — so it is driven through the internal API.
+/// Former `mod.rs:902`.
 #[test]
 fn classify_reports_sanity_check_for_unknown_message_type() {
     let mut def = noop_definition();
@@ -2660,8 +2637,7 @@ fn classify_reports_sanity_check_for_unknown_message_type() {
     );
 }
 
-/// Former `mod.rs:913`. `classify` only produces `UPON_F_PLUS1_ROUND_CHANGES`
-/// with at least `f+1` messages, so a shorter set is caller error.
+/// Former `mod.rs:913`.
 #[test]
 fn next_min_round_reports_sanity_check_for_short_justification() {
     let mut def = noop_definition();
@@ -2672,8 +2648,7 @@ fn next_min_round_reports_sanity_check_for_short_justification() {
     assert_sanity_check(next_min_round(&def, &frc, 1), "bug: Frc too short");
 }
 
-/// Former `mod.rs:921`. `get_fplus1_round_changes` filters on
-/// `MSG_ROUND_CHANGE`, so a foreign type can only arrive by caller error.
+/// Former `mod.rs:921`.
 #[test]
 fn next_min_round_reports_sanity_check_for_non_round_change() {
     let mut def = noop_definition();
@@ -2690,8 +2665,7 @@ fn next_min_round_reports_sanity_check_for_non_round_change() {
     );
 }
 
-/// Former `mod.rs:923`. `get_fplus1_round_changes` only collects rounds above
-/// the current one.
+/// Former `mod.rs:923`.
 #[test]
 fn next_min_round_reports_sanity_check_for_non_future_round() {
     let mut def = noop_definition();
@@ -2705,8 +2679,7 @@ fn next_min_round_reports_sanity_check_for_non_future_round() {
     );
 }
 
-/// Former `mod.rs:947`. The first of the two core type gates; like
-/// `classify`'s, unreachable from the wire.
+/// Former `mod.rs:947`.
 #[test]
 fn is_justified_reports_sanity_check_for_unknown_message_type() {
     let mut def = noop_definition();
@@ -2717,7 +2690,7 @@ fn is_justified_reports_sanity_check_for_unknown_message_type() {
     assert_sanity_check(is_justified(&def, &0, &msg, 0), "bug: invalid message type");
 }
 
-/// Former `mod.rs:955`. Only `is_justified`'s `RoundChange` arm calls this.
+/// Former `mod.rs:955`.
 #[test]
 fn is_justified_round_change_reports_sanity_check_for_other_types() {
     let mut def = noop_definition();
@@ -2731,7 +2704,7 @@ fn is_justified_round_change_reports_sanity_check_for_other_types() {
     );
 }
 
-/// Former `mod.rs:1024`. Only `is_justified`'s `Decided` arm calls this.
+/// Former `mod.rs:1024`.
 #[test]
 fn is_justified_decided_reports_sanity_check_for_other_types() {
     let mut def = noop_definition();
@@ -2745,7 +2718,7 @@ fn is_justified_decided_reports_sanity_check_for_other_types() {
     );
 }
 
-/// Former `mod.rs:1048`. Only `is_justified`'s `PrePrepare` arm calls this.
+/// Former `mod.rs:1048`.
 #[test]
 fn is_justified_pre_prepare_reports_sanity_check_for_other_types() {
     let mut def = noop_definition();
@@ -2760,10 +2733,7 @@ fn is_justified_pre_prepare_reports_sanity_check_for_other_types() {
     );
 }
 
-/// Former `mod.rs:1397`. Nesting is not expressible on the wire: `QBFTMsg` has
-/// no justification field and `consensus::qbft::msg::Msg::new` builds every
-/// justification with an empty justification list. The nested shape therefore
-/// has to be built directly.
+/// Former `mod.rs:1397`.
 #[test]
 fn flatten_reports_sanity_check_for_nested_justifications() {
     let nested = new_nested_msg(MSG_ROUND_CHANGE, 1, 1);

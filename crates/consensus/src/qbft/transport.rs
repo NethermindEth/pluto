@@ -396,11 +396,6 @@ mod tests {
         assert!(msg::verify_msg_sig(msg.msg(), &key.public_key()).unwrap());
     }
 
-    /// `MessageType` can no longer hold an out-of-range wire value, so the old
-    /// "unknown wire value is preserved verbatim" behaviour is gone: an
-    /// unrepresentable value collapses to `Unknown` before it reaches
-    /// `create_msg`, and `create_msg` writes `Unknown`'s wire value `0`.
-    /// `verify_msg` then rejects `0` on the receiving side.
     #[test]
     fn create_msg_writes_unknown_message_type_as_zero() {
         let key = secret_key();

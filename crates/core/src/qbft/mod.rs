@@ -482,7 +482,7 @@ pub fn run<T: QbftTypes>(
     let broadcast_own_pre_prepare = |justification: Vec<Msg<T>>| {
         if ppj_cache.borrow().is_some() {
             return Err(QbftError::SanityCheck(
-                "bug: justification cache must be none",
+                "bug: justification cache must be nil",
             ));
         }
 
@@ -1515,8 +1515,7 @@ fn uniq_source<T: QbftTypes>() -> impl FnMut(&Msg<T>) -> bool {
 mod tests {
     use super::*;
 
-    /// The wire discriminants are frozen: changing one breaks backwards
-    /// compatibility with every deployed peer. Pin all six.
+    /// Wire discriminants are frozen; changing one breaks deployed peers.
     #[test]
     fn message_type_discriminants_are_frozen() {
         assert_eq!(i64::from(MessageType::Unknown), 0);
@@ -1527,8 +1526,6 @@ mod tests {
         assert_eq!(i64::from(MessageType::Decided), 5);
     }
 
-    /// The `MSG_*` aliases must keep naming the same wire values they did when
-    /// they were `MessageType(i64)` constants.
     #[test]
     fn message_type_aliases_match_variants() {
         assert_eq!(MSG_UNKNOWN, MessageType::Unknown);
@@ -1539,8 +1536,7 @@ mod tests {
         assert_eq!(MSG_DECIDED, MessageType::Decided);
     }
 
-    /// `Display` output reaches logs and metric labels, so the strings are as
-    /// frozen as the discriminants.
+    /// `Display` strings reach logs, so they are frozen too.
     #[test]
     fn message_type_display_strings_are_frozen() {
         assert_eq!(MessageType::Unknown.to_string(), "unknown");
@@ -1560,8 +1556,6 @@ mod tests {
         assert_eq!(MessageType::try_from(5), Ok(MessageType::Decided));
     }
 
-    /// `TryFrom` rejects exactly what `valid` rejects, including the old
-    /// `msgSentinel` value `6`, the unknown value `0`, and both extremes.
     #[test]
     fn message_type_try_from_rejects_out_of_range_wire_values() {
         for value in [0, 6, 99, -1, i64::MIN, i64::MAX] {
@@ -1578,8 +1572,6 @@ mod tests {
         );
     }
 
-    /// `from_wire` is the lossy sibling of `TryFrom`: it maps every rejected
-    /// value onto `Unknown` rather than failing.
     #[test]
     fn message_type_from_wire_maps_unknown_values_to_unknown() {
         assert_eq!(MessageType::from_wire(1), MessageType::PrePrepare);
@@ -1590,9 +1582,7 @@ mod tests {
         }
     }
 
-    /// `valid` accepts precisely the set `TryFrom` accepts, which is what lets
-    /// the wire boundary do one conversion instead of a conversion plus a
-    /// separate validity check.
+    /// Same accepted set as `TryFrom`, so the wire boundary needs one check.
     #[test]
     fn message_type_valid_matches_try_from() {
         assert!(!MessageType::Unknown.valid());
@@ -1612,9 +1602,7 @@ mod tests {
         }
     }
 
-    /// `UponRule` is never serialised, but its discriminants are the values the
-    /// original `UponRule(i64)` constants carried; keep them stable so the
-    /// `Debug`/`Display` output in logs does not silently shift.
+    /// Never serialised, but #637 freezes these values.
     #[test]
     fn upon_rule_discriminants_are_frozen() {
         assert_eq!(i64::from(UponRule::Nothing), 0);
@@ -1669,8 +1657,7 @@ mod tests {
         assert_eq!(UponRule::RoundTimeout.to_string(), "round_timeout");
     }
 
-    /// The sanity-check error keeps charon's original panic text so operator
-    /// greps written against charon logs keep matching.
+    /// Payloads match charon's panic text so log greps keep working.
     #[test]
     fn sanity_check_error_mirrors_charon_wording() {
         let err = QbftError::SanityCheck("bug: invalid rule");
