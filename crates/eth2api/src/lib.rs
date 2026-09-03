@@ -13,11 +13,10 @@ pub mod types;
 pub use client::*;
 pub use types::*;
 
-/// Additional data types and functions to reduce the boilerplate when
-/// interacting with `eth2api`.
-pub mod extensions;
+/// Error type of the client.
+pub mod error;
 
-pub use extensions::*;
+pub use error::EthBeaconNodeApiClientError;
 
 /// Beacon node client wrapper.
 pub mod beacon_node;

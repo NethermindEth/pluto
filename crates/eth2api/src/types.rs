@@ -10,11 +10,14 @@ use pluto_ssz::serde_utils::Hex0x;
 use reqwest::{StatusCode, header::HeaderName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_with::{DisplayFromStr, serde_as};
+use tree_hash::TreeHash;
 
 use crate::{
     spec::{
         DataVersion,
-        phase0::{BLSPubKey, BLSSignature, DomainType, Epoch, Root, Slot, ValidatorIndex, Version},
+        phase0::{
+            self, BLSPubKey, BLSSignature, DomainType, Epoch, Root, Slot, ValidatorIndex, Version,
+        },
     },
     v1, versioned,
 };
@@ -482,6 +485,52 @@ pub struct SignedBlockResponse {
     pub data: versioned::SignedBeaconBlock,
 }
 
+/// A single Server-Sent Event from a beacon node: the event topic (the SSE
+/// `event:` field, e.g. `head` or `chain_reorg`) and its raw, unparsed JSON
+/// `data` payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeaconNodeEvent {
+    /// The SSE event topic.
+    pub topic: String,
+    /// The raw JSON data payload.
+    pub data: String,
+}
+
+/// Computes the final 32-byte beacon domain from domain type, fork version, and
+/// genesis root.
+pub fn compute_domain(
+    domain_type: phase0::DomainType,
+    fork_version: phase0::Version,
+    genesis_validators_root: phase0::Root,
+) -> phase0::Domain {
+    let fork_data = phase0::ForkData {
+        current_version: fork_version,
+        genesis_validators_root,
+    };
+    let fork_data_root = fork_data.tree_hash_root();
+
+    let mut domain = phase0::Domain::default();
+    domain[..phase0::DOMAIN_TYPE_LEN].copy_from_slice(&domain_type);
+    domain[phase0::DOMAIN_TYPE_LEN..]
+        .copy_from_slice(&fork_data_root.0[..(phase0::DOMAIN_LEN - phase0::DOMAIN_TYPE_LEN)]);
+
+    domain
+}
+
+/// Computes the builder domain using `GENESIS_FORK_VERSION` and a zero
+/// validators root.
+///
+/// Builder registrations do not use the fork-at-epoch beacon domain.
+/// References:
+/// - <https://github.com/ethereum/builder-specs/blob/100d4faf32e5dc672c963741769390ff09ab194a/specs/bellatrix/builder.md#signing>
+/// - <https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#compute_domain>
+pub fn compute_builder_domain(
+    domain_type: phase0::DomainType,
+    genesis_fork_version: phase0::Version,
+) -> phase0::Domain {
+    compute_domain(domain_type, genesis_fork_version, phase0::Root::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +677,20 @@ mod tests {
             serde_json::from_value::<EventTopic>(json!("light_client_finality_update"))
                 .expect("json"),
             EventTopic::LightClientFinalityUpdate
+        );
+    }
+
+    #[test]
+    fn compute_builder_domain_stays_constant() {
+        let genesis_fork_version = [0x01, 0x01, 0x70, 0x00];
+
+        let at_genesis = compute_builder_domain([0x00, 0x00, 0x00, 0x01], genesis_fork_version);
+        let post_forks = compute_builder_domain([0x00, 0x00, 0x00, 0x01], genesis_fork_version);
+
+        assert_eq!(at_genesis, post_forks);
+        assert_eq!(
+            hex::encode(at_genesis),
+            "000000015b83a23759c560b2d0c64576e1dcfc34ea94c4988f3e0d9f77f05387"
         );
     }
 }
