@@ -1200,6 +1200,19 @@ pub struct AttesterDuty {
     pub validator_committee_index: u64,
 }
 
+impl From<&v1::AttesterDuty> for AttesterDuty {
+    fn from(duty: &v1::AttesterDuty) -> Self {
+        Self {
+            slot: duty.slot,
+            validator_index: duty.validator_index,
+            committee_index: duty.committee_index,
+            committee_length: duty.committee_length,
+            committees_at_slot: duty.committees_at_slot,
+            validator_committee_index: duty.validator_committee_index,
+        }
+    }
+}
+
 /// Unsigned attestation data paired with its duty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationData {

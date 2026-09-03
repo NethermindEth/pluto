@@ -218,7 +218,7 @@ impl Fetcher {
                 return Err(FetcherError::InvalidAttesterDefinition);
             };
 
-            let mut comm_idx = att_def.duty.committee_index;
+            let mut comm_idx = att_def.committee_index;
 
             // Attestation data for Electra is not bound by committee index;
             // committee index is still persisted in the request but should be
@@ -240,7 +240,7 @@ impl Fetcher {
                 *pubkey,
                 UnsignedDutyData::Attestation(AttestationData {
                     data: eth2_att_data,
-                    duty: att_def.duty.clone(),
+                    duty: att_def.into(),
                 }),
             );
         }
@@ -276,7 +276,7 @@ impl Fetcher {
 
             let is_aggregator = eth2exp::is_att_aggregator(
                 &self.eth2_cl,
-                att_def.duty.committee_length,
+                att_def.committee_length,
                 selection.0.selection_proof,
             )
             .await?;
@@ -287,7 +287,7 @@ impl Fetcher {
 
             tracker.add_resolved(pubkey.to_string());
 
-            let comm_idx = att_def.duty.committee_index;
+            let comm_idx = att_def.committee_index;
 
             if let Some(agg_att) = agg_att_by_comm_idx.get(&comm_idx) {
                 resp.insert(
@@ -612,15 +612,11 @@ impl Drop for PubkeysTracker {
 mod tests {
     use std::sync::Mutex;
 
+    use pluto_eth2api::v1;
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::{
-        signeddata::AttesterDuty,
-        types::{
-            AttesterDutyDefinition, ProposerDutyDefinition, SlotNumber, SyncCommitteeDutyDefinition,
-        },
-    };
+    use crate::{signeddata::AttesterDuty, types::SlotNumber};
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
     const PK_LEN: usize = 48;
@@ -906,18 +902,18 @@ mod tests {
         let def_set = DutyDefinitionSet::from([
             (
                 pk_a,
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: pk_a,
-                    v_idx: 2,
-                    slot: SlotNumber::new(SLOT),
+                DutyDefinition::Proposer(v1::ProposerDuty {
+                    pubkey: pk_a.0,
+                    validator_index: 2,
+                    slot: SLOT,
                 }),
             ),
             (
                 pk_b,
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: pk_b,
-                    v_idx: 3,
-                    slot: SlotNumber::new(SLOT),
+                DutyDefinition::Proposer(v1::ProposerDuty {
+                    pubkey: pk_b.0,
+                    validator_index: 3,
+                    slot: SLOT,
                 }),
             ),
         ]);
@@ -1145,12 +1141,17 @@ mod tests {
             .await;
     }
 
-    /// Builds an attester duty definition from an eth2 [`AttesterDuty`], keyed
-    /// by the given public key.
-    fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> AttesterDutyDefinition {
-        AttesterDutyDefinition {
-            pubkey,
-            duty: duty.clone(),
+    /// Builds the attester duty definition for `pubkey` from a signed-data
+    /// [`AttesterDuty`].
+    fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> v1::AttesterDuty {
+        v1::AttesterDuty {
+            pubkey: pubkey.0,
+            slot: duty.slot,
+            validator_index: duty.validator_index,
+            committee_index: duty.committee_index,
+            committee_length: duty.committee_length,
+            committees_at_slot: duty.committees_at_slot,
+            validator_committee_index: duty.validator_committee_index,
         }
     }
 
@@ -1175,8 +1176,6 @@ mod tests {
     fn aggregator_funcs(
         atts: impl AsRef<[phase0::Attestation]>,
     ) -> (AggSigDbFunc, AwaitAttDataFunc) {
-        use pluto_eth2api::v1;
-
         let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, _pubkey: PubKey| {
             Box::pin(async move {
                 let selection = BeaconCommitteeSelection::new(v1::BeaconCommitteeSelection {
@@ -1445,8 +1444,8 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                    pubkey: pk,
+                DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                    pubkey: pk.0,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
                 }),
@@ -1509,8 +1508,6 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_sync_contribution_not_aggregator() {
-        use pluto_eth2api::v1;
-
         const SLOT: u64 = 1;
         let pk_a = PubKey::new([2u8; PK_LEN]);
         let pk_b = PubKey::new([3u8; PK_LEN]);
@@ -1519,8 +1516,8 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                    pubkey: pk,
+                DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                    pubkey: pk.0,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
                 }),
@@ -1573,8 +1570,8 @@ mod tests {
         let mut def_set = DutyDefinitionSet::new();
         def_set.insert(
             pk_a,
-            DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                pubkey: pk_a,
+            DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                pubkey: pk_a.0,
                 validator_index: 0,
                 validator_sync_committee_indices: vec![],
             }),

@@ -5,6 +5,7 @@ use std::{any::Any, collections::HashMap, fmt::Display, iter};
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
 use dyn_eq::DynEq;
+use pluto_eth2api::v1;
 use pluto_ssz::HashRoot;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
@@ -13,7 +14,7 @@ use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
     parsigex_codec::{deserialize_signed_data, serialize_signed_data},
-    signeddata::{AttesterDuty, SignedDataError},
+    signeddata::SignedDataError,
 };
 
 /// The type of duty.
@@ -508,86 +509,15 @@ impl AsRef<[u8]> for PubKey {
     }
 }
 
-/// Attestation duties to be performed by validators for a particular epoch.
-///
-/// Mirrors Charon's `core.AttesterDefinition`, which embeds the eth2
-/// `v1.AttesterDuty`. Pluto's [`AttesterDuty`] omits the validator public key,
-/// so it is carried alongside the embedded duty.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AttesterDutyDefinition {
-    /// The validator's BLS public key.
-    pub pubkey: PubKey,
-    /// The attester duty to perform.
-    pub duty: AttesterDuty,
-}
-
-impl From<pluto_eth2api::v1::AttesterDuty> for AttesterDutyDefinition {
-    fn from(value: pluto_eth2api::v1::AttesterDuty) -> Self {
-        AttesterDutyDefinition {
-            pubkey: PubKey::from(value.pubkey),
-            duty: AttesterDuty {
-                slot: value.slot,
-                validator_index: value.validator_index,
-                committee_index: value.committee_index,
-                committee_length: value.committee_length,
-                committees_at_slot: value.committees_at_slot,
-                validator_committee_index: value.validator_committee_index,
-            },
-        }
-    }
-}
-
-/// Indicates that a validator must propose a block in a given epoch
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProposerDutyDefinition {
-    /// The validator's BLS public key
-    pub pubkey: PubKey,
-    ///Index of validator in validator registry.
-    pub v_idx: u64,
-    /// The slot at which the validator must propose a block.
-    pub slot: SlotNumber,
-}
-
-impl From<pluto_eth2api::v1::ProposerDuty> for ProposerDutyDefinition {
-    fn from(value: pluto_eth2api::v1::ProposerDuty) -> ProposerDutyDefinition {
-        ProposerDutyDefinition {
-            pubkey: PubKey::from(value.pubkey),
-            v_idx: value.validator_index,
-            slot: SlotNumber::from(value.slot),
-        }
-    }
-}
-
-/// Sync committee duties for a particular epoch
-#[derive(Debug, Clone, PartialEq)]
-pub struct SyncCommitteeDutyDefinition {
-    /// The validator's BLS public key
-    pub pubkey: PubKey,
-    /// Index of validator in validator registry.
-    pub validator_index: u64,
-    /// The indices of the validator in the sync committee.
-    pub validator_sync_committee_indices: Vec<u64>,
-}
-
-impl From<pluto_eth2api::v1::SyncCommitteeDuty> for SyncCommitteeDutyDefinition {
-    fn from(value: pluto_eth2api::v1::SyncCommitteeDuty) -> Self {
-        SyncCommitteeDutyDefinition {
-            pubkey: PubKey::from(value.pubkey),
-            validator_index: value.validator_index,
-            validator_sync_committee_indices: value.validator_sync_committee_indices,
-        }
-    }
-}
-
-/// All duty definitions for a validator in a given epoch.
+/// The beacon-node duty a validator must perform in a given epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
     /// Attester duty definition.
-    Attester(AttesterDutyDefinition),
+    Attester(v1::AttesterDuty),
     /// Proposer duty definition.
-    Proposer(ProposerDutyDefinition),
+    Proposer(v1::ProposerDuty),
     /// Sync committee duty definition.
-    SyncCommittee(SyncCommitteeDutyDefinition),
+    SyncCommittee(v1::SyncCommitteeDuty),
 }
 
 /// A set of duty definitions for all validators in a given epoch, indexed by

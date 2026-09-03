@@ -40,15 +40,15 @@ use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
     types::{
-        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet,
-        ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
+        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey,
+        SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
 use pluto_crypto::tbls;
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient, ValidatorsResponse,
     spec::{altair, phase0},
-    v1::Validator,
+    v1::{self, Validator},
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
@@ -119,12 +119,6 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
     })
     .await
     .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
-}
-
-/// Builds a `/states/{id}/validators` datum for an active validator with the
-/// given index and pubkey.
-fn validator_datum(index: u64, pubkey: PubKey) -> Validator {
-    pluto_testutil::active_validator(index, pubkey_to_eth2(pubkey))
 }
 
 /// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
@@ -321,7 +315,8 @@ async fn wiring_exercises_fetcher_back_edges() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let eth2_cl = mock.client().clone();
     let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
-    let pubkey = PubKey::new([2u8; PK_LEN]);
+    let pubkey_bytes = [2u8; PK_LEN];
+    let pubkey = PubKey::new(pubkey_bytes);
     let consensus = build_consensus(&ct);
 
     let wired = tokio::time::timeout(
@@ -342,10 +337,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     const SLOT: u64 = 1;
     let proposer_def = DutyDefinitionSet::from([(
         pubkey,
-        DutyDefinition::Proposer(ProposerDutyDefinition {
-            pubkey,
-            v_idx: 2,
-            slot: SlotNumber::new(SLOT),
+        DutyDefinition::Proposer(v1::ProposerDuty {
+            pubkey: pubkey_bytes,
+            validator_index: 2,
+            slot: SLOT,
         }),
     )]);
     let proposer_duty = Duty::new_proposer_duty(SlotNumber::new(SLOT));
@@ -831,7 +826,14 @@ async fn wiring_seeds_shared_validator_cache() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
     const V_IDX: u64 = 7;
-    mount_filtered_post_validators(mock.server(), vec![validator_datum(V_IDX, pubkey)]).await;
+    mount_filtered_post_validators(
+        mock.server(),
+        vec![pluto_testutil::active_validator(
+            V_IDX,
+            pubkey_to_eth2(pubkey),
+        )],
+    )
+    .await;
 
     let eth2_cl = mock.client().clone();
     let beacon_client = BeaconNodeClient::new(eth2_cl.clone());

@@ -10,7 +10,6 @@ use pluto_crypto::tbls;
 use pluto_eth2api::{
     AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient, data_version_is_before_electra,
     spec::{altair, phase0},
-    v1::{self, ValidatorStatus},
     versioned,
 };
 use tree_hash::TreeHash;
@@ -136,24 +135,6 @@ pub enum Error {
     /// Unsupported duty type.
     #[error("unsupported duty type")]
     UnsupportedDutyType,
-}
-
-/// Complete validator data needed for Electra attestation repair.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompleteValidator {
-    /// Validator status.
-    pub status: ValidatorStatus,
-    /// Activation epoch.
-    pub activation_epoch: phase0::Epoch,
-}
-
-impl From<&v1::Validator> for CompleteValidator {
-    fn from(validator: &v1::Validator) -> Self {
-        Self {
-            status: validator.status,
-            activation_epoch: validator.validator.activation_epoch,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -672,9 +653,8 @@ async fn resolve_active_validators_indices(
         })?;
     let mut indices = Vec::new();
 
-    for (index, datum) in validators.iter() {
-        let validator = CompleteValidator::from(datum);
-        if !validator.status.is_active() && validator.activation_epoch != epoch {
+    for (index, validator) in validators.iter() {
+        if !validator.status.is_active() && validator.validator.activation_epoch != epoch {
             continue;
         }
 
@@ -798,7 +778,7 @@ mod tests {
     use pluto_eth2api::{
         ValidatorsResponse,
         spec::{bellatrix, electra, phase0},
-        v1,
+        v1::{self, ValidatorStatus},
         valcache::ValidatorCache,
         versioned::{self, AttestationPayload},
     };

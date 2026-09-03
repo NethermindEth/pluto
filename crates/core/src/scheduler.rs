@@ -8,7 +8,7 @@ use tokio::{sync, task::JoinHandle};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
 use crate::{scheduler::metrics::SCHEDULER_METRICS, types};
-use pluto_eth2api::valcache;
+use pluto_eth2api::{v1, valcache};
 
 mod metrics;
 
@@ -475,29 +475,30 @@ impl SchedulerActor {
         {
             let att_duties = fetch_attester_duties(&slot, &vals, &self.client).await?;
             for att_duty in att_duties.into_iter() {
+                let pubkey = types::PubKey::from(att_duty.pubkey);
                 if !self.set_duty_definition(
-                    types::Duty::new_attester_duty(att_duty.duty.slot.into()),
+                    types::Duty::new_attester_duty(att_duty.slot.into()),
                     slot.epoch(),
-                    att_duty.pubkey,
+                    pubkey,
                     types::DutyDefinition::Attester(att_duty.clone()),
                 ) {
                     continue;
                 }
 
                 tracing::info!(
-                    slot = %att_duty.duty.slot,
-                    vidx = %att_duty.duty.validator_index,
-                    pubkey = %att_duty.pubkey,
+                    slot = %att_duty.slot,
+                    vidx = %att_duty.validator_index,
+                    %pubkey,
                     epoch = %slot.epoch(),
                     "Resolved attester duty"
                 );
 
                 // Schedule Aggregator duty as well
-                let agg_duty = types::Duty::new_aggregator_duty(att_duty.duty.slot.into());
+                let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot.into());
                 self.set_duty_definition(
                     agg_duty,
                     slot.epoch(),
-                    att_duty.pubkey,
+                    pubkey,
                     types::DutyDefinition::Attester(att_duty),
                 );
             }
@@ -507,10 +508,11 @@ impl SchedulerActor {
         {
             let pro_duties = fetch_proposer_duties(&slot, &vals, &self.client).await?;
             for pro_duty in pro_duties.into_iter() {
+                let pubkey = types::PubKey::from(pro_duty.pubkey);
                 if !self.set_duty_definition(
-                    types::Duty::new_proposer_duty(pro_duty.slot),
+                    types::Duty::new_proposer_duty(pro_duty.slot.into()),
                     slot.epoch(),
-                    pro_duty.pubkey,
+                    pubkey,
                     types::DutyDefinition::Proposer(pro_duty.clone()),
                 ) {
                     continue;
@@ -518,8 +520,8 @@ impl SchedulerActor {
 
                 tracing::info!(
                     slot = %pro_duty.slot,
-                    vidx = %pro_duty.v_idx,
-                    pubkey = %pro_duty.pubkey,
+                    vidx = %pro_duty.validator_index,
+                    %pubkey,
                     epoch = %slot.epoch(),
                     "Resolved proposer duty"
                 );
@@ -530,6 +532,7 @@ impl SchedulerActor {
         {
             let sync_duties = fetch_sync_committee_duties(&slot, &vals, &self.client).await?;
             for sync_duty in sync_duties.into_iter() {
+                let pubkey = types::PubKey::from(sync_duty.pubkey);
                 // TODO(charon): sync committee duties start in the slot before
                 // the sync committee period.
                 // Refer: https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/validator.md#sync-committee
@@ -540,14 +543,14 @@ impl SchedulerActor {
                     self.set_duty_definition(
                         types::Duty::new_sync_contribution_duty(sl.slot),
                         sl.epoch(),
-                        sync_duty.pubkey,
+                        pubkey,
                         types::DutyDefinition::SyncCommittee(sync_duty.clone()),
                     );
                 }
 
                 tracing::info!(
-                    vidx = %&sync_duty.validator_index,
-                    pubkey = %sync_duty.pubkey,
+                    vidx = %sync_duty.validator_index,
+                    %pubkey,
                     epoch = %slot.epoch(),
                     "Resolved sync committee duty"
                 );
@@ -864,19 +867,16 @@ async fn fetch_attester_duties(
     slot: &types::Slot,
     validators: impl AsRef<[Validator]>,
     client: &pluto_eth2api::BeaconNodeClient,
-) -> Result<Vec<types::AttesterDutyDefinition>> {
+) -> Result<Vec<v1::AttesterDuty>> {
     let validators = validators.as_ref();
     let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
-    let att_duties: Vec<types::AttesterDutyDefinition> = pluto_eth2api::instrument(
+    let att_duties = pluto_eth2api::instrument(
         "attester_duties",
         client.api().get_attester_duties(slot.epoch(), &indices),
     )
     .await
     .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
-    .data
-    .into_iter()
-    .map(types::AttesterDutyDefinition::from)
-    .collect();
+    .data;
 
     let mut remaining = validators
         .iter()
@@ -885,30 +885,31 @@ async fn fetch_attester_duties(
 
     let mut result = vec![];
     for att_duty in att_duties.into_iter() {
-        remaining.remove(&att_duty.duty.validator_index);
+        remaining.remove(&att_duty.validator_index);
 
-        if att_duty.duty.slot < slot.slot.inner() {
+        if att_duty.slot < slot.slot.inner() {
             // Skip duties for earlier slots in initial epoch.
             continue;
         }
 
         let Some(pubkey) = validators
             .iter()
-            .find(|v| v.v_idx == att_duty.duty.validator_index)
+            .find(|v| v.v_idx == att_duty.validator_index)
             .map(|v| v.pubkey)
         else {
             tracing::warn!(
-                vidx = att_duty.duty.validator_index,
+                vidx = att_duty.validator_index,
                 slot = %slot.slot,
                 "Ignoring unexpected attester duty"
             );
             continue;
         };
 
-        if pubkey != att_duty.pubkey {
+        let actual = types::PubKey::from(att_duty.pubkey);
+        if pubkey != actual {
             return Err(SchedulerError::InvalidDutyPubkey {
                 expected: pubkey,
-                actual: att_duty.pubkey,
+                actual,
             });
         }
 
@@ -933,7 +934,7 @@ async fn fetch_proposer_duties(
     slot: &types::Slot,
     validators: impl AsRef<[Validator]>,
     client: &pluto_eth2api::BeaconNodeClient,
-) -> Result<Vec<types::ProposerDutyDefinition>> {
+) -> Result<Vec<v1::ProposerDuty>> {
     let validators = validators.as_ref();
     // The endpoint covers every slot in the epoch, so the client narrows the
     // response to our validators before the loop below sees it.
@@ -941,39 +942,37 @@ async fn fetch_proposer_duties(
         .iter()
         .map(|v| v.v_idx)
         .collect::<std::collections::HashSet<_>>();
-    let pro_duties: Vec<types::ProposerDutyDefinition> = client
+    let pro_duties = client
         .api()
         .fetch_proposer_duties(slot.epoch(), slot.slots_per_epoch, &indices)
-        .await?
-        .into_iter()
-        .map(types::ProposerDutyDefinition::from)
-        .collect();
+        .await?;
 
     let mut result = vec![];
     for pro_duty in pro_duties.into_iter() {
-        if pro_duty.slot < slot.slot {
+        if pro_duty.slot < slot.slot.inner() {
             // Skip duties for earlier slots in initial epoch.
             continue;
         }
 
         let Some(pubkey) = validators
             .iter()
-            .find(|v| v.v_idx == pro_duty.v_idx)
+            .find(|v| v.v_idx == pro_duty.validator_index)
             .map(|v| v.pubkey)
         else {
             // Unreachable unless the client's filter let something through.
             tracing::warn!(
-                vidx = pro_duty.v_idx,
+                vidx = pro_duty.validator_index,
                 slot = %slot.slot,
                 "Ignoring unexpected proposer duty"
             );
             continue;
         };
 
-        if pubkey != pro_duty.pubkey {
+        let actual = types::PubKey::from(pro_duty.pubkey);
+        if pubkey != actual {
             return Err(SchedulerError::InvalidDutyPubkey {
                 expected: pubkey,
-                actual: pro_duty.pubkey,
+                actual,
             });
         }
 
@@ -989,10 +988,10 @@ async fn fetch_sync_committee_duties(
     slot: &types::Slot,
     validators: impl AsRef<[Validator]>,
     client: &pluto_eth2api::BeaconNodeClient,
-) -> Result<Vec<types::SyncCommitteeDutyDefinition>> {
+) -> Result<Vec<v1::SyncCommitteeDuty>> {
     let validators = validators.as_ref();
     let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
-    let sync_duties: Vec<types::SyncCommitteeDutyDefinition> = pluto_eth2api::instrument(
+    let sync_duties = pluto_eth2api::instrument(
         "sync_committee_duties",
         client
             .api()
@@ -1000,10 +999,7 @@ async fn fetch_sync_committee_duties(
     )
     .await
     .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?
-    .data
-    .into_iter()
-    .map(types::SyncCommitteeDutyDefinition::from)
-    .collect();
+    .data;
 
     let mut result = vec![];
     for sync_duty in sync_duties.into_iter() {
@@ -1020,10 +1016,11 @@ async fn fetch_sync_committee_duties(
             continue;
         };
 
-        if pubkey != sync_duty.pubkey {
+        let actual = types::PubKey::from(sync_duty.pubkey);
+        if pubkey != actual {
             return Err(SchedulerError::InvalidDutyPubkey {
                 expected: pubkey,
-                actual: sync_duty.pubkey,
+                actual,
             });
         }
 
@@ -1037,7 +1034,7 @@ async fn fetch_sync_committee_duties(
 mod tests {
     use std::{collections::HashSet, time::Duration};
 
-    use pluto_eth2api::{BeaconNodeClient, ValidatorsResponse, v1};
+    use pluto_eth2api::{BeaconNodeClient, ValidatorsResponse};
     use pluto_testutil::{BeaconMock, ValidatorSet};
     use wiremock::{
         Mock, ResponseTemplate,
@@ -1062,14 +1059,6 @@ mod tests {
             .expect("build beacon mock")
     }
 
-    /// The `ValidatorSetA` validators as `/states/head/validators`.
-    ///
-    /// NOTE: the default mock only serves this endpoint over GET, but
-    /// [`valcache::ValidatorCache::get_by_head`] queries it over POST.
-    fn validator_set_a_datums() -> Vec<v1::Validator> {
-        ValidatorSet::validator_set_a().validators()
-    }
-
     /// `ValidatorSetA` validators with their real indexes but random pubkeys,
     /// to force the [`SchedulerError::InvalidDutyPubkey`] mismatch path
     fn validator_set_a_mismatched() -> Vec<Validator> {
@@ -1083,8 +1072,9 @@ mod tests {
             .collect()
     }
 
-    /// Mounts the POST `/states/head/validators` endpoint used by
-    /// [`valcache::ValidatorCache::get_by_head`].
+    /// Serves `data` on the POST `/states/head/validators` endpoint used by
+    /// [`valcache::ValidatorCache::get_by_head`]; the default mock only serves
+    /// it over GET.
     async fn mount_head_validators(mock: &BeaconMock, data: Vec<v1::Validator>) {
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
@@ -1142,7 +1132,7 @@ mod tests {
 
     /// Builds an attester duty definition for tests.
     fn test_attester_def(pubkey: types::PubKey, v_idx: u64, slot: u64) -> types::DutyDefinition {
-        let duty = v1::AttesterDuty {
+        types::DutyDefinition::Attester(v1::AttesterDuty {
             pubkey: pubkey.0,
             validator_index: v_idx,
             slot,
@@ -1150,8 +1140,7 @@ mod tests {
             committee_length: 0,
             committees_at_slot: 0,
             validator_committee_index: 0,
-        };
-        types::DutyDefinition::Attester(types::AttesterDutyDefinition::from(duty))
+        })
     }
 
     /// Drives the actor's `run` loop with test-controlled channels.
@@ -1398,7 +1387,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_duties_stores_all_duty_types() {
         let mock = duties_mock(16).await;
-        mount_head_validators(&mock, validator_set_a_datums()).await;
+        mount_head_validators(&mock, ValidatorSet::validator_set_a().validators()).await;
         let mut actor = test_actor(&mock);
 
         actor
@@ -1486,7 +1475,7 @@ mod tests {
     #[tokio::test]
     async fn first_slot_broadcasts_slot_and_triggers_duties(slot_number: u64) {
         let mock = duties_mock(16).await;
-        mount_head_validators(&mock, validator_set_a_datums()).await;
+        mount_head_validators(&mock, ValidatorSet::validator_set_a().validators()).await;
         let mut h = spawn_actor(&mock).await;
 
         h.slot_tx
@@ -1528,7 +1517,7 @@ mod tests {
         slot_number: u64,
     ) {
         let mock = duties_mock(16).await;
-        mount_head_validators(&mock, validator_set_a_datums()).await;
+        mount_head_validators(&mock, ValidatorSet::validator_set_a().validators()).await;
         let mut h = spawn_actor(&mock).await;
 
         // Slot is mid-epoch (epoch 0 spans slots 0..=15). With the
@@ -1572,7 +1561,7 @@ mod tests {
     #[tokio::test]
     async fn get_duty_success_then_reorg_then_get_duty_fails() {
         let mock = duties_mock(16).await;
-        mount_head_validators(&mock, validator_set_a_datums()).await;
+        mount_head_validators(&mock, ValidatorSet::validator_set_a().validators()).await;
         let mut h = spawn_actor(&mock).await;
 
         // Drive a slot in epoch 1 and wait for a duty broadcast, which only
@@ -1610,7 +1599,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_during_slot_offset_suppresses_duty_broadcast() {
         let mock = duties_mock(16).await;
-        mount_head_validators(&mock, validator_set_a_datums()).await;
+        mount_head_validators(&mock, ValidatorSet::validator_set_a().validators()).await;
         let mut h = spawn_actor(&mock).await;
 
         // A mid-epoch slot triggers only the sync-committee contribution duty,

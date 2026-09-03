@@ -552,10 +552,9 @@ impl Component {
                 // fails — this is not an error at this point.
                 let mut val_idx = 0;
                 for def in def_set.values() {
-                    let DutyDefinition::Attester(attester) = def else {
+                    let DutyDefinition::Attester(duty) = def else {
                         continue;
                     };
-                    let duty = &attester.duty;
                     if duty.committee_index != att_data.index {
                         continue;
                     }
@@ -2636,7 +2635,7 @@ mod tests {
             SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyDefinition, DutyType, ProposerDutyDefinition, PubKey, SlotNumber},
+        types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
         unsigneddata::{UnsignedDataSet, UnsignedDutyData},
         validatorapi::types::{
             AttestationDataOpts, SyncCommitteeContributionOpts, SyncCommitteeMessage,
@@ -5259,10 +5258,10 @@ mod tests {
     /// — `lookup_proposer_pubkey` only reads the map keys, so the
     /// value's contents are immaterial to these tests.
     fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet {
-        let definition = ProposerDutyDefinition {
-            pubkey,
-            v_idx: 0,
-            slot: 0.into(),
+        let definition = pluto_eth2api::v1::ProposerDuty {
+            pubkey: pubkey.0,
+            validator_index: 0,
+            slot: 0,
         };
         let mut set = DutyDefinitionSet::new();
         set.insert(pubkey, DutyDefinition::Proposer(definition));
@@ -5567,18 +5566,18 @@ mod tests {
             let mut set: DutyDefinitionSet = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0xAA),
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: core_pubkey(0xAA),
-                    v_idx: 0,
-                    slot: 0.into(),
+                DutyDefinition::Proposer(pluto_eth2api::v1::ProposerDuty {
+                    pubkey: core_pubkey(0xAA).0,
+                    validator_index: 0,
+                    slot: 0,
                 }),
             );
             set.insert(
                 core_pubkey(0xBB),
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: core_pubkey(0xBB),
-                    v_idx: 0,
-                    slot: 0.into(),
+                DutyDefinition::Proposer(pluto_eth2api::v1::ProposerDuty {
+                    pubkey: core_pubkey(0xBB).0,
+                    validator_index: 0,
+                    slot: 0,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6506,7 +6505,7 @@ mod tests {
 
     use pluto_eth2api::{
         spec::electra,
-        v1::BeaconCommitteeSelection as Eth2BeaconCommitteeSelection,
+        v1::{self, BeaconCommitteeSelection as Eth2BeaconCommitteeSelection},
         versioned::{
             AttestationPayload, SignedAggregateAndProofPayload,
             VersionedAttestation as Eth2VersionedAttestation,
@@ -6514,12 +6513,9 @@ mod tests {
         },
     };
 
-    use crate::{
-        signeddata::{
-            VersionedAttestation as SignedVersionedAttestation,
-            VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof,
-        },
-        types::AttesterDutyDefinition,
+    use crate::signeddata::{
+        VersionedAttestation as SignedVersionedAttestation,
+        VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof,
     };
 
     /// Build an insecure component (skips BLS verify) pinned to a proposal-spec
@@ -6620,16 +6616,14 @@ mod tests {
             let mut set = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0x01),
-                DutyDefinition::Attester(AttesterDutyDefinition {
-                    pubkey: core_pubkey(0x01),
-                    duty: signeddata::AttesterDuty {
-                        slot: SLOT,
-                        validator_index: VAL_IDX,
-                        committee_index: COMM_IDX,
-                        committee_length: 64,
-                        committees_at_slot: 1,
-                        validator_committee_index: BIT as u64,
-                    },
+                DutyDefinition::Attester(v1::AttesterDuty {
+                    pubkey: core_pubkey(0x01).0,
+                    slot: SLOT,
+                    validator_index: VAL_IDX,
+                    committee_index: COMM_IDX,
+                    committee_length: 64,
+                    committees_at_slot: 1,
+                    validator_committee_index: BIT as u64,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6664,16 +6658,14 @@ mod tests {
             let mut set = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0x01),
-                DutyDefinition::Attester(AttesterDutyDefinition {
-                    pubkey: core_pubkey(0x01),
-                    duty: signeddata::AttesterDuty {
-                        slot: 9,
-                        validator_index: 1,
-                        committee_index: COMM_IDX,
-                        committee_length: 64,
-                        committees_at_slot: 1,
-                        validator_committee_index: 0,
-                    },
+                DutyDefinition::Attester(v1::AttesterDuty {
+                    pubkey: core_pubkey(0x01).0,
+                    slot: 9,
+                    validator_index: 1,
+                    committee_index: COMM_IDX,
+                    committee_length: 64,
+                    committees_at_slot: 1,
+                    validator_committee_index: 0,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
