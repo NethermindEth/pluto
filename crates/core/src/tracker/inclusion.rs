@@ -18,10 +18,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, versioned};
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, versioned};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
-use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
 
@@ -693,18 +692,15 @@ impl InclusionChecker {
         head.checked_sub(INCL_CHECK_LAG)
     }
 
-    /// Reports whether a block exists at `slot`. A `404` means no block was
-    /// proposed, which is a normal outcome rather than an error — the same
-    /// distinction charon draws via `is404Error`.
+    /// Reports whether a block was proposed at `slot`.
     async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
-        match self.eth2_cl.get_block_v2(&slot.to_string()).await {
-            Ok(_) => Ok(true),
-            Err(err) => match HttpError::from_error(&err) {
-                Some(http) if http.status == StatusCode::NOT_FOUND => Ok(false),
-                Some(http) => Err(InclusionCheckerError::UnexpectedResponse(http.to_string())),
-                None => Err(InclusionCheckerError::Request(err.into())),
-            },
-        }
+        let block = self
+            .eth2_cl
+            .get_block_v2(&slot.to_string())
+            .await
+            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
+
+        Ok(block.is_some())
     }
 
     /// Drives inclusion checking until `cancel` fires: once per due slot, ask
@@ -757,9 +753,6 @@ pub enum InclusionCheckerError {
     /// `anyhow::Error`, which `pluto-core` avoids.
     #[error("beacon node request failed: {0}")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// The beacon node returned a status the checker does not handle.
-    #[error("unexpected beacon node response: {0}")]
-    UnexpectedResponse(String),
 }
 
 #[cfg(test)]

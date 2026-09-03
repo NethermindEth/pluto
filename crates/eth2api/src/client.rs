@@ -19,7 +19,7 @@ use alloy::primitives::U256;
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
-use reqwest::{Client, RequestBuilder, Response, Url, header::ACCEPT};
+use reqwest::{Client, RequestBuilder, Response, StatusCode, Url, header::ACCEPT};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 use std::{
@@ -330,21 +330,28 @@ impl EthBeaconNodeApiClient {
         .await
     }
 
-    /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block.
-    pub async fn get_block_v2(&self, block_id: &str) -> anyhow::Result<SignedBlockResponse> {
+    /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block, or `None`
+    /// when no block exists for `block_id`.
+    pub async fn get_block_v2(
+        &self,
+        block_id: &str,
+    ) -> anyhow::Result<Option<SignedBlockResponse>> {
         let response = self
             .get(&["eth", "v2", "beacon", "blocks", block_id])?
             .send()
             .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         let body = text(success(response).await?).await?;
         let envelope: Versioned<'_> = decode(&body)?;
 
-        Ok(SignedBlockResponse {
+        Ok(Some(SignedBlockResponse {
             version: envelope.version,
             execution_optimistic: envelope.execution_optimistic,
             finalized: envelope.finalized,
             data: decode_signed_block(envelope.version, envelope.data.get())?,
-        })
+        }))
     }
 
     /// `POST /eth/v1/beacon/states/{state_id}/validators`: validators of a
@@ -1784,9 +1791,30 @@ mod tests {
         let response = test_client(&server)
             .get_block_v2("head")
             .await
-            .expect("request succeeds");
+            .expect("request succeeds")
+            .expect("block exists");
         assert!(response.finalized);
         assert_eq!(response.data, versioned::SignedBeaconBlock::Altair(block));
+    }
+
+    /// A `404` means no block exists for the id, not a failed request.
+    #[tokio::test]
+    async fn get_block_v2_returns_none_for_a_missing_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v2/beacon/blocks/42"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "code": 404,
+                "message": "Block not found",
+            })))
+            .mount(&server)
+            .await;
+
+        let response = test_client(&server)
+            .get_block_v2("42")
+            .await
+            .expect("request succeeds");
+        assert_eq!(response, None);
     }
 
     #[tokio::test]

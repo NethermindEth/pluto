@@ -834,7 +834,11 @@ mod tests {
         // The `block_id` segment is opaque to the mock; "head" and a numeric
         // id both exercise the path_regex match.
         for block_id in ["head", "123"] {
-            let response = client.get_block_v2(block_id).await.expect("get_block_v2");
+            let response = client
+                .get_block_v2(block_id)
+                .await
+                .expect("get_block_v2")
+                .expect("block exists");
             assert_eq!(response.version, DataVersion::Bellatrix);
             assert_eq!(response.data.version(), DataVersion::Bellatrix);
         }
