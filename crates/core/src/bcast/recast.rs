@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pluto_eth2api::BeaconNodeClient;
+use pluto_eth2api::valcache::ValidatorCache;
 
 use crate::{
     bcast::{
@@ -32,15 +32,15 @@ struct RecastState {
 
 /// Rebroadcasts builder registrations every epoch.
 pub struct Recaster {
-    client: BeaconNodeClient,
+    validator_cache: ValidatorCache,
     state: Mutex<RecastState>,
 }
 
 impl Recaster {
     /// Creates a new recaster.
-    pub fn new(client: BeaconNodeClient) -> Self {
+    pub fn new(validator_cache: ValidatorCache) -> Self {
         Self {
-            client,
+            validator_cache,
             state: Mutex::new(RecastState::default()),
         }
     }
@@ -98,13 +98,14 @@ impl Recaster {
         }
 
         let active_validators: HashSet<PubKey> = self
-            .client
-            .active_validators()
+            .validator_cache
+            .get_by_head()
             .await
             .map_err(|source| Error::Client {
                 context: "get active validator",
                 source: Box::new(source),
             })?
+            .0
             .pubkeys()
             .map(|pubkey| PubKey::from(*pubkey))
             .collect();

@@ -42,7 +42,7 @@ use pluto_core::{
     validatorapi::{self, Component, Handler, SeenPubkeysFn},
 };
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient,
+    EthBeaconNodeApiClient,
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
@@ -241,12 +241,11 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node client used for scheduling.
-    pub beacon_client: BeaconNodeClient,
-    /// Beacon node API client used for fetching / dutydb / validatorapi.
+    /// Beacon node API client used for scheduling, fetching, dutydb and
+    /// validatorapi.
     pub eth2_cl: EthBeaconNodeApiClient,
-    /// Submission beacon node client used for broadcasting.
-    pub submission_client: BeaconNodeClient,
+    /// Beacon node API client used for broadcasting, with the submit timeout.
+    pub submission_client: EthBeaconNodeApiClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
     /// Current consensus implementation, from the controller. Forwards to the
@@ -410,7 +409,6 @@ pub async fn wire_core_workflow(
     let WireInputs {
         threshold,
         share_idx,
-        beacon_client,
         eth2_cl,
         submission_client,
         validators,
@@ -442,17 +440,12 @@ pub async fn wire_core_workflow(
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
 
-    // One pubkey-scoped validator cache shared by the scheduler's beacon
-    // client, the submission client, and the validator API, so every consumer
-    // resolves the same cluster validator set. Without seeding, the scheduler
-    // would resolve duties against an empty (or unfiltered) set.
-    // `ValidatorCache` clones share state, so the per-epoch trim + refresh
-    // subscriber registered below refreshes every consumer at once.
+    // One pubkey-scoped validator cache shared by the scheduler, the
+    // broadcaster and the validator API, so every consumer resolves the same
+    // cluster validator set. `ValidatorCache` clones share state, so the
+    // per-epoch trim + refresh subscriber registered below refreshes every
+    // consumer at once.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    tokio::join!(
-        beacon_client.set_validator_cache(validator_cache.clone()),
-        submission_client.set_validator_cache(validator_cache.clone()),
-    );
 
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
@@ -747,7 +740,7 @@ pub async fn wire_core_workflow(
     }
     // ---- (11) Broadcaster ----
     let broadcaster = Arc::new(
-        Broadcaster::new(submission_client)
+        Broadcaster::new(submission_client, validator_cache.clone())
             .await
             .map_err(AppError::Broadcaster)?,
     );
@@ -983,7 +976,7 @@ pub async fn wire_core_workflow(
     }
 
     let (scheduler, scheduler_task) = sched_builder
-        .build(beacon_client, ct.clone())
+        .build(eth2_cl.clone(), validator_cache.clone(), ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
 

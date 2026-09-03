@@ -18,11 +18,6 @@ pub mod error;
 
 pub use error::EthBeaconNodeApiClientError;
 
-/// Beacon node client wrapper.
-pub mod beacon_node;
-
-pub use beacon_node::BeaconNodeClient;
-
 /// Prometheus metrics for beacon node requests.
 pub mod metrics;
 
