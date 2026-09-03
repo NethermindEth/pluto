@@ -1,7 +1,7 @@
 //! Versioned wrappers and version enums used by signeddata flows.
 
 use alloy::primitives::U256;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use tree_hash::TreeHash;
 
 pub use crate::spec::{BuilderVersion, DataVersion};
@@ -60,7 +60,150 @@ pub enum ProposalBlock {
     FuluBlinded(electra::BlindedBeaconBlock),
 }
 
+/// Deneb and later unsigned block contents, `{block, kzg_proofs, blobs}`.
+/// The lists tolerate `null`.
+#[derive(Deserialize)]
+struct BlockContents<B> {
+    block: B,
+    #[serde(default)]
+    kzg_proofs: Option<Vec<deneb::KZGProof>>,
+    #[serde(default)]
+    blobs: Option<Vec<deneb::Blob>>,
+}
+
+/// Borrowed form of [`BlockContents`] for serialization.
+#[derive(Serialize)]
+struct BlockContentsRef<'a, B> {
+    block: &'a B,
+    kzg_proofs: &'a [deneb::KZGProof],
+    blobs: &'a [deneb::Blob],
+}
+
+impl<B> BlockContents<B> {
+    fn into_parts(self) -> (Box<B>, Vec<deneb::KZGProof>, Vec<deneb::Blob>) {
+        (
+            Box::new(self.block),
+            self.kzg_proofs.unwrap_or_default(),
+            self.blobs.unwrap_or_default(),
+        )
+    }
+}
+
+/// The Beacon API JSON form: the bare block, or `{block, kzg_proofs, blobs}`
+/// for Deneb and later full blocks.
+impl Serialize for ProposalBlock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        fn contents<S: Serializer, B: Serialize>(
+            serializer: S,
+            block: &B,
+            kzg_proofs: &[deneb::KZGProof],
+            blobs: &[deneb::Blob],
+        ) -> Result<S::Ok, S::Error> {
+            BlockContentsRef {
+                block,
+                kzg_proofs,
+                blobs,
+            }
+            .serialize(serializer)
+        }
+
+        match self {
+            Self::Phase0(block) => block.serialize(serializer),
+            Self::Altair(block) => block.serialize(serializer),
+            Self::Bellatrix(block) => block.serialize(serializer),
+            Self::BellatrixBlinded(block) => block.serialize(serializer),
+            Self::Capella(block) => block.serialize(serializer),
+            Self::CapellaBlinded(block) => block.serialize(serializer),
+            Self::DenebBlinded(block) => block.serialize(serializer),
+            Self::ElectraBlinded(block) => block.serialize(serializer),
+            Self::FuluBlinded(block) => block.serialize(serializer),
+            Self::Deneb {
+                block,
+                kzg_proofs,
+                blobs,
+            } => contents(serializer, block, kzg_proofs, blobs),
+            Self::Electra {
+                block,
+                kzg_proofs,
+                blobs,
+            }
+            | Self::Fulu {
+                block,
+                kzg_proofs,
+                blobs,
+            } => contents(serializer, block, kzg_proofs, blobs),
+        }
+    }
+}
+
 impl ProposalBlock {
+    /// Decodes the Beacon API JSON form of a `version` block: the bare block,
+    /// or `{block, kzg_proofs, blobs}` for Deneb and later full blocks.
+    pub fn from_json<'de, D: Deserializer<'de>>(
+        version: DataVersion,
+        blinded: bool,
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        Ok(match (version, blinded) {
+            (DataVersion::Phase0, false) => Self::Phase0(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Altair, false) => Self::Altair(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Bellatrix, false) => {
+                Self::Bellatrix(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Bellatrix, true) => {
+                Self::BellatrixBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Capella, false) => Self::Capella(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Capella, true) => {
+                Self::CapellaBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Deneb, false) => {
+                let (block, kzg_proofs, blobs) =
+                    BlockContents::deserialize(deserializer)?.into_parts();
+                Self::Deneb {
+                    block,
+                    kzg_proofs,
+                    blobs,
+                }
+            }
+            (DataVersion::Deneb, true) => {
+                Self::DenebBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Electra, false) => {
+                let (block, kzg_proofs, blobs) =
+                    BlockContents::deserialize(deserializer)?.into_parts();
+                Self::Electra {
+                    block,
+                    kzg_proofs,
+                    blobs,
+                }
+            }
+            (DataVersion::Electra, true) => {
+                Self::ElectraBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Fulu, false) => {
+                let (block, kzg_proofs, blobs) =
+                    BlockContents::deserialize(deserializer)?.into_parts();
+                Self::Fulu {
+                    block,
+                    kzg_proofs,
+                    blobs,
+                }
+            }
+            (DataVersion::Fulu, true) => Self::FuluBlinded(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Phase0 | DataVersion::Altair, true) => {
+                return Err(D::Error::custom(format!(
+                    "{version} proposal cannot be blinded"
+                )));
+            }
+            (DataVersion::Unknown, _) => {
+                return Err(D::Error::custom(
+                    "proposal has an unknown consensus version",
+                ));
+            }
+        })
+    }
+
     /// Returns the fork version of this block.
     pub fn version(&self) -> DataVersion {
         match self {
@@ -264,6 +407,48 @@ pub enum SignedProposalBlock {
 }
 
 impl SignedProposalBlock {
+    /// Decodes the Beacon API JSON form of a signed `version` block.
+    pub fn from_json<'de, D: Deserializer<'de>>(
+        version: DataVersion,
+        blinded: bool,
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        Ok(match (version, blinded) {
+            (DataVersion::Phase0, false) => Self::Phase0(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Altair, false) => Self::Altair(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Bellatrix, false) => {
+                Self::Bellatrix(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Bellatrix, true) => {
+                Self::BellatrixBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Capella, false) => Self::Capella(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Capella, true) => {
+                Self::CapellaBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Deneb, false) => Self::Deneb(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Deneb, true) => {
+                Self::DenebBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Electra, false) => Self::Electra(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Electra, true) => {
+                Self::ElectraBlinded(Deserialize::deserialize(deserializer)?)
+            }
+            (DataVersion::Fulu, false) => Self::Fulu(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Fulu, true) => Self::FuluBlinded(Deserialize::deserialize(deserializer)?),
+            (DataVersion::Phase0 | DataVersion::Altair, true) => {
+                return Err(D::Error::custom(format!(
+                    "{version} proposal cannot be blinded"
+                )));
+            }
+            (DataVersion::Unknown, _) => {
+                return Err(D::Error::custom(
+                    "proposal has an unknown consensus version",
+                ));
+            }
+        })
+    }
+
     /// Returns the BLS signature embedded in this payload.
     pub fn signature(&self) -> phase0::BLSSignature {
         match self {

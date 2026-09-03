@@ -163,8 +163,7 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
     }
 
     if looks_like_json(data) {
-        return serde_json::from_slice::<crate::signeddata::VersionedProposalJson>(data)
-            .map(|proposal| proposal.0)
+        return crate::signeddata::versioned_proposal_from_json(data)
             .map_err(ParSigExCodecError::from);
     }
 

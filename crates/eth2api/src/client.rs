@@ -11,7 +11,7 @@
 
 use crate::{
     EthBeaconNodeApiClientError,
-    spec::{DataVersion, altair, deneb, electra, phase0},
+    spec::{DataVersion, altair, electra, phase0},
     types::*,
     v1, versioned,
 };
@@ -70,16 +70,6 @@ struct Proposal<'a> {
     consensus_block_value: U256,
     #[serde(borrow)]
     data: &'a RawValue,
-}
-
-/// Deneb and later unsigned block contents.
-#[derive(Deserialize)]
-struct BlockContents<B> {
-    block: B,
-    #[serde(default)]
-    kzg_proofs: Vec<deneb::KZGProof>,
-    #[serde(default)]
-    blobs: Vec<deneb::Blob>,
 }
 
 #[derive(Deserialize)]
@@ -159,58 +149,12 @@ fn decode_proposal_block(
     blinded: bool,
     body: &str,
 ) -> anyhow::Result<versioned::ProposalBlock> {
-    use versioned::ProposalBlock;
-
-    fn contents<B: DeserializeOwned>(
-        body: &str,
-    ) -> anyhow::Result<(Box<B>, Vec<deneb::KZGProof>, Vec<deneb::Blob>)> {
-        let contents: BlockContents<B> = decode(body)?;
-        Ok((
-            Box::new(contents.block),
-            contents.kzg_proofs,
-            contents.blobs,
-        ))
-    }
-
-    Ok(match (version, blinded) {
-        (DataVersion::Phase0, false) => ProposalBlock::Phase0(decode(body)?),
-        (DataVersion::Altair, false) => ProposalBlock::Altair(decode(body)?),
-        (DataVersion::Bellatrix, false) => ProposalBlock::Bellatrix(decode(body)?),
-        (DataVersion::Bellatrix, true) => ProposalBlock::BellatrixBlinded(decode(body)?),
-        (DataVersion::Capella, false) => ProposalBlock::Capella(decode(body)?),
-        (DataVersion::Capella, true) => ProposalBlock::CapellaBlinded(decode(body)?),
-        (DataVersion::Deneb, false) => {
-            let (block, kzg_proofs, blobs) = contents(body)?;
-            ProposalBlock::Deneb {
-                block,
-                kzg_proofs,
-                blobs,
-            }
-        }
-        (DataVersion::Deneb, true) => ProposalBlock::DenebBlinded(decode(body)?),
-        (DataVersion::Electra, false) => {
-            let (block, kzg_proofs, blobs) = contents(body)?;
-            ProposalBlock::Electra {
-                block,
-                kzg_proofs,
-                blobs,
-            }
-        }
-        (DataVersion::Electra, true) => ProposalBlock::ElectraBlinded(decode(body)?),
-        (DataVersion::Fulu, false) => {
-            let (block, kzg_proofs, blobs) = contents(body)?;
-            ProposalBlock::Fulu {
-                block,
-                kzg_proofs,
-                blobs,
-            }
-        }
-        (DataVersion::Fulu, true) => ProposalBlock::FuluBlinded(decode(body)?),
-        (DataVersion::Phase0 | DataVersion::Altair, true) => {
-            anyhow::bail!("{version} proposal cannot be blinded")
-        }
-        (DataVersion::Unknown, _) => anyhow::bail!("proposal has an unknown consensus version"),
-    })
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    let mut track = serde_path_to_error::Track::new();
+    let tracked = serde_path_to_error::Deserializer::new(&mut deserializer, &mut track);
+    versioned::ProposalBlock::from_json(version, blinded, tracked)
+        .map_err(|error| serde_path_to_error::Error::new(track.path(), error))
+        .context("decoding JSON response body")
 }
 
 fn decode_signed_block(
@@ -1161,7 +1105,7 @@ impl EthBeaconNodeApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures;
+    use crate::{spec::deneb, test_fixtures};
     use pluto_ssz::{BitList, BitVector};
     use serde_json::json;
     use wiremock::{

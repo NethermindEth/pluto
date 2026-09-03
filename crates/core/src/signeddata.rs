@@ -7,7 +7,7 @@ use tree_hash::TreeHash;
 use pluto_crypto::types::sig_to_eth2;
 pub use pluto_eth2api::versioned::{ProposalBlock, VersionedProposal};
 use pluto_eth2api::{
-    spec::{altair, deneb, phase0, serde_legacy_builder_version, serde_legacy_data_version},
+    spec::{altair, phase0, serde_legacy_builder_version, serde_legacy_data_version},
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
@@ -90,18 +90,6 @@ struct VersionedRawAggregateAndProofJson<T> {
     #[serde(with = "serde_legacy_data_version")]
     version: versioned::DataVersion,
     aggregate_and_proof: T,
-}
-
-/// Raw JSON wrapper for the unsigned Deneb+ block contents
-/// (`{block, kzg_proofs, blobs}`). `kzg_proofs`/`blobs` are optional and
-/// tolerate `null` (matching charon's optional fields).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct UnsignedBlockContentsJson<B> {
-    block: B,
-    #[serde(default)]
-    kzg_proofs: Option<Vec<deneb::KZGProof>>,
-    #[serde(default)]
-    blobs: Option<Vec<deneb::Blob>>,
 }
 
 /// Converts an ETH2 signature to a core signature.
@@ -292,55 +280,12 @@ impl<'de> Deserialize<'de> for VersionedSignedProposal {
         D: Deserializer<'de>,
     {
         let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
-        let version = raw.version;
-        let blinded = raw.blinded;
-        use versioned::SignedProposalBlock;
-        let block = match (version, blinded) {
-            (versioned::DataVersion::Unknown, _) => {
-                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
-            }
-            (versioned::DataVersion::Phase0, _) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Phase0)
-            }
-            (versioned::DataVersion::Altair, _) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Altair)
-            }
-            (versioned::DataVersion::Bellatrix, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::BellatrixBlinded)
-            }
-            (versioned::DataVersion::Bellatrix, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Bellatrix)
-            }
-            (versioned::DataVersion::Capella, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::CapellaBlinded)
-            }
-            (versioned::DataVersion::Capella, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Capella)
-            }
-            (versioned::DataVersion::Deneb, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::DenebBlinded)
-            }
-            (versioned::DataVersion::Deneb, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Deneb)
-            }
-            (versioned::DataVersion::Electra, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::ElectraBlinded)
-            }
-            (versioned::DataVersion::Electra, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Electra)
-            }
-            (versioned::DataVersion::Fulu, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::FuluBlinded)
-            }
-            (versioned::DataVersion::Fulu, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Fulu)
-            }
-        }
-        .map_err(serde::de::Error::custom)?;
+        let block = versioned::SignedProposalBlock::from_json(raw.version, raw.blinded, raw.block)
+            .map_err(serde::de::Error::custom)?;
 
         Self::new(versioned::VersionedSignedProposal {
-            version,
-            blinded,
+            version: raw.version,
+            blinded: raw.blinded,
             block,
         })
         .map_err(serde::de::Error::custom)
@@ -1237,93 +1182,19 @@ impl VersionedAggregatedAttestation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncContribution(pub altair::SyncCommitteeContribution);
 
-/// JSON form of an unsigned [`VersionedProposal`] as exchanged between
-/// cluster nodes: `{version, block, blinded}`, mirroring charon's
-/// `VersionedProposal.UnmarshalJSON`. Shares the raw wrapper with
-/// [`VersionedSignedProposal`]. Block reward values are not part of the JSON
-/// form and default to zero (the validatorapi overrides them).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VersionedProposalJson(pub(crate) VersionedProposal);
+/// Decodes the JSON form of an unsigned [`VersionedProposal`] exchanged
+/// between cluster nodes, `{version, block, blinded}`, mirroring charon's
+/// `VersionedProposal.UnmarshalJSON`. Block reward values are not part of it
+/// and default to zero (the validatorapi overrides them).
+pub(crate) fn versioned_proposal_from_json(data: &[u8]) -> serde_json::Result<VersionedProposal> {
+    let raw: VersionedRawBlockJson<serde_json::Value> = serde_json::from_slice(data)?;
+    let block = ProposalBlock::from_json(raw.version, raw.blinded, raw.block)?;
 
-impl<'de> Deserialize<'de> for VersionedProposalJson {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
-        let version = raw.version;
-        let blinded = raw.blinded;
-
-        let block_contents = |value: serde_json::Value| {
-            serde_json::from_value::<UnsignedBlockContentsJson<serde_json::Value>>(value)
-        };
-
-        let block = match (version, blinded) {
-            (versioned::DataVersion::Phase0, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Phase0)
-            }
-            (versioned::DataVersion::Altair, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Altair)
-            }
-            (versioned::DataVersion::Bellatrix, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Bellatrix)
-            }
-            (versioned::DataVersion::Bellatrix, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::BellatrixBlinded)
-            }
-            (versioned::DataVersion::Capella, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Capella)
-            }
-            (versioned::DataVersion::Capella, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::CapellaBlinded)
-            }
-            (versioned::DataVersion::Deneb, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Deneb {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Deneb, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::DenebBlinded)
-            }
-            (versioned::DataVersion::Electra, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Electra {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Electra, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::ElectraBlinded)
-            }
-            (versioned::DataVersion::Fulu, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Fulu {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Fulu, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::FuluBlinded)
-            }
-            (versioned::DataVersion::Phase0 | versioned::DataVersion::Altair, true) => {
-                return Err(serde::de::Error::custom(
-                    "pre-merge block cannot be blinded",
-                ));
-            }
-            (versioned::DataVersion::Unknown, _) => {
-                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
-            }
-        }
-        .map_err(serde::de::Error::custom)?;
-
-        Ok(VersionedProposalJson(VersionedProposal {
-            block,
-            consensus_block_value: U256::ZERO,
-            execution_payload_value: U256::ZERO,
-        }))
-    }
+    Ok(VersionedProposal {
+        block,
+        consensus_block_value: U256::ZERO,
+        execution_payload_value: U256::ZERO,
+    })
 }
 
 #[cfg(test)]
