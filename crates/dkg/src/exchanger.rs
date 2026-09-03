@@ -296,7 +296,7 @@ async fn push_psigs(
 
     {
         let mut inner = sig_data.inner.lock().await;
-        let entry = inner.entry(sig_type).or_insert_with(HashMap::new);
+        let entry = inner.entry(sig_type).or_default();
         for (pk, psigs) in set {
             entry.insert(pk, psigs);
         }

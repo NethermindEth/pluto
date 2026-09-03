@@ -3,7 +3,7 @@ use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
 use serde_with::{DefaultOnNull, serde_as};
 
-/// Operator represents a charon node operator.
+/// Operator represents a cluster node operator.
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -57,8 +57,8 @@ pub struct OperatorV1X2OrLater {
     enr: String,
     /// The config signature of the operator.
     ///
-    /// Charon's `ethHex` marshals a nil slice as `""` and tolerates `null` on
-    /// read, so accept both as an empty signature.
+    /// A nil slice is written as `""` and `null` is tolerated on read, so
+    /// accept both as an empty signature.
     #[serde(default)]
     #[serde_as(as = "DefaultOnNull<HexBytes>")]
     config_signature: Vec<u8>,

@@ -26,7 +26,7 @@ pub mod versions {
 
 pub use versions::*;
 
-/// The current version of the charon cluster definition format.
+/// The cluster definition format version pluto writes for new definitions.
 pub const CURRENT_VERSION: &str = V1_10;
 /// Default DKG algorithm.
 pub const DKG_ALGO: &str = "default";

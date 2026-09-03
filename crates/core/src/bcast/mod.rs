@@ -870,11 +870,9 @@ mod tests {
             .mount(beacon.server())
             .await;
 
-        let client = BeaconNodeClient::new(beacon.client().clone());
-        client
-            .set_validator_cache(ValidatorCache::new(beacon.client().clone(), vec![]))
-            .await;
-        client
+        let api = beacon.client().clone();
+        let cache = ValidatorCache::new(api.clone(), vec![]);
+        BeaconNodeClient::new(api, cache)
     }
 
     fn pubkey(byte: u8) -> PubKey {
@@ -892,9 +890,12 @@ mod tests {
     async fn new_broadcaster() -> (BeaconMock, Broadcaster) {
         let beacon = BeaconMock::builder().build().await.expect("beacon mock");
         mount_submit_successes(beacon.server()).await;
-        let broadcaster = Broadcaster::new(BeaconNodeClient::new(beacon.client().clone()))
-            .await
-            .expect("broadcaster");
+        let broadcaster = Broadcaster::new(BeaconNodeClient::new(
+            beacon.client().clone(),
+            ValidatorCache::new(beacon.client().clone(), vec![]),
+        ))
+        .await
+        .expect("broadcaster");
 
         (beacon, broadcaster)
     }
@@ -1192,9 +1193,12 @@ mod tests {
     async fn broadcast_attester_submits_and_swallows_prior_known() {
         let beacon = BeaconMock::builder().build().await.expect("beacon mock");
         mount_prior_attestation_known(beacon.server()).await;
-        let broadcaster = Broadcaster::new(BeaconNodeClient::new(beacon.client().clone()))
-            .await
-            .expect("broadcaster");
+        let broadcaster = Broadcaster::new(BeaconNodeClient::new(
+            beacon.client().clone(),
+            ValidatorCache::new(beacon.client().clone(), vec![]),
+        ))
+        .await
+        .expect("broadcaster");
         let set = signed_set(
             pubkey(1),
             VersionedAttestation::new(deneb_attestation()).expect("attestation"),

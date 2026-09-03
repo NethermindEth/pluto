@@ -15,7 +15,7 @@ pub enum DepositError {
 
     // Amount validation errors
     /// Amount is below minimum
-    #[error("Each partial deposit amount must be greater than 1ETH, got {0} Gwei")]
+    #[error("Each partial deposit amount must be at least 1ETH, got {0} Gwei")]
     AmountBelowMinimum(Gwei),
 
     /// Amount exceeds maximum
@@ -36,7 +36,7 @@ pub enum DepositError {
     AmountSumBelowDefault(Gwei),
 
     /// Deposit message minimum amount not met
-    #[error("Deposit message minimum amount must be >= {MIN_DEPOSIT_AMOUNT} ETH, got {0} Gwei")]
+    #[error("Deposit message minimum amount must be >= {MIN_DEPOSIT_AMOUNT} Gwei, got {0} Gwei")]
     MinimumAmountNotMet(Gwei),
 
     /// Deposit message maximum amount exceeded
@@ -56,10 +56,6 @@ pub enum DepositError {
     /// Crypto error
     #[error("Crypto error: {0}")]
     CryptoError(String),
-
-    /// Hash tree root computation error
-    #[error("Hash tree root error: {0}")]
-    HashTreeRootError(String),
 
     // File operations errors
     /// IO error

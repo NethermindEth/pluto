@@ -243,10 +243,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Resolve the injectable feature set now that the lock's fork version is
     // known.
-    let feature_set = Arc::new(resolve_feature_set(
-        &config.feature_set,
-        &lock.fork_version,
-    )?);
+    let feature_set: &'static pluto_featureset::FeatureSet = Box::leak(Box::new(
+        resolve_feature_set(&config.feature_set, &lock.fork_version)?,
+    ));
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 
@@ -382,10 +381,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
     }
 
-    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
-    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -471,8 +468,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             // Charon gates duplicate-attestation comparison on the alpha
             // `ChainSplitHalt` featureset flag (off by default).
             compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
-            feature_set: Arc::clone(&feature_set),
-            timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
+            feature_set,
+            timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         },
     )?);
 
@@ -490,7 +487,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
         deadline_calc: Arc::clone(&deadline_calc),
-        feature_set: Arc::clone(&feature_set),
+        feature_set,
         duty_gater: Arc::clone(&duty_gater),
         eth2_cl: eth2_cl.clone(),
         pub_shares_by_key,
@@ -558,9 +555,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         WireInputs {
             threshold,
             share_idx,
-            beacon_client,
             eth2_cl,
-            submission_client,
+            submission_api,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
@@ -574,7 +570,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
             peers: tracker_peers,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             infosync: Some(Arc::clone(&handles.infosync)),
         },
         ct.clone(),

@@ -174,19 +174,21 @@ impl DeadlineCalculator for OffsetCalculator {
 /// core panics if fed those submissions. So mask the (alpha, off-by-default)
 /// `AttestationInclusion` feature off until that path lands, keeping the
 /// analyser and the checker consistent.
-fn tracker_feature_set(feature_set: &Arc<FeatureSet>) -> Arc<FeatureSet> {
+fn tracker_feature_set(feature_set: &FeatureSet) -> &FeatureSet {
     if !feature_set.enabled(Feature::AttestationInclusion) {
-        return Arc::clone(feature_set);
+        return feature_set;
     }
 
     tracing::warn!(
         "Feature attestation_inclusion is enabled but not yet supported by the \
          inclusion checker; disabling it for duty tracking"
     );
-    let mut fs = (**feature_set).clone();
+    let mut fs = feature_set.clone();
     fs.state
         .insert(Feature::AttestationInclusion, Status::Disable);
-    Arc::new(fs)
+    // Derived set leaks its own small static, matching the process-lifetime
+    // invariant of the primary set.
+    Box::leak(Box::new(fs))
 }
 
 /// Returns the slot to start tracking from, which suppresses noisy failed
@@ -241,12 +243,10 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node client used for scheduling.
-    pub beacon_client: BeaconNodeClient,
-    /// Beacon node API client used for fetching / dutydb / validatorapi.
+    /// Beacon node API client for everything except broadcasting.
     pub eth2_cl: EthBeaconNodeApiClient,
-    /// Submission beacon node client used for broadcasting.
-    pub submission_client: BeaconNodeClient,
+    /// Beacon node API client for broadcasting, built with the submit timeout.
+    pub submission_api: EthBeaconNodeApiClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
     /// Current consensus implementation, from the controller. Forwards to the
@@ -290,7 +290,7 @@ pub struct WireInputs {
     pub peers: Vec<PeerInfo>,
     /// Resolved feature set. The tracker consults it to decide which duty types
     /// have an on-chain inclusion step (`Feature::AttestationInclusion`).
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
     /// Infosync component, triggered on each epoch's last slot to run the
     /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
@@ -410,9 +410,8 @@ pub async fn wire_core_workflow(
     let WireInputs {
         threshold,
         share_idx,
-        beacon_client,
         eth2_cl,
-        submission_client,
+        submission_api,
         validators,
         consensus,
         builder_enabled,
@@ -431,33 +430,27 @@ pub async fn wire_core_workflow(
     } = inputs;
 
     // ---- Derived validator maps ----
-    let mut eth2_pubkeys = Vec::with_capacity(validators.len());
     // DV root pubkey -> this node's public share (validatorapi wants this flat
     // map already collapsed for our share index).
     let mut pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey> = HashMap::new();
     let mut fee_recipient_by_pubkey: HashMap<PubKey, ExecutionAddress> = HashMap::new();
     for val in &validators {
-        eth2_pubkeys.push(val.eth2_pubkey);
         pub_share_by_pubkey.insert(val.eth2_pubkey, val.pubshare);
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
-
-    // One pubkey-scoped validator cache shared by the scheduler's beacon
-    // client, the submission client, and the validator API, so every consumer
-    // resolves the same cluster validator set. Without seeding, the scheduler
-    // would resolve duties against an empty (or unfiltered) set.
-    // `ValidatorCache` clones share state, so the per-epoch trim + refresh
-    // subscriber registered below refreshes every consumer at once.
-    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    tokio::join!(
-        beacon_client.set_validator_cache(validator_cache.clone()),
-        submission_client.set_validator_cache(validator_cache.clone()),
-    );
 
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
         Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
     };
+
+    // ---- Beacon node clients ----
+    // Both clients, the per-epoch refresher and the validator API share one
+    // validator cache, so a single refresh serves every consumer.
+    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
+    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
+    let submission_client = BeaconNodeClient::new(submission_api, validator_cache.clone());
 
     // ---- Deadliners (one per component) ----
     //
@@ -502,7 +495,7 @@ pub async fn wire_core_workflow(
         )),
     );
 
-    let tracker_feature_set = tracker_feature_set(&feature_set);
+    let tracker_feature_set = tracker_feature_set(feature_set);
 
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
     let tracker = TrackerService::start(
@@ -513,7 +506,7 @@ pub async fn wire_core_workflow(
         DeleterRx(tracker_deleter_rx),
         peers,
         track_from,
-        Arc::clone(&tracker_feature_set),
+        tracker_feature_set,
     );
 
     // Resolves the terminal `ChainInclusion` step; without it every duty with
@@ -533,7 +526,7 @@ pub async fn wire_core_workflow(
                         tracker.inclusion_checked(duty, pubkey, err).await;
                     });
                 }),
-                Arc::clone(&tracker_feature_set),
+                tracker_feature_set,
             )
             .await
             .map_err(AppError::BeaconApi)?,
@@ -1553,14 +1546,14 @@ mod tests {
         assert!(active.contains_key(&1));
     }
 
-    fn feature_set(enabled: Vec<Feature>) -> Arc<FeatureSet> {
-        Arc::new(
+    fn feature_set(enabled: Vec<Feature>) -> &'static FeatureSet {
+        Box::leak(Box::new(
             FeatureSet::from_config(pluto_featureset::Config {
                 enabled,
                 ..Default::default()
             })
             .expect("valid featureset"),
-        )
+        ))
     }
 
     /// `AttestationInclusion` is masked off for the tracker so the
@@ -1571,15 +1564,15 @@ mod tests {
         let fs = feature_set(vec![Feature::AttestationInclusion]);
         assert!(fs.enabled(Feature::AttestationInclusion));
 
-        let tracker_fs = tracker_feature_set(&fs);
+        let tracker_fs = tracker_feature_set(fs);
         assert!(!tracker_fs.enabled(Feature::AttestationInclusion));
     }
 
-    /// Without the feature the set is passed through untouched (same `Arc`).
+    /// Without the feature the set is passed through untouched (same pointer).
     #[test]
     fn tracker_feature_set_is_passthrough_when_disabled() {
         let fs = feature_set(vec![]);
-        let tracker_fs = tracker_feature_set(&fs);
-        assert!(Arc::ptr_eq(&fs, &tracker_fs));
+        let tracker_fs = tracker_feature_set(fs);
+        assert!(std::ptr::eq(fs, tracker_fs));
     }
 }

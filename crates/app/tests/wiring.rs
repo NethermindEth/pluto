@@ -46,8 +46,7 @@ use pluto_core::{
 };
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum,
+    EthBeaconNodeApiClient,
     spec::{altair, phase0},
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
@@ -55,8 +54,8 @@ use pluto_testutil::BeaconMock;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use wiremock::{
-    Mock, MockServer, Request, ResponseTemplate,
-    matchers::{method, path, path_regex},
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
 const PK_LEN: usize = 48;
@@ -118,46 +117,7 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
-}
-
-/// Builds a `/states/{id}/validators` datum for an active validator with the
-/// given index and pubkey.
-fn validator_datum(index: u64, pubkey: PubKey) -> GetStateValidatorsResponseResponseDatum {
-    let v = pluto_testutil::Validator::active(index, pubkey_to_eth2(pubkey));
-    GetStateValidatorsResponseResponseDatum {
-        index: v.index.to_string(),
-        balance: v.balance.to_string(),
-        status: v.status,
-        validator: v.validator,
-    }
-}
-
-/// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
-/// datums whose pubkey appears in the request-body `ids` — so an unseeded
-/// (empty-pubkey) cache resolves zero validators. Cover both `head` and slot
-/// state IDs because the scheduler refreshes the cache by slot immediately.
-async fn mount_filtered_post_validators(
-    server: &MockServer,
-    datums: Vec<GetStateValidatorsResponseResponseDatum>,
-) {
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
-        .respond_with(move |request: &Request| {
-            let body = String::from_utf8_lossy(&request.body);
-            let data: Vec<_> = datums
-                .iter()
-                .filter(|d| body.contains(&d.validator.pubkey))
-                .cloned()
-                .collect();
-            ResponseTemplate::new(200).set_body_json(GetStateValidatorsResponseResponse {
-                execution_optimistic: false,
-                finalized: true,
-                data,
-            })
-        })
-        .mount(server)
-        .await;
+    .unwrap_or_else(|_| panic!("POST {submit_path} should be hit"))
 }
 
 /// Counts POSTs the mock has received for `submit_path`.
@@ -208,7 +168,6 @@ fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> 
 /// path connects, not that BLS verification works).
 fn wire_inputs(
     eth2_cl: EthBeaconNodeApiClient,
-    beacon_client: BeaconNodeClient,
     pubkey: PubKey,
     consensus: Arc<ConsensusWrapper>,
     threshold: u64,
@@ -217,14 +176,7 @@ fn wire_inputs(
     // eth2 verification is deliberately bypassed here. The
     // bad-partial-signature test injects the real verifier.
     let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
-    wire_inputs_with(
-        eth2_cl,
-        beacon_client,
-        pubkey,
-        consensus,
-        threshold,
-        permissive_verifier,
-    )
+    wire_inputs_with(eth2_cl, pubkey, consensus, threshold, permissive_verifier)
 }
 
 /// Builds the wiring inputs for a single-validator cluster with a caller-chosen
@@ -232,7 +184,6 @@ fn wire_inputs(
 /// verifier parses and verifies the reconstructed group signature against).
 fn wire_inputs_with(
     eth2_cl: EthBeaconNodeApiClient,
-    beacon_client: BeaconNodeClient,
     pubkey: PubKey,
     consensus: Arc<ConsensusWrapper>,
     threshold: u64,
@@ -246,15 +197,14 @@ fn wire_inputs_with(
     }];
 
     // The broadcaster's constructor performs beacon-node calls, so the
-    // submission client must point at the mock too.
-    let submission_client = BeaconNodeClient::new(eth2_cl.clone());
+    // submission API must point at the mock too.
+    let submission_api = eth2_cl.clone();
 
     WireInputs {
         threshold,
         share_idx: 1,
-        beacon_client,
         eth2_cl,
-        submission_client,
+        submission_api,
         validators,
         consensus,
         builder_enabled: false,
@@ -275,7 +225,7 @@ fn wire_inputs_with(
             name: "test".to_string(),
             share_idx: 1,
         }],
-        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        feature_set: Box::leak(Box::new(pluto_featureset::FeatureSet::default())),
         infosync: None,
     }
 }
@@ -301,7 +251,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
         name: "node-0".to_string(),
         public_key: key.public_key(),
     };
-    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
+    let feature_set: &'static pluto_featureset::FeatureSet =
+        Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
     let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
@@ -313,7 +264,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
             broadcaster: Arc::new(|_ct, _msg| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: true,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
@@ -329,16 +280,12 @@ async fn wiring_exercises_fetcher_back_edges() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([2u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
     let wired = tokio::time::timeout(
         GUARD,
-        wire_core_workflow(
-            wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1),
-            ct.clone(),
-        ),
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
     )
     .await
     .expect("wire did not deadlock")
@@ -432,7 +379,6 @@ async fn wiring_connects_sign_path() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_attestation_submit(mock.server()).await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([5u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
@@ -440,7 +386,7 @@ async fn wiring_connects_sign_path() {
     // partial signatures (distinct share indices) cross the threshold and are
     // aggregated by SigAgg.
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -555,12 +501,11 @@ async fn wiring_connects_sign_path_proposer() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_submit(mock.server(), "/eth/v2/beacon/blocks").await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([6u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -628,12 +573,11 @@ async fn wiring_connects_sign_path_sync_contribution() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_submit(mock.server(), "/eth/v1/validator/contribution_and_proofs").await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([8u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -716,7 +660,6 @@ async fn wiring_rejects_bad_partial_signature() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_attestation_submit(mock.server()).await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
     // Real BLS group key: the verifier parses this pubkey and verifies the
@@ -732,14 +675,7 @@ async fn wiring_rejects_bad_partial_signature() {
     let verifier: VerifyFn = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs_with(
-        eth2_cl,
-        beacon_client,
-        pubkey,
-        consensus,
-        THRESHOLD,
-        verifier,
-    );
+    let inputs = wire_inputs_with(eth2_cl, pubkey, consensus, THRESHOLD, verifier);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -828,46 +764,41 @@ async fn wiring_rejects_bad_partial_signature() {
     ct.cancel();
 }
 
-/// (d) `wire_core_workflow` seeds one pubkey-scoped validator cache into the
-/// scheduler's beacon client and the submission client (Charon shares a single
-/// cache across both; the validator API reuses the same instance). The mock's
-/// POST validators endpoint returns only validators whose pubkey appears in the
-/// request-body `ids`, so the unseeded (empty-pubkey) default cache would
-/// resolve zero validators — the regression this test guards against.
+/// (d) `wire_core_workflow` seeds the shared validator cache with the cluster
+/// pubkeys. The scheduler resolves the current slot on start, so its validators
+/// request must carry those pubkeys in `ids`; an unseeded cache sends an empty
+/// `ids` and resolves zero validators.
 #[tokio::test]
-async fn wiring_seeds_shared_validator_cache() {
+async fn wiring_seeds_validator_cache() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
-    const V_IDX: u64 = 7;
-    mount_filtered_post_validators(mock.server(), vec![validator_datum(V_IDX, pubkey)]).await;
-
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
-    // `BeaconNodeClient` clones share the cache slot, so the seeding performed
-    // inside `wire_core_workflow` is observable through these probes.
-    let beacon_probe = beacon_client.clone();
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1);
-    let submission_probe = inputs.submission_client.clone();
+    let _wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
 
-    let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+    const VALIDATORS: &str = "/eth/v1/beacon/states/head/validators";
+    wait_for_post(mock.server(), VALIDATORS).await;
+    let bodies: Vec<_> = mock
+        .server()
+        .received_requests()
         .await
-        .expect("wire did not deadlock")
-        .expect("wire succeeded");
-
-    for (name, probe) in [("beacon", beacon_probe), ("submission", submission_probe)] {
-        let active = tokio::time::timeout(GUARD, probe.active_validators())
-            .await
-            .unwrap_or_else(|_| panic!("(d) {name} client active_validators timed out"))
-            .unwrap_or_else(|e| panic!("(d) {name} client active_validators failed: {e}"));
-        assert_eq!(
-            active.get(&V_IDX),
-            Some(&pubkey_to_eth2(pubkey)),
-            "(d) the {name} client's cache should be seeded with the cluster pubkeys"
-        );
-    }
+        .expect("requests")
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == VALIDATORS)
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(
+        bodies.iter().all(|body| body.contains(&pubkey.to_string())),
+        "(d) validators requests should carry the cluster pubkeys, got: {bodies:?}"
+    );
 
     ct.cancel();
 }
@@ -886,7 +817,6 @@ async fn wiring_delivers_slot_ticks_to_subscriber() {
         .expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(8);
@@ -899,7 +829,7 @@ async fn wiring_delivers_slot_ticks_to_subscriber() {
         })
     });
 
-    let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1);
+    let mut inputs = wire_inputs(eth2_cl, pubkey, consensus, 1);
     inputs.slot_tick = Some(slot_tick);
 
     let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
@@ -984,9 +914,8 @@ async fn multinode_parsig_exchange_reaches_submission() {
     let mut nodes = Vec::with_capacity(N);
     for i in 0..N {
         let eth2_cl = mock.client().clone();
-        let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
         let consensus = build_consensus(&ct);
-        let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+        let mut inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
         inputs.parsigex = routed_parsigex_seam(i, Arc::clone(&receivers));
         let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
             .await
