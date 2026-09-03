@@ -382,10 +382,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
     }
 
-    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
-    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -558,9 +556,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         WireInputs {
             threshold,
             share_idx,
-            beacon_client,
             eth2_cl,
-            submission_client,
+            submission_api,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
