@@ -2631,8 +2631,8 @@ mod tests {
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, Result as DeadlineResult},
         signeddata::{
-            AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
-            SignedRandao, SyncContribution, VersionedAggregatedAttestation,
+            AttestationData as SignedAttestationData, SignedRandao, SyncContribution,
+            VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
         types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
@@ -2811,7 +2811,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT,
                 validator_index: V_IDX,
                 committee_index: COMM_IDX,
@@ -2859,7 +2860,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT,
                 validator_index: 9,
                 committee_index: COMM_IDX,
@@ -2959,7 +2961,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT.saturating_add(1),
                 validator_index: 0,
                 committee_index: 0,
@@ -3018,7 +3021,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: 1,
                 validator_index: 0,
                 committee_index: 0,

@@ -13,38 +13,19 @@ type Result<T> = std::result::Result<T, ValidatorDutyError>;
 #[error("{0}")]
 pub struct ValidatorDutyError(String);
 
-/// Attester duty data needed by validator duty flows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttesterDuty {
-    /// Duty slot.
-    pub slot: phase0::Slot,
-    /// Validator index.
-    pub validator_index: phase0::ValidatorIndex,
-    /// Validator public key.
-    pub pubkey: phase0::BLSPubKey,
-}
-
 impl EthBeaconNodeApiClient {
     /// Fetches attester duties for the provided validator indices.
     pub async fn fetch_attester_duties_for_indices(
         &self,
         epoch: phase0::Epoch,
         indices: Vec<phase0::ValidatorIndex>,
-    ) -> Result<Vec<AttesterDuty>> {
+    ) -> Result<Vec<v1::AttesterDuty>> {
         let response =
             crate::instrument("attester_duties", self.get_attester_duties(epoch, &indices))
                 .await
                 .map_err(|error| request_error("get attester duties", &error))?;
 
-        Ok(response
-            .data
-            .into_iter()
-            .map(|duty| AttesterDuty {
-                slot: duty.slot,
-                validator_index: duty.validator_index,
-                pubkey: duty.pubkey,
-            })
-            .collect())
+        Ok(response.data)
     }
 
     /// Fetches the beacon attester signing domain.

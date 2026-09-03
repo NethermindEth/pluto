@@ -645,6 +645,7 @@ fn attestation_json_bytes(data: &phase0::AttestationData) -> Bytes {
     let value = serde_json::json!({
         "attestation_data": data,
         "attestation_duty": {
+            "pubkey": pubkey(1),
             "slot": "1",
             "validator_index": "1",
             "committee_index": "2",

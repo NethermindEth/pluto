@@ -240,7 +240,7 @@ impl Fetcher {
                 *pubkey,
                 UnsignedDutyData::Attestation(AttestationData {
                     data: eth2_att_data,
-                    duty: att_def.into(),
+                    duty: att_def.clone(),
                 }),
             );
         }
@@ -616,7 +616,7 @@ mod tests {
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::{signeddata::AttesterDuty, types::SlotNumber};
+    use crate::types::SlotNumber;
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
     const PK_LEN: usize = 48;
@@ -986,7 +986,8 @@ mod tests {
         let pk_a = PubKey::new([2u8; PK_LEN]);
         let pk_b = PubKey::new([3u8; PK_LEN]);
 
-        let duty_a = AttesterDuty {
+        let duty_a = v1::AttesterDuty {
+            pubkey: pk_a.0,
             slot: SLOT,
             validator_index: V_IDX_A,
             committee_index: V_IDX_A,
@@ -994,7 +995,8 @@ mod tests {
             committees_at_slot: NOT_ZERO,
             validator_committee_index: 0,
         };
-        let duty_b = AttesterDuty {
+        let duty_b = v1::AttesterDuty {
+            pubkey: pk_b.0,
             slot: SLOT,
             validator_index: V_IDX_B,
             committee_index: V_IDX_B,
@@ -1004,14 +1006,8 @@ mod tests {
         };
 
         let def_set = DutyDefinitionSet::from([
-            (
-                pk_a,
-                DutyDefinition::Attester(attester_duty_def(pk_a, &duty_a)),
-            ),
-            (
-                pk_b,
-                DutyDefinition::Attester(attester_duty_def(pk_b, &duty_b)),
-            ),
+            (pk_a, DutyDefinition::Attester(duty_a.clone())),
+            (pk_b, DutyDefinition::Attester(duty_b.clone())),
         ]);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
@@ -1141,33 +1137,17 @@ mod tests {
             .await;
     }
 
-    /// Builds the attester duty definition for `pubkey` from a signed-data
-    /// [`AttesterDuty`].
-    fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> v1::AttesterDuty {
-        v1::AttesterDuty {
-            pubkey: pubkey.0,
-            slot: duty.slot,
-            validator_index: duty.validator_index,
-            committee_index: duty.committee_index,
-            committee_length: duty.committee_length,
-            committees_at_slot: duty.committees_at_slot,
-            validator_committee_index: duty.validator_committee_index,
-        }
-    }
-
     /// Builds an attester definition with the given committee index/length.
     fn attester_def(comm_idx: u64, comm_len: u64) -> DutyDefinition {
-        DutyDefinition::Attester(attester_duty_def(
-            PubKey::new([0u8; PK_LEN]),
-            &AttesterDuty {
-                slot: 1,
-                validator_index: 0,
-                committee_index: comm_idx,
-                committee_length: comm_len,
-                committees_at_slot: 1,
-                validator_committee_index: 0,
-            },
-        ))
+        DutyDefinition::Attester(v1::AttesterDuty {
+            pubkey: [0u8; PK_LEN],
+            slot: 1,
+            validator_index: 0,
+            committee_index: comm_idx,
+            committee_length: comm_len,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
+        })
     }
 
     /// Builds the AggSigDB (returns a beacon committee selection) and DutyDB

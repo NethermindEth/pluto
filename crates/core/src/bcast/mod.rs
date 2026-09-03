@@ -8,8 +8,9 @@ use std::{any::Any, error::Error as StdError};
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    AttesterDuty, EthBeaconNodeApiClient, data_version_is_before_electra,
+    EthBeaconNodeApiClient, data_version_is_before_electra,
     spec::{altair, phase0},
+    v1,
     valcache::ValidatorCache,
     versioned,
 };
@@ -661,7 +662,7 @@ async fn resolve_active_validators_indices(
 
 fn attestation_matches_duty(
     attestation: &versioned::VersionedAttestation,
-    attester_duty: &AttesterDuty,
+    attester_duty: &v1::AttesterDuty,
     domain: phase0::Domain,
 ) -> Result<bool> {
     let payload = attestation
@@ -1213,17 +1214,17 @@ mod tests {
         )
         .await;
         let attestation = signed_electra_attestation(&secret, domain, 12, 3);
+        let duty = v1::AttesterDuty {
+            pubkey: public_key,
+            validator_index: 99,
+            committee_index: 0,
+            committee_length: 1,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
+            slot: 12,
+        };
         assert!(
-            attestation_matches_duty(
-                &attestation,
-                &AttesterDuty {
-                    slot: 12,
-                    validator_index: 99,
-                    pubkey: public_key,
-                },
-                domain,
-            )
-            .expect("matching attestation")
+            attestation_matches_duty(&attestation, &duty, domain).expect("matching attestation")
         );
         assert_eq!(
             beacon
@@ -1231,11 +1232,7 @@ mod tests {
                 .fetch_attester_duties_for_indices(3, vec![99])
                 .await
                 .expect("duties"),
-            vec![AttesterDuty {
-                slot: 12,
-                validator_index: 99,
-                pubkey: public_key,
-            }]
+            vec![duty]
         );
         assert_eq!(
             beacon

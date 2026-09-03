@@ -18,7 +18,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, versioned};
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, v1, versioned};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
 use tokio_util::sync::CancellationToken;
@@ -128,15 +128,6 @@ pub struct Submission {
     pub delay: Duration,
 }
 
-/// A minimal attester duty, carrying only the fields used by inclusion checks.
-#[derive(Clone)]
-pub struct AttesterDuty {
-    /// Validator index the duty belongs to.
-    pub validator_index: u64,
-    /// Index of the validator within its committee's aggregation bits.
-    pub validator_committee_index: u64,
-}
-
 /// A beacon committee for a slot, carrying only the fields used by inclusion.
 #[derive(Clone)]
 pub struct BeaconCommittee {
@@ -151,7 +142,7 @@ pub struct Block {
     /// Slot of the block.
     pub slot: u64,
     /// Attester duties relevant to this slot (used for Electra inclusion).
-    pub att_duties: Vec<AttesterDuty>,
+    pub att_duties: Vec<v1::AttesterDuty>,
     /// Block attestations keyed by their attestation-data root.
     pub attestations_by_data_root: HashMap<HashRoot, versioned::VersionedAttestation>,
     /// Beacon committees for the slot, ordered by committee index.
@@ -1139,9 +1130,14 @@ mod tests {
         );
         let block = Block {
             slot,
-            att_duties: vec![AttesterDuty {
+            att_duties: vec![v1::AttesterDuty {
+                pubkey: [0u8; 48],
                 validator_index,
+                committee_index: u64::try_from(committee_index).unwrap(),
+                committee_length: 4,
+                committees_at_slot: 2,
                 validator_committee_index,
+                slot,
             }],
             attestations_by_data_root: HashMap::from([(data_root, block_att)]),
             beacon_committees: vec![
