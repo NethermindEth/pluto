@@ -20,9 +20,7 @@ pub mod error;
 pub use error::{EthBeaconNodeApiClientError, PayloadError};
 
 /// Prometheus metrics for beacon node requests.
-pub mod metrics;
-
-pub use metrics::instrument;
+mod metrics;
 
 /// Ethereum 2.0 consensus layer specification types.
 pub mod spec;

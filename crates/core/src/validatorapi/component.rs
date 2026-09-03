@@ -896,10 +896,7 @@ impl Handler for Component {
     ) -> Result<ProposerDutiesResponse, ApiError> {
         let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument(
-                "proposer_duties",
-                self.eth2_cl.get_proposer_duties(opts.epoch),
-            ),
+            self.eth2_cl.get_proposer_duties(opts.epoch),
         )
         .await
         .map_err(|_| upstream_timeout("proposer duties"))?
@@ -918,10 +915,7 @@ impl Handler for Component {
     ) -> Result<AttesterDutiesResponse, ApiError> {
         let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument(
-                "attester_duties",
-                self.eth2_cl.get_attester_duties(opts.epoch, &opts.indices),
-            ),
+            self.eth2_cl.get_attester_duties(opts.epoch, &opts.indices),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
@@ -940,11 +934,8 @@ impl Handler for Component {
     ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
         let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument(
-                "sync_committee_duties",
-                self.eth2_cl
-                    .get_sync_committee_duties(opts.epoch, &opts.indices),
-            ),
+            self.eth2_cl
+                .get_sync_committee_duties(opts.epoch, &opts.indices),
         )
         .await
         .map_err(|_| upstream_timeout("sync committee duties"))?
@@ -1539,10 +1530,7 @@ impl Handler for Component {
 
         let payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument(
-                "validators",
-                self.eth2_cl.post_state_validators(&opts.state, &filter),
-            ),
+            self.eth2_cl.post_state_validators(&opts.state, &filter),
         )
         .await
         .map_err(|_| upstream_timeout("validators"))?

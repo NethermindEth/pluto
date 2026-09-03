@@ -148,7 +148,8 @@ fn truncate_label(s: &str) -> String {
 async fn fetch_node_version(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<String, ReadyCheckerError> {
-    pluto_eth2api::instrument("node_version", beacon_node.get_node_version())
+    beacon_node
+        .get_node_version()
         .await
         .map_err(ReadyCheckerError::BeaconNode)
 }
@@ -267,7 +268,8 @@ async fn update_beacon_node_peer_count(
 }
 
 async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, ReadyCheckerError> {
-    let peers = pluto_eth2api::instrument("node_peer_count", beacon_node.get_peer_count())
+    let peers = beacon_node
+        .get_peer_count()
         .await
         .map_err(ReadyCheckerError::BeaconNode)?;
     Ok(peers.connected)
@@ -276,7 +278,8 @@ async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, R
 async fn fetch_sync_status(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<BeaconNodeSyncStatus, ReadyCheckerError> {
-    let state = pluto_eth2api::instrument("node_syncing", beacon_node.get_syncing_status())
+    let state = beacon_node
+        .get_syncing_status()
         .await
         .map_err(ReadyCheckerError::BeaconNode)?;
     MONITORING_METRICS

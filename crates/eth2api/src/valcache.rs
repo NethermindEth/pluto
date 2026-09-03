@@ -144,11 +144,11 @@ impl ValidatorCache {
 
     async fn fetch(&self, state_id: &str) -> Result<ValidatorsResponse> {
         let filter = self.filter();
-        Ok(crate::instrument(
-            "validators",
-            self.0.eth2_cl.post_state_validators(state_id, &filter),
-        )
-        .await?)
+        Ok(self
+            .0
+            .eth2_cl
+            .post_state_validators(state_id, &filter)
+            .await?)
     }
 
     /// Returns the cached active validators and complete validators response,

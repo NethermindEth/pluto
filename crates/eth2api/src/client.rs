@@ -8,6 +8,9 @@
 //! [`EthBeaconNodeApiClientError::Transport`] and
 //! [`EthBeaconNodeApiClientError::Decode`].
 //!
+//! Methods with a metrics label record each call (request, response read and
+//! decode) in the `app_eth2_*` Prometheus metrics under that label.
+//!
 //! The `fetch_*` methods derive values from several endpoints and cache the
 //! static chain configuration (spec, genesis, fork schedule) per endpoint.
 
@@ -302,10 +305,13 @@ impl EthBeaconNodeApiClient {
     /// `GET /eth/v1/beacon/genesis`: genesis time, validators root and fork
     /// version.
     pub async fn get_genesis(&self) -> Result<v1::Genesis> {
-        data(
-            self.send(self.get(&["eth", "v1", "beacon", "genesis"]))
-                .await?,
-        )
+        crate::metrics::instrument("genesis", async {
+            data(
+                self.send(self.get(&["eth", "v1", "beacon", "genesis"]))
+                    .await?,
+            )
+            .await
+        })
         .await
     }
 
@@ -359,13 +365,16 @@ impl EthBeaconNodeApiClient {
         state_id: &str,
         filter: &ValidatorsFilter,
     ) -> Result<ValidatorsResponse> {
-        json(
-            self.send(
-                self.post(&["eth", "v1", "beacon", "states", state_id, "validators"])
-                    .json(filter),
+        crate::metrics::instrument("validators", async {
+            json(
+                self.send(
+                    self.post(&["eth", "v1", "beacon", "states", state_id, "validators"])
+                        .json(filter),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -376,17 +385,20 @@ impl EthBeaconNodeApiClient {
         proposal: &versioned::VersionedSignedProposal,
         broadcast_validation: Option<BroadcastValidation>,
     ) -> Result<()> {
-        if proposal.blinded {
-            return Err(PayloadError::BlindedOnUnblindedEndpoint.into());
-        }
-        let mut request = self
-            .post(&["eth", "v2", "beacon", "blocks"])
-            .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
-            .json(&proposal.block);
-        if let Some(validation) = broadcast_validation {
-            request = request.query(&[("broadcast_validation", validation.as_str())]);
-        }
-        empty(self.send(request).await?).await
+        crate::metrics::instrument("submit_proposal", async {
+            if proposal.blinded {
+                return Err(PayloadError::BlindedOnUnblindedEndpoint.into());
+            }
+            let mut request = self
+                .post(&["eth", "v2", "beacon", "blocks"])
+                .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
+                .json(&proposal.block);
+            if let Some(validation) = broadcast_validation {
+                request = request.query(&[("broadcast_validation", validation.as_str())]);
+            }
+            empty(self.send(request).await?).await
+        })
+        .await
     }
 
     /// `POST /eth/v2/beacon/blinded_blocks`: publishes a signed blinded block.
@@ -395,14 +407,17 @@ impl EthBeaconNodeApiClient {
         proposal: &versioned::VersionedSignedBlindedProposal,
         broadcast_validation: Option<BroadcastValidation>,
     ) -> Result<()> {
-        let mut request = self
-            .post(&["eth", "v2", "beacon", "blinded_blocks"])
-            .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
-            .json(&proposal.block);
-        if let Some(validation) = broadcast_validation {
-            request = request.query(&[("broadcast_validation", validation.as_str())]);
-        }
-        empty(self.send(request).await?).await
+        crate::metrics::instrument("submit_blinded_proposal", async {
+            let mut request = self
+                .post(&["eth", "v2", "beacon", "blinded_blocks"])
+                .header(ETH_CONSENSUS_VERSION, consensus_version(proposal.version)?)
+                .json(&proposal.block);
+            if let Some(validation) = broadcast_validation {
+                request = request.query(&[("broadcast_validation", validation.as_str())]);
+            }
+            empty(self.send(request).await?).await
+        })
+        .await
     }
 
     /// `POST /eth/v2/beacon/pool/attestations`: submits signed attestations.
@@ -412,15 +427,18 @@ impl EthBeaconNodeApiClient {
         &self,
         attestations: &[versioned::VersionedAttestation],
     ) -> Result<()> {
-        let version = attestations
-            .first()
-            .map_or(DataVersion::Phase0, |attestation| attestation.version);
-        let body = pool_attestations(version, attestations)?;
-        let request = self
-            .post(&["eth", "v2", "beacon", "pool", "attestations"])
-            .header(ETH_CONSENSUS_VERSION, consensus_version(version)?)
-            .json(&body);
-        empty(self.send(request).await?).await
+        crate::metrics::instrument("submit_attestations", async {
+            let version = attestations
+                .first()
+                .map_or(DataVersion::Phase0, |attestation| attestation.version);
+            let body = pool_attestations(version, attestations)?;
+            let request = self
+                .post(&["eth", "v2", "beacon", "pool", "attestations"])
+                .header(ETH_CONSENSUS_VERSION, consensus_version(version)?)
+                .json(&body);
+            empty(self.send(request).await?).await
+        })
+        .await
     }
 
     /// `POST /eth/v1/beacon/pool/sync_committees`: submits sync committee
@@ -429,13 +447,16 @@ impl EthBeaconNodeApiClient {
         &self,
         messages: &[altair::SyncCommitteeMessage],
     ) -> Result<()> {
-        empty(
-            self.send(
-                self.post(&["eth", "v1", "beacon", "pool", "sync_committees"])
-                    .json(messages),
+        crate::metrics::instrument("submit_sync_committee_messages", async {
+            empty(
+                self.send(
+                    self.post(&["eth", "v1", "beacon", "pool", "sync_committees"])
+                        .json(messages),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -445,62 +466,80 @@ impl EthBeaconNodeApiClient {
         &self,
         exit: &phase0::SignedVoluntaryExit,
     ) -> Result<()> {
-        empty(
-            self.send(
-                self.post(&["eth", "v1", "beacon", "pool", "voluntary_exits"])
-                    .json(exit),
+        crate::metrics::instrument("submit_voluntary_exit", async {
+            empty(
+                self.send(
+                    self.post(&["eth", "v1", "beacon", "pool", "voluntary_exits"])
+                        .json(exit),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
     /// `GET /eth/v1/config/fork_schedule`: every fork the node knows about.
     pub async fn get_fork_schedule(&self) -> Result<Vec<phase0::Fork>> {
-        data(
-            self.send(self.get(&["eth", "v1", "config", "fork_schedule"]))
-                .await?,
-        )
+        crate::metrics::instrument("fork_schedule", async {
+            data(
+                self.send(self.get(&["eth", "v1", "config", "fork_schedule"]))
+                    .await?,
+            )
+            .await
+        })
         .await
     }
 
     /// `GET /eth/v1/config/spec`: the chain constants, presets and
     /// configuration.
     pub async fn get_spec(&self) -> Result<Spec> {
-        data(
-            self.send(self.get(&["eth", "v1", "config", "spec"]))
-                .await?,
-        )
+        crate::metrics::instrument("spec", async {
+            data(
+                self.send(self.get(&["eth", "v1", "config", "spec"]))
+                    .await?,
+            )
+            .await
+        })
         .await
     }
 
     /// `GET /eth/v1/node/peer_count`: the node's peer counts by connection
     /// state.
     pub async fn get_peer_count(&self) -> Result<v1::PeerCount> {
-        data(
-            self.send(self.get(&["eth", "v1", "node", "peer_count"]))
-                .await?,
-        )
+        crate::metrics::instrument("node_peer_count", async {
+            data(
+                self.send(self.get(&["eth", "v1", "node", "peer_count"]))
+                    .await?,
+            )
+            .await
+        })
         .await
     }
 
     /// `GET /eth/v1/node/syncing`: the node's sync status.
     pub async fn get_syncing_status(&self) -> Result<v1::SyncState> {
-        data(
-            self.send(self.get(&["eth", "v1", "node", "syncing"]))
-                .await?,
-        )
+        crate::metrics::instrument("node_syncing", async {
+            data(
+                self.send(self.get(&["eth", "v1", "node", "syncing"]))
+                    .await?,
+            )
+            .await
+        })
         .await
     }
 
     /// `GET /eth/v1/node/version`: the node's client version string.
     pub async fn get_node_version(&self) -> Result<String> {
-        let version: NodeVersion = data(
-            self.send(self.get(&["eth", "v1", "node", "version"]))
-                .await?,
-        )
-        .await?;
-        Ok(version.version)
+        crate::metrics::instrument("node_version", async {
+            let version: NodeVersion = data(
+                self.send(self.get(&["eth", "v1", "node", "version"]))
+                    .await?,
+            )
+            .await?;
+            Ok(version.version)
+        })
+        .await
     }
 
     /// `GET /eth/v1/validator/attestation_data`: unsigned attestation data
@@ -510,16 +549,19 @@ impl EthBeaconNodeApiClient {
         slot: phase0::Slot,
         committee_index: u64,
     ) -> Result<phase0::AttestationData> {
-        data(
-            self.send(
-                self.get(&["eth", "v1", "validator", "attestation_data"])
-                    .query(&[
-                        ("slot", slot.to_string()),
-                        ("committee_index", committee_index.to_string()),
-                    ]),
+        crate::metrics::instrument("attestation_data", async {
+            data(
+                self.send(
+                    self.get(&["eth", "v1", "validator", "attestation_data"])
+                        .query(&[
+                            ("slot", slot.to_string()),
+                            ("committee_index", committee_index.to_string()),
+                        ]),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -545,13 +587,16 @@ impl EthBeaconNodeApiClient {
         &self,
         contributions: &[altair::SignedContributionAndProof],
     ) -> Result<()> {
-        empty(
-            self.send(
-                self.post(&["eth", "v1", "validator", "contribution_and_proofs"])
-                    .json(contributions),
+        crate::metrics::instrument("submit_sync_committee_contributions", async {
+            empty(
+                self.send(
+                    self.post(&["eth", "v1", "validator", "contribution_and_proofs"])
+                        .json(contributions),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -562,20 +607,23 @@ impl EthBeaconNodeApiClient {
         epoch: phase0::Epoch,
         indices: &[phase0::ValidatorIndex],
     ) -> Result<AttesterDutiesResponse> {
-        json(
-            self.send(
-                self.post(&[
-                    "eth",
-                    "v1",
-                    "validator",
-                    "duties",
-                    "attester",
-                    &epoch.to_string(),
-                ])
-                .json(&decimal_strings(indices)),
+        crate::metrics::instrument("attester_duties", async {
+            json(
+                self.send(
+                    self.post(&[
+                        "eth",
+                        "v1",
+                        "validator",
+                        "duties",
+                        "attester",
+                        &epoch.to_string(),
+                    ])
+                    .json(&decimal_strings(indices)),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -585,17 +633,20 @@ impl EthBeaconNodeApiClient {
         &self,
         epoch: phase0::Epoch,
     ) -> Result<ProposerDutiesResponse> {
-        json(
-            self.send(self.get(&[
-                "eth",
-                "v1",
-                "validator",
-                "duties",
-                "proposer",
-                &epoch.to_string(),
-            ]))
-            .await?,
-        )
+        crate::metrics::instrument("proposer_duties", async {
+            json(
+                self.send(self.get(&[
+                    "eth",
+                    "v1",
+                    "validator",
+                    "duties",
+                    "proposer",
+                    &epoch.to_string(),
+                ]))
+                .await?,
+            )
+            .await
+        })
         .await
     }
 
@@ -606,20 +657,23 @@ impl EthBeaconNodeApiClient {
         epoch: phase0::Epoch,
         indices: &[phase0::ValidatorIndex],
     ) -> Result<SyncCommitteeDutiesResponse> {
-        json(
-            self.send(
-                self.post(&[
-                    "eth",
-                    "v1",
-                    "validator",
-                    "duties",
-                    "sync",
-                    &epoch.to_string(),
-                ])
-                .json(&decimal_strings(indices)),
+        crate::metrics::instrument("sync_committee_duties", async {
+            json(
+                self.send(
+                    self.post(&[
+                        "eth",
+                        "v1",
+                        "validator",
+                        "duties",
+                        "sync",
+                        &epoch.to_string(),
+                    ])
+                    .json(&decimal_strings(indices)),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -645,13 +699,16 @@ impl EthBeaconNodeApiClient {
         &self,
         registrations: &[v1::SignedValidatorRegistration],
     ) -> Result<()> {
-        empty(
-            self.send(
-                self.post(&["eth", "v1", "validator", "register_validator"])
-                    .json(registrations),
+        crate::metrics::instrument("submit_validator_registrations", async {
+            empty(
+                self.send(
+                    self.post(&["eth", "v1", "validator", "register_validator"])
+                        .json(registrations),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -663,20 +720,23 @@ impl EthBeaconNodeApiClient {
         subcommittee_index: u64,
         beacon_block_root: phase0::Root,
     ) -> Result<altair::SyncCommitteeContribution> {
-        data(
-            self.send(
-                self.get(&["eth", "v1", "validator", "sync_committee_contribution"])
-                    .query(&[
-                        ("slot", slot.to_string()),
-                        ("subcommittee_index", subcommittee_index.to_string()),
-                        (
-                            "beacon_block_root",
-                            pluto_ssz::to_0x_hex(&beacon_block_root),
-                        ),
-                    ]),
+        crate::metrics::instrument("sync_committee_contribution", async {
+            data(
+                self.send(
+                    self.get(&["eth", "v1", "validator", "sync_committee_contribution"])
+                        .query(&[
+                            ("slot", slot.to_string()),
+                            ("subcommittee_index", subcommittee_index.to_string()),
+                            (
+                                "beacon_block_root",
+                                pluto_ssz::to_0x_hex(&beacon_block_root),
+                            ),
+                        ]),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -720,27 +780,30 @@ impl EthBeaconNodeApiClient {
         committee_index: u64,
         attestation_data_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
-        let response = self
-            .send(
-                self.get(&["eth", "v2", "validator", "aggregate_attestation"])
-                    .query(&[
-                        (
-                            "attestation_data_root",
-                            pluto_ssz::to_0x_hex(&attestation_data_root),
-                        ),
-                        ("slot", slot.to_string()),
-                        ("committee_index", committee_index.to_string()),
-                    ]),
-            )
-            .await?;
-        let body = response.text().await?;
-        let envelope: Versioned<'_> = decode(&body)?;
+        crate::metrics::instrument("aggregate_attestation", async {
+            let response = self
+                .send(
+                    self.get(&["eth", "v2", "validator", "aggregate_attestation"])
+                        .query(&[
+                            (
+                                "attestation_data_root",
+                                pluto_ssz::to_0x_hex(&attestation_data_root),
+                            ),
+                            ("slot", slot.to_string()),
+                            ("committee_index", committee_index.to_string()),
+                        ]),
+                )
+                .await?;
+            let body = response.text().await?;
+            let envelope: Versioned<'_> = decode(&body)?;
 
-        Ok(versioned::VersionedAttestation {
-            version: envelope.version,
-            validator_index: None,
-            attestation: Some(decode_attestation(envelope.version, envelope.data.get())?),
+            Ok(versioned::VersionedAttestation {
+                version: envelope.version,
+                validator_index: None,
+                attestation: Some(decode_attestation(envelope.version, envelope.data.get())?),
+            })
         })
+        .await
     }
 
     /// `POST /eth/v2/validator/aggregate_and_proofs`: submits signed
@@ -750,19 +813,22 @@ impl EthBeaconNodeApiClient {
         &self,
         aggregates: &[versioned::VersionedSignedAggregateAndProof],
     ) -> Result<()> {
-        let version = common_version(aggregates.iter().map(|aggregate| aggregate.version))?;
-        let body: Vec<_> = aggregates
-            .iter()
-            .map(|aggregate| &aggregate.aggregate_and_proof)
-            .collect();
-        empty(
-            self.send(
-                self.post(&["eth", "v2", "validator", "aggregate_and_proofs"])
-                    .header(ETH_CONSENSUS_VERSION, version)
-                    .json(&body),
+        crate::metrics::instrument("submit_aggregate_attestations", async {
+            let version = common_version(aggregates.iter().map(|aggregate| aggregate.version))?;
+            let body: Vec<_> = aggregates
+                .iter()
+                .map(|aggregate| &aggregate.aggregate_and_proof)
+                .collect();
+            empty(
+                self.send(
+                    self.post(&["eth", "v2", "validator", "aggregate_and_proofs"])
+                        .header(ETH_CONSENSUS_VERSION, version)
+                        .json(&body),
+                )
+                .await?,
             )
-            .await?,
-        )
+            .await
+        })
         .await
     }
 
@@ -772,35 +838,38 @@ impl EthBeaconNodeApiClient {
         &self,
         opts: &ProduceBlockOpts,
     ) -> Result<versioned::VersionedProposal> {
-        let mut query = vec![("randao_reveal", pluto_ssz::to_0x_hex(&opts.randao_reveal))];
-        if let Some(graffiti) = &opts.graffiti {
-            query.push(("graffiti", pluto_ssz::to_0x_hex(graffiti)));
-        }
-        if opts.skip_randao_verification {
-            query.push(("skip_randao_verification", String::new()));
-        }
-        if let Some(factor) = opts.builder_boost_factor {
-            query.push(("builder_boost_factor", factor.to_string()));
-        }
+        crate::metrics::instrument("proposal", async {
+            let mut query = vec![("randao_reveal", pluto_ssz::to_0x_hex(&opts.randao_reveal))];
+            if let Some(graffiti) = &opts.graffiti {
+                query.push(("graffiti", pluto_ssz::to_0x_hex(graffiti)));
+            }
+            if opts.skip_randao_verification {
+                query.push(("skip_randao_verification", String::new()));
+            }
+            if let Some(factor) = opts.builder_boost_factor {
+                query.push(("builder_boost_factor", factor.to_string()));
+            }
 
-        let response = self
-            .send(
-                self.get(&["eth", "v3", "validator", "blocks", &opts.slot.to_string()])
-                    .query(&query),
-            )
-            .await?;
-        let body = response.text().await?;
-        let envelope: Proposal<'_> = decode(&body)?;
+            let response = self
+                .send(
+                    self.get(&["eth", "v3", "validator", "blocks", &opts.slot.to_string()])
+                        .query(&query),
+                )
+                .await?;
+            let body = response.text().await?;
+            let envelope: Proposal<'_> = decode(&body)?;
 
-        Ok(versioned::VersionedProposal {
-            block: decode_proposal_block(
-                envelope.version,
-                envelope.execution_payload_blinded,
-                envelope.data.get(),
-            )?,
-            consensus_block_value: envelope.consensus_block_value,
-            execution_payload_value: envelope.execution_payload_value,
+            Ok(versioned::VersionedProposal {
+                block: decode_proposal_block(
+                    envelope.version,
+                    envelope.execution_payload_blinded,
+                    envelope.data.get(),
+                )?,
+                consensus_block_value: envelope.consensus_block_value,
+                execution_payload_value: envelope.execution_payload_value,
+            })
         })
+        .await
     }
 }
 
@@ -892,7 +961,7 @@ impl EthBeaconNodeApiClient {
         cache
             .spec
             .get_or_try_init(|| async {
-                let spec = crate::instrument("spec", self.get_spec()).await?;
+                let spec = self.get_spec().await?;
                 Ok(Arc::new(spec))
             })
             .await
@@ -904,7 +973,7 @@ impl EthBeaconNodeApiClient {
         cache
             .genesis
             .get_or_try_init(|| async {
-                let genesis = crate::instrument("genesis", self.get_genesis()).await?;
+                let genesis = self.get_genesis().await?;
                 Ok(Arc::new(genesis))
             })
             .await
@@ -943,9 +1012,7 @@ impl EthBeaconNodeApiClient {
         epoch: phase0::Epoch,
         indices: Vec<phase0::ValidatorIndex>,
     ) -> Result<Vec<v1::AttesterDuty>> {
-        let response =
-            crate::instrument("attester_duties", self.get_attester_duties(epoch, &indices)).await?;
-        Ok(response.data)
+        Ok(self.get_attester_duties(epoch, &indices).await?.data)
     }
 
     /// Fetches the proposer duties for `epoch`, keeping only the duties that
@@ -964,9 +1031,7 @@ impl EthBeaconNodeApiClient {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
         }
 
-        let duties = crate::instrument("proposer_duties", self.get_proposer_duties(epoch))
-            .await?
-            .data;
+        let duties = self.get_proposer_duties(epoch).await?.data;
 
         // Reject duties outside the requested epoch before dropping any:
         // filtering first would silently discard a bogus duty that happens to
@@ -1017,7 +1082,7 @@ impl EthBeaconNodeApiClient {
         cache
             .fork_schedule
             .get_or_try_init(|| async {
-                let schedule = crate::instrument("fork_schedule", self.get_fork_schedule()).await?;
+                let schedule = self.get_fork_schedule().await?;
                 Ok(Arc::new(schedule))
             })
             .await
@@ -1089,11 +1154,7 @@ impl EthBeaconNodeApiClient {
             )
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        crate::instrument(
-            "submit_validator_registrations",
-            self.register_validator(&registrations),
-        )
-        .await
+        self.register_validator(&registrations).await
     }
 
     /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the

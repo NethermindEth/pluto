@@ -1,4 +1,6 @@
-//! Prometheus metrics for beacon node requests.
+//! Prometheus metrics for beacon node requests, recorded by the
+//! [`EthBeaconNodeApiClient`](crate::EthBeaconNodeApiClient) methods that
+//! carry an endpoint label.
 
 use std::{future::Future, time::Instant};
 
@@ -30,11 +32,11 @@ pub struct Eth2Metrics {
 #[vise::register]
 pub static ETH2_METRICS: vise::Global<Eth2Metrics> = vise::Global::new();
 
-/// Awaits `fut`, recording a request, its latency and, when it fails, an
-/// error for `endpoint`. The client surfaces non-2xx statuses as `Err`, so
-/// HTTP errors are counted alongside transport and decoding failures,
-/// matching Charon's `eth2wrap` semantics.
-pub async fn instrument<T, E, F>(endpoint: &str, fut: F) -> Result<T, E>
+/// Awaits `fut`, a whole client call, recording a request, its latency and,
+/// when it fails, an error for `endpoint`. Non-2xx statuses are `Err`, so
+/// HTTP errors are counted alongside transport, payload and decoding
+/// failures, matching Charon's `eth2wrap` semantics.
+pub(crate) async fn instrument<T, E, F>(endpoint: &str, fut: F) -> Result<T, E>
 where
     F: Future<Output = Result<T, E>>,
 {

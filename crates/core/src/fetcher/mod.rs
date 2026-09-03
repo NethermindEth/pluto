@@ -348,8 +348,7 @@ impl Fetcher {
                 builder_boost_factor: Some(builder_boost_factor),
             };
 
-            let proposal =
-                pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(&opts)).await?;
+            let proposal = self.eth2_cl.produce_block_v3(&opts).await?;
 
             // Builders set the fee recipient to themselves, so it always
             // differs from the validator's; only verify when the
@@ -426,15 +425,13 @@ impl Fetcher {
 
     /// Queries the beacon node for attestation data.
     async fn attestation_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
-        pluto_eth2api::instrument(
-            "attestation_data",
-            self.eth2_cl.produce_attestation_data(slot, comm_idx),
-        )
-        .await
-        .map_err(|err| match err {
-            EthBeaconNodeApiClientError::Http(_) => FetcherError::NilAttestationData,
-            other => other.into(),
-        })
+        self.eth2_cl
+            .produce_attestation_data(slot, comm_idx)
+            .await
+            .map_err(|err| match err {
+                EthBeaconNodeApiClientError::Http(_) => FetcherError::NilAttestationData,
+                other => other.into(),
+            })
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
@@ -444,18 +441,15 @@ impl Fetcher {
         comm_idx: u64,
         data_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
-        pluto_eth2api::instrument(
-            "aggregate_attestation",
-            self.eth2_cl
-                .get_aggregated_attestation_v2(slot, comm_idx, data_root),
-        )
-        .await
-        .map_err(|err| match err {
-            // Some beacon nodes answer 404 when the root is not found; surface
-            // a retryable error.
-            EthBeaconNodeApiClientError::Http(_) => FetcherError::AggregateAttestationNotFound,
-            other => other.into(),
-        })
+        self.eth2_cl
+            .get_aggregated_attestation_v2(slot, comm_idx, data_root)
+            .await
+            .map_err(|err| match err {
+                // Some beacon nodes answer 404 when the root is not found; surface
+                // a retryable error.
+                EthBeaconNodeApiClientError::Http(_) => FetcherError::AggregateAttestationNotFound,
+                other => other.into(),
+            })
     }
 
     /// Queries the beacon node for a sync committee contribution.
@@ -465,19 +459,16 @@ impl Fetcher {
         subcomm_idx: u64,
         block_root: phase0::Root,
     ) -> Result<altair::SyncCommitteeContribution> {
-        pluto_eth2api::instrument(
-            "sync_committee_contribution",
-            self.eth2_cl
-                .produce_sync_committee_contribution(slot, subcomm_idx, block_root),
-        )
-        .await
-        .map_err(|err| match err {
-            EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
-                FetcherError::SyncContributionNotFound
-            }
-            EthBeaconNodeApiClientError::Http(_) => FetcherError::UnexpectedResponse,
-            other => other.into(),
-        })
+        self.eth2_cl
+            .produce_sync_committee_contribution(slot, subcomm_idx, block_root)
+            .await
+            .map_err(|err| match err {
+                EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
+                    FetcherError::SyncContributionNotFound
+                }
+                EthBeaconNodeApiClientError::Http(_) => FetcherError::UnexpectedResponse,
+                other => other.into(),
+            })
     }
 
     /// Invokes the AggSigDB resolver.

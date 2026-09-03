@@ -152,9 +152,7 @@ async fn fetch_beacon_node_token(eth2_cl: &EthBeaconNodeApiClient) -> String {
 /// Fetches the beacon node version string (e.g. `Lighthouse/v0.1.5 (Linux
 /// x86_64)`), or `None` on any error.
 async fn node_version(eth2_cl: &EthBeaconNodeApiClient) -> Option<String> {
-    pluto_eth2api::instrument("node_version", eth2_cl.get_node_version())
-        .await
-        .ok()
+    eth2_cl.get_node_version().await.ok()
 }
 
 #[cfg(test)]

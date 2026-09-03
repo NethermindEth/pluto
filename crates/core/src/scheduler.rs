@@ -810,7 +810,7 @@ async fn wait_chain_start(client: &pluto_eth2api::EthBeaconNodeApiClient) -> Res
 
 /// Blocks until the beacon node is synced.
 async fn wait_beacon_sync(client: &pluto_eth2api::EthBeaconNodeApiClient) -> Result<()> {
-    let fetch = || pluto_eth2api::instrument("node_syncing", client.get_syncing_status());
+    let fetch = || client.get_syncing_status();
     let fetch_backoff = crate::expbackoff::fast();
 
     let mut is_syncing_backoff = crate::expbackoff::default().build();
@@ -869,12 +869,10 @@ async fn fetch_attester_duties(
 ) -> Result<Vec<v1::AttesterDuty>> {
     let validators = validators.as_ref();
     let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
-    let att_duties = pluto_eth2api::instrument(
-        "attester_duties",
-        client.get_attester_duties(slot.epoch(), &indices),
-    )
-    .await?
-    .data;
+    let att_duties = client
+        .get_attester_duties(slot.epoch(), &indices)
+        .await?
+        .data;
 
     let mut remaining = validators
         .iter()
@@ -988,12 +986,10 @@ async fn fetch_sync_committee_duties(
 ) -> Result<Vec<v1::SyncCommitteeDuty>> {
     let validators = validators.as_ref();
     let indices: Vec<u64> = validators.iter().map(|v| v.v_idx).collect();
-    let sync_duties = pluto_eth2api::instrument(
-        "sync_committee_duties",
-        client.get_sync_committee_duties(slot.epoch(), &indices),
-    )
-    .await?
-    .data;
+    let sync_duties = client
+        .get_sync_committee_duties(slot.epoch(), &indices)
+        .await?
+        .data;
 
     let mut result = vec![];
     for sync_duty in sync_duties.into_iter() {
