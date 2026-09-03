@@ -74,6 +74,20 @@ fn require(bytes: &[u8], need: usize) -> Result<(), SszCodecError> {
     }
 }
 
+/// Encodes an SSZ value into a `Vec` pre-sized to its exact serialized length,
+/// avoiding the incremental reallocation of `as_ssz_bytes`.
+fn ssz_to_vec<T: Encode>(value: &T) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(value.ssz_bytes_len());
+    value.ssz_append(&mut buf);
+    buf
+}
+
+/// Appends an SSZ value to `buf`, reserving its exact serialized length first.
+fn append_ssz<T: Encode>(buf: &mut Vec<u8>, value: &T) {
+    buf.reserve(value.ssz_bytes_len());
+    value.ssz_append(buf);
+}
+
 // ===========================================================================
 // Non-versioned SSZ-capable types
 // ===========================================================================
@@ -83,7 +97,7 @@ fn require(bytes: &[u8], need: usize) -> Result<(), SszCodecError> {
 
 /// Encodes a `phase0::Attestation` to SSZ binary.
 pub fn encode_phase0_attestation(att: &phase0::Attestation) -> Result<Vec<u8>, SszCodecError> {
-    Ok(att.as_ssz_bytes())
+    Ok(ssz_to_vec(att))
 }
 
 /// Decodes a `phase0::Attestation` from SSZ binary.
@@ -95,7 +109,7 @@ pub fn decode_phase0_attestation(bytes: &[u8]) -> Result<phase0::Attestation, Ss
 pub fn encode_phase0_signed_aggregate_and_proof(
     sap: &phase0::SignedAggregateAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
-    Ok(sap.as_ssz_bytes())
+    Ok(ssz_to_vec(sap))
 }
 
 /// Decodes a `phase0::SignedAggregateAndProof` from SSZ binary.
@@ -109,7 +123,7 @@ pub fn decode_phase0_signed_aggregate_and_proof(
 pub fn encode_sync_committee_message(
     msg: &altair::SyncCommitteeMessage,
 ) -> Result<Vec<u8>, SszCodecError> {
-    Ok(msg.as_ssz_bytes())
+    Ok(ssz_to_vec(msg))
 }
 
 /// Decodes an `altair::SyncCommitteeMessage` from SSZ binary.
@@ -124,7 +138,7 @@ pub fn decode_sync_committee_message(
 pub fn encode_contribution_and_proof(
     cap: &altair::ContributionAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
-    Ok(cap.as_ssz_bytes())
+    Ok(ssz_to_vec(cap))
 }
 
 /// Decodes an `altair::ContributionAndProof` from SSZ binary.
@@ -139,7 +153,7 @@ pub fn decode_contribution_and_proof(
 pub fn encode_signed_contribution_and_proof(
     scp: &altair::SignedContributionAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
-    Ok(scp.as_ssz_bytes())
+    Ok(ssz_to_vec(scp))
 }
 
 /// Decodes an `altair::SignedContributionAndProof` from SSZ binary.
@@ -211,23 +225,22 @@ pub fn encode_versioned_attestation(
     va: &versioned::VersionedAttestation,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.version)?;
-    let inner = encode_attestation_payload(va.attestation.as_ref())?;
 
-    if let Some(val_idx) = va.validator_index {
-        let mut buf =
-            Vec::with_capacity(VERSIONED_ATTESTATION_VAL_IDX_HEADER as usize + inner.len());
+    let mut buf = if let Some(val_idx) = va.validator_index {
+        let mut buf = Vec::with_capacity(VERSIONED_ATTESTATION_VAL_IDX_HEADER as usize);
         buf.extend_from_slice(&version);
         buf.extend_from_slice(&encode_u64(val_idx));
         buf.extend_from_slice(&encode_u32(VERSIONED_ATTESTATION_VAL_IDX_HEADER));
-        buf.extend_from_slice(&inner);
-        Ok(buf)
+        buf
     } else {
-        let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
+        let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize);
         buf.extend_from_slice(&version);
         buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
-        buf.extend_from_slice(&inner);
-        Ok(buf)
-    }
+        buf
+    };
+
+    append_attestation_payload(&mut buf, va.attestation.as_ref())?;
+    Ok(buf)
 }
 
 /// Decodes a `VersionedAttestation` from SSZ binary with Charon versioned
@@ -287,9 +300,10 @@ fn decode_versioned_attestation_no_val_idx(
     })
 }
 
-fn encode_attestation_payload(
+fn append_attestation_payload(
+    buf: &mut Vec<u8>,
     attestation: Option<&AttestationPayload>,
-) -> Result<Vec<u8>, SszCodecError> {
+) -> Result<(), SszCodecError> {
     match attestation {
         Some(
             AttestationPayload::Phase0(att)
@@ -297,14 +311,18 @@ fn encode_attestation_payload(
             | AttestationPayload::Bellatrix(att)
             | AttestationPayload::Capella(att)
             | AttestationPayload::Deneb(att),
-        ) => Ok(att.as_ssz_bytes()),
+        ) => append_ssz(buf, att),
         Some(AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) => {
-            Ok(att.as_ssz_bytes())
+            append_ssz(buf, att)
         }
-        None => Err(SszCodecError::Decode(
-            "missing attestation payload".to_string(),
-        )),
+        None => {
+            return Err(SszCodecError::Decode(
+                "missing attestation payload".to_string(),
+            ));
+        }
     }
+
+    Ok(())
 }
 
 fn decode_attestation_payload(
@@ -350,21 +368,22 @@ pub fn encode_versioned_signed_aggregate_and_proof(
     va: &versioned::VersionedSignedAggregateAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.version)?;
-    let inner = match &va.aggregate_and_proof {
+
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize);
+    buf.extend_from_slice(&version);
+    buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
+
+    match &va.aggregate_and_proof {
         SignedAggregateAndProofPayload::Phase0(p)
         | SignedAggregateAndProofPayload::Altair(p)
         | SignedAggregateAndProofPayload::Bellatrix(p)
         | SignedAggregateAndProofPayload::Capella(p)
-        | SignedAggregateAndProofPayload::Deneb(p) => p.as_ssz_bytes(),
+        | SignedAggregateAndProofPayload::Deneb(p) => append_ssz(&mut buf, p),
         SignedAggregateAndProofPayload::Electra(p) | SignedAggregateAndProofPayload::Fulu(p) => {
-            p.as_ssz_bytes()
+            append_ssz(&mut buf, p)
         }
-    };
+    }
 
-    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
-    buf.extend_from_slice(&version);
-    buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
-    buf.extend_from_slice(&inner);
     Ok(buf)
 }
 
@@ -429,13 +448,12 @@ pub fn encode_versioned_signed_proposal(
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(vp.version)?;
     let blinded: u8 = u8::from(vp.blinded);
-    let inner = encode_proposal_block(&vp.block)?;
 
-    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_PROPOSAL_HEADER as usize + inner.len());
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_PROPOSAL_HEADER as usize);
     buf.extend_from_slice(&version);
     buf.push(blinded);
     buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_PROPOSAL_HEADER));
-    buf.extend_from_slice(&inner);
+    append_proposal_block(&mut buf, &vp.block);
     Ok(buf)
 }
 
@@ -465,22 +483,22 @@ pub fn decode_versioned_signed_proposal(
     })
 }
 
-fn encode_proposal_block(block: &versioned::SignedProposalBlock) -> Result<Vec<u8>, SszCodecError> {
+fn append_proposal_block(buf: &mut Vec<u8>, block: &versioned::SignedProposalBlock) {
     use versioned::SignedProposalBlock;
-    Ok(match block {
-        SignedProposalBlock::Phase0(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Altair(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Bellatrix(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::BellatrixBlinded(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Capella(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::CapellaBlinded(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Deneb(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::DenebBlinded(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Electra(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::ElectraBlinded(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::Fulu(b) => b.as_ssz_bytes(),
-        SignedProposalBlock::FuluBlinded(b) => b.as_ssz_bytes(),
-    })
+    match block {
+        SignedProposalBlock::Phase0(b) => append_ssz(buf, b),
+        SignedProposalBlock::Altair(b) => append_ssz(buf, b),
+        SignedProposalBlock::Bellatrix(b) => append_ssz(buf, b),
+        SignedProposalBlock::BellatrixBlinded(b) => append_ssz(buf, b),
+        SignedProposalBlock::Capella(b) => append_ssz(buf, b),
+        SignedProposalBlock::CapellaBlinded(b) => append_ssz(buf, b),
+        SignedProposalBlock::Deneb(b) => append_ssz(buf, b),
+        SignedProposalBlock::DenebBlinded(b) => append_ssz(buf, b),
+        SignedProposalBlock::Electra(b) => append_ssz(buf, b),
+        SignedProposalBlock::ElectraBlinded(b) => append_ssz(buf, b),
+        SignedProposalBlock::Fulu(b) => append_ssz(buf, b),
+        SignedProposalBlock::FuluBlinded(b) => append_ssz(buf, b),
+    }
 }
 
 /// Decodes a bare per-fork full (non-blinded) signed proposal block body from
@@ -612,53 +630,76 @@ struct ElectraBlockContents {
     blobs: Vec<deneb::Blob>,
 }
 
-/// Encodes the SSZ body of an unsigned proposal block (no versioned header),
+/// Encode-side view of [`DenebBlockContents`] that borrows its fields, so
+/// serializing a proposal does not deep-clone the block and blobs. Field
+/// order must stay identical to the owned struct or the wire format silently
+/// diverges.
+#[derive(ssz_derive::Encode)]
+struct DenebBlockContentsRef<'a> {
+    block: &'a deneb::BeaconBlock,
+    kzg_proofs: &'a Vec<deneb::KZGProof>,
+    blobs: &'a Vec<deneb::Blob>,
+}
+
+/// Encode-side view of [`ElectraBlockContents`] that borrows its fields.
+#[derive(ssz_derive::Encode)]
+struct ElectraBlockContentsRef<'a> {
+    block: &'a electra::BeaconBlock,
+    kzg_proofs: &'a Vec<deneb::KZGProof>,
+    blobs: &'a Vec<deneb::Blob>,
+}
+
+/// Appends the SSZ body of an unsigned proposal block (no versioned header),
 /// selecting the per-fork layout from the [`UnsignedProposalBlock`] variant.
-fn encode_unsigned_proposal_block(
-    block: &crate::signeddata::ProposalBlock,
-) -> Result<Vec<u8>, SszCodecError> {
+fn append_unsigned_proposal_block(buf: &mut Vec<u8>, block: &crate::signeddata::ProposalBlock) {
     use crate::signeddata::ProposalBlock;
-    Ok(match block {
-        ProposalBlock::Phase0(b) => b.as_ssz_bytes(),
-        ProposalBlock::Altair(b) => b.as_ssz_bytes(),
-        ProposalBlock::Bellatrix(b) => b.as_ssz_bytes(),
-        ProposalBlock::BellatrixBlinded(b) => b.as_ssz_bytes(),
-        ProposalBlock::Capella(b) => b.as_ssz_bytes(),
-        ProposalBlock::CapellaBlinded(b) => b.as_ssz_bytes(),
+    match block {
+        ProposalBlock::Phase0(b) => append_ssz(buf, b),
+        ProposalBlock::Altair(b) => append_ssz(buf, b),
+        ProposalBlock::Bellatrix(b) => append_ssz(buf, b),
+        ProposalBlock::BellatrixBlinded(b) => append_ssz(buf, b),
+        ProposalBlock::Capella(b) => append_ssz(buf, b),
+        ProposalBlock::CapellaBlinded(b) => append_ssz(buf, b),
         ProposalBlock::Deneb {
             block,
             kzg_proofs,
             blobs,
-        } => DenebBlockContents {
-            block: (**block).clone(),
-            kzg_proofs: kzg_proofs.clone(),
-            blobs: blobs.clone(),
-        }
-        .as_ssz_bytes(),
-        ProposalBlock::DenebBlinded(b) => b.as_ssz_bytes(),
+        } => append_ssz(
+            buf,
+            &DenebBlockContentsRef {
+                block,
+                kzg_proofs,
+                blobs,
+            },
+        ),
+        ProposalBlock::DenebBlinded(b) => append_ssz(buf, b),
         ProposalBlock::Electra {
             block,
             kzg_proofs,
             blobs,
-        } => ElectraBlockContents {
-            block: (**block).clone(),
-            kzg_proofs: kzg_proofs.clone(),
-            blobs: blobs.clone(),
-        }
-        .as_ssz_bytes(),
-        ProposalBlock::ElectraBlinded(b) => b.as_ssz_bytes(),
+        } => append_ssz(
+            buf,
+            &ElectraBlockContentsRef {
+                block,
+                kzg_proofs,
+                blobs,
+            },
+        ),
+        ProposalBlock::ElectraBlinded(b) => append_ssz(buf, b),
         ProposalBlock::Fulu {
             block,
             kzg_proofs,
             blobs,
-        } => ElectraBlockContents {
-            block: (**block).clone(),
-            kzg_proofs: kzg_proofs.clone(),
-            blobs: blobs.clone(),
-        }
-        .as_ssz_bytes(),
-        ProposalBlock::FuluBlinded(b) => b.as_ssz_bytes(),
-    })
+        } => append_ssz(
+            buf,
+            &ElectraBlockContentsRef {
+                block,
+                kzg_proofs,
+                blobs,
+            },
+        ),
+        ProposalBlock::FuluBlinded(b) => append_ssz(buf, b),
+    }
 }
 
 /// Decodes the SSZ body of an unsigned proposal block (no versioned header),
@@ -740,13 +781,12 @@ pub fn encode_versioned_proposal(
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(vp.version())?;
     let blinded: u8 = u8::from(vp.is_blinded());
-    let inner = encode_unsigned_proposal_block(&vp.block)?;
 
-    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_PROPOSAL_HEADER as usize + inner.len());
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_PROPOSAL_HEADER as usize);
     buf.extend_from_slice(&version);
     buf.push(blinded);
     buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_PROPOSAL_HEADER));
-    buf.extend_from_slice(&inner);
+    append_unsigned_proposal_block(&mut buf, &vp.block);
     Ok(buf)
 }
 
@@ -788,12 +828,11 @@ pub fn encode_versioned_aggregated_attestation(
     va: &crate::signeddata::VersionedAggregatedAttestation,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.0.version)?;
-    let inner = encode_attestation_payload(va.0.attestation.as_ref())?;
 
-    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize);
     buf.extend_from_slice(&version);
     buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
-    buf.extend_from_slice(&inner);
+    append_attestation_payload(&mut buf, va.0.attestation.as_ref())?;
     Ok(buf)
 }
 
@@ -832,7 +871,7 @@ pub fn decode_versioned_aggregated_attestation(
 pub fn encode_sync_contribution(
     sc: &crate::signeddata::SyncContribution,
 ) -> Result<Vec<u8>, SszCodecError> {
-    Ok(sc.0.as_ssz_bytes())
+    Ok(ssz_to_vec(&sc.0))
 }
 
 /// Decodes an unsigned
