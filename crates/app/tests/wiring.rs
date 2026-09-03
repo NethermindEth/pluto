@@ -27,7 +27,11 @@
 //! the wired components directly to prove the three back-edges / sign-path are
 //! connected.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use pluto_app::node::{
     AppError,
@@ -949,4 +953,143 @@ async fn multinode_parsig_exchange_reaches_submission() {
     wait_for_post(mock.server(), "/eth/v2/beacon/pool/attestations").await;
 
     ct.cancel();
+}
+
+/// Consensus stand-in that records every `propose` call, so a test can observe
+/// that a fetched duty reached the fetcher's subscriber.
+#[derive(Default)]
+struct RecordingConsensus {
+    proposed: Arc<StdMutex<Vec<Duty>>>,
+}
+
+impl pluto_consensus::wrapper::Consensus for RecordingConsensus {
+    fn protocol_id(&self) -> String {
+        "/pluto/test/consensus/1.0.0".to_string()
+    }
+
+    fn start(&self, _ct: CancellationToken) {}
+
+    fn participate(
+        &self,
+        _ct: CancellationToken,
+        _duty: Duty,
+    ) -> futures::future::BoxFuture<'_, pluto_consensus::wrapper::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn propose(
+        &self,
+        _ct: CancellationToken,
+        duty: Duty,
+        _value: pluto_core::corepb::v1::core::UnsignedDataSet,
+    ) -> futures::future::BoxFuture<'_, pluto_consensus::wrapper::Result<()>> {
+        self.proposed
+            .lock()
+            .expect("proposed lock")
+            .push(duty.clone());
+        Box::pin(async { Ok(()) })
+    }
+
+    fn subscribe(&self, _subscriber: pluto_consensus::wrapper::Subscriber) {}
+}
+
+/// (g) The duty callbacks are wrapped with the async retry executor: a
+/// transient beacon-node failure on `fetcher.fetch` is retried and the duty
+/// still completes (reaching the fetcher's `consensus.propose` subscriber).
+///
+/// Parity: charon `core.WithAsyncRetry` (`core/retry.go`), wired in
+/// `app.wireCoreWorkflow` as `core.WithAsyncRetry(retry.New(deadlineFunc))`.
+/// Without the wrapper the scheduler stitch calls `fetch` exactly once, the
+/// first failure drops the duty on this node, and no proposal is ever made.
+#[tokio::test]
+async fn retry_wrapper_recovers_transient_fetch_failure() {
+    const ATT_DATA_PATH: &str = "/eth/v1/validator/attestation_data";
+    const SLOT: u64 = 1;
+
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+
+    // One transient 503 ("beacon node is currently syncing, try again later")
+    // ahead of the mock's default 200. `with_priority(1)` outranks the default
+    // routes, `up_to_n_times(1)` retires it after the first request, so the
+    // retry falls through to the healthy response.
+    Mock::given(method("GET"))
+        .and(path(ATT_DATA_PATH))
+        .respond_with(ResponseTemplate::new(503).set_body_string(
+            r#"{"code":503,"message":"Beacon node is currently syncing, try again later"}"#,
+        ))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(mock.server())
+        .await;
+
+    let eth2_cl = mock.client().clone();
+    let pubkey = PubKey::new([9u8; PK_LEN]);
+    let proposed: Arc<StdMutex<Vec<Duty>>> = Arc::default();
+    let consensus = Arc::new(ConsensusWrapper::new(Arc::new(RecordingConsensus {
+        proposed: Arc::clone(&proposed),
+    })));
+
+    let wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
+
+    let def = DutyDefinitionSet::from([(
+        pubkey,
+        DutyDefinition::Attester(pluto_core::types::AttesterDutyDefinition {
+            pubkey,
+            duty: pluto_core::signeddata::AttesterDuty {
+                slot: SLOT,
+                validator_index: 2,
+                committee_index: 0,
+                committee_length: 8,
+                committees_at_slot: 1,
+                validator_committee_index: 0,
+            },
+        }),
+    )]);
+    let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
+
+    // Drive the same retry-wrapped callback the scheduler drives. It is
+    // fire-and-forget (charon's `go retryer.DoAsync(...); return nil`), so the
+    // outcome is observed through the recording consensus.
+    (wired.fetch_duty)(duty.clone(), def);
+
+    tokio::time::timeout(GUARD, async {
+        loop {
+            if !proposed.lock().expect("proposed lock").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("(g) the retried fetch should complete and reach consensus.propose");
+
+    assert_eq!(
+        proposed.lock().expect("proposed lock").as_slice(),
+        &[duty],
+        "(g) the duty must complete exactly once after the retry",
+    );
+    assert!(
+        count_gets(mock.server(), ATT_DATA_PATH).await >= 2,
+        "(g) the transient failure must have been retried",
+    );
+
+    ct.cancel();
+}
+
+/// Counts GETs the mock has received for `request_path`.
+async fn count_gets(server: &MockServer, request_path: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("requests")
+        .into_iter()
+        .filter(|r| r.method.as_str() == "GET" && r.url.path() == request_path)
+        .count()
 }

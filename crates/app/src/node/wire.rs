@@ -49,7 +49,10 @@ use pluto_eth2api::{
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
 
-use crate::node::AppError;
+use crate::{
+    node::AppError,
+    retry::{self, AsyncOptions, DoAsyncError},
+};
 
 /// A `Send + Sync` boxed future. The parsigdb subscriber seams require their
 /// futures to be `Sync` (see `internal_subscriber`/`threshold_subscriber`), so
@@ -134,6 +137,125 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     Arc::new(err)
+}
+
+// ---------------------------------------------------------------------------
+// Async retry wrapper layer
+//
+// Parity: charon `core.WithAsyncRetry` (`core/retry.go`), applied in
+// `app.wireCoreWorkflow` as `core.WithAsyncRetry(retry.New(deadlineFunc))`
+// alongside `WithTracing`/`WithTracking` (`app/app.go` at v1.7.1). It wraps
+// five duty-pipeline callbacks so each one is dispatched on the retry executor
+// and returns to its caller immediately:
+//
+//   fetcher.Fetch, consensus.Participate, consensus.Propose,
+//   parsigex.Broadcast, bcast.Broadcast
+//
+// Because charon applies the retry option *outermost*, the tracker calls of
+// `WithTracking` sit inside the retry loop; Pluto keeps the same nesting by
+// wrapping the existing stitch closures (which already report to the tracker)
+// rather than the raw component methods.
+// ---------------------------------------------------------------------------
+
+/// A duty callback dispatched onto the async retry executor.
+///
+/// Calling it spawns the wrapped work and returns immediately, mirroring
+/// charon's `go retryer.DoAsync(...); return nil`. Exposed on
+/// [`WiredComponents`] so the scheduler stitch can be driven directly by
+/// wiring tests.
+pub type DutyCallback =
+    Arc<dyn Fn(Duty, pluto_core::types::DutyDefinitionSet) + Send + Sync + 'static>;
+
+/// How the retry executor treats a wrapped duty callback's errors.
+///
+/// Charon classifies each error at run time: `net.Error`s, context errors and
+/// the temporary beacon-node errors matched by `app/retry.isTemporaryBeaconErr`
+/// are retried, everything else is permanent. That heuristic reads the beacon
+/// node's error message, which Pluto's generated client does not preserve —
+/// non-2xx responses are collapsed into message-less typed errors (e.g. any
+/// non-200 attestation-data response becomes
+/// `FetcherError::NilAttestationData`), so a message-substring port here would
+/// never match.
+///
+/// Accepted divergence: the policy is fixed per call site instead. The three
+/// network-facing callbacks retry (bounded by the duty deadline and the
+/// executor's exponential backoff); consensus does not, matching charon's
+/// `core/retry.go` note that `ConsensusParticipate`/`ConsensusPropose` "don't
+/// require retrying but they should be called async" — a failed QBFT instance
+/// must not be re-run for the same duty.
+#[derive(Clone, Copy)]
+enum RetryPolicy {
+    /// Retry the call until it succeeds or the duty's deadline elapses.
+    Retry,
+    /// Run the call once; failures are logged, not retried.
+    Once,
+}
+
+/// Builds the [`AsyncOptions`] shared by every wrapped duty callback.
+///
+/// Deadlines come from the beacon-derived duty deadline calculator (charon's
+/// `deadlineFunc`, passed to `retry.New`), and the executor is cancelled on
+/// node shutdown so in-flight retries do not outlive the components they call.
+fn retry_options(
+    deadline_calc: &Arc<dyn DeadlineCalculator>,
+    ct: &CancellationToken,
+) -> AsyncOptions<Duty> {
+    let deadline_calc = Arc::clone(deadline_calc);
+    AsyncOptions::default()
+        .with_cancellation_token(ct.clone())
+        .with_deadline(move |duty: Duty| match deadline_calc.deadline(&duty) {
+            Ok(deadline) => deadline,
+            Err(err) => {
+                // Charon's `deadlineFunc` returns `(_, false)` for duties
+                // without a deadline, which leaves the retry bounded only by
+                // the shutdown context; a calculator failure is treated the
+                // same way rather than dropping the duty.
+                tracing::warn!(
+                    ?err,
+                    duty = %duty,
+                    "retry: duty deadline unavailable, retrying until shutdown",
+                );
+                None
+            }
+        })
+}
+
+/// Dispatches `call` onto the async retry executor and returns immediately.
+///
+/// Parity: the body of each closure charon installs in `core.WithAsyncRetry`.
+fn spawn_retried<F, Fut, E>(
+    options: AsyncOptions<Duty>,
+    duty: Duty,
+    topic: &'static str,
+    name: &'static str,
+    policy: RetryPolicy,
+    mut call: F,
+) where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::spawn(retry::do_async(options, duty, topic, name, move || {
+        let fut = call();
+        async move {
+            fut.await.map_err(|err| {
+                // `DoAsyncError` carries no payload, so the underlying
+                // error is logged here before it is classified.
+                tracing::warn!(%err, topic, name, "duty callback failed");
+                match policy {
+                    RetryPolicy::Retry => DoAsyncError::RetryableError,
+                    RetryPolicy::Once => DoAsyncError::NonRetryableError,
+                }
+            })
+        }
+    }));
+}
+
+/// Returns the immediate `Ok` a wrapped callback hands back to its caller: the
+/// real work has been dispatched onto the retry executor, so — exactly as in
+/// charon's `WithAsyncRetry` closures — the caller is never told it failed.
+fn dispatched<E>() -> std::future::Ready<Result<(), E>> {
+    std::future::ready(Ok(()))
 }
 
 /// Wraps a [`DeadlineCalculator`], shifting every deadline later by a fixed
@@ -314,6 +436,10 @@ pub struct WiredComponents {
     pub aggsigdb: MemoryDBHandle,
     /// The fetcher (driven via scheduler subscriptions).
     pub fetcher: Arc<Fetcher>,
+    /// The retry-wrapped `fetcher.fetch` duty callback the scheduler drives.
+    /// Returned so wiring tests can exercise the same wrapped callback the
+    /// scheduler does, without standing up a live duty round.
+    pub fetch_duty: DutyCallback,
     /// Networked inclusion checker; its `run` loop is spawned and supervised by
     /// the caller.
     pub inclusion_checker: Arc<InclusionChecker>,
@@ -572,45 +698,67 @@ pub async fn wire_core_workflow(
         })
     };
     // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty
-    // deadline.
+    // deadline and dispatched onto the retry executor (charon
+    // `WithAsyncRetry`: `consensus`/`propose`, async but not retried).
     let fetch_subscriber: Subscriber = {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
         let deadline_calc = Arc::clone(&deadline_calc);
         let tracker = Arc::clone(&tracker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         Arc::new(move |duty: Duty, set: UnsignedDataSet| {
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
             let deadline_calc = Arc::clone(&deadline_calc);
             let tracker = Arc::clone(&tracker);
-            Box::pin(async move {
-                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
-                let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
-                // Bound consensus by the duty deadline so a stuck instance is
-                // cancelled (-> ConsensusTimeout) instead of running until
-                // shutdown.
-                let result = run_bounded_by_duty_deadline(
-                    &deadline_calc,
-                    &ct,
-                    duty.clone(),
-                    move |duty, dct| async move { consensus.propose(dct, duty, value).await },
-                )
-                .await;
-
-                match result {
-                    Ok(()) => {
-                        tracker.consensus_proposed(duty, &pubkeys, None).await;
-                        Ok(())
-                    }
-                    Err(err) => {
-                        let (reported, returned) = share_step_err(err);
-                        tracker
-                            .consensus_proposed(duty, &pubkeys, Some(reported))
+            spawn_retried(
+                retry_opts.clone(),
+                duty.clone(),
+                "consensus",
+                "propose",
+                RetryPolicy::Once,
+                move || {
+                    let consensus = Arc::clone(&consensus);
+                    let ct = ct.clone();
+                    let deadline_calc = Arc::clone(&deadline_calc);
+                    let tracker = Arc::clone(&tracker);
+                    let duty = duty.clone();
+                    let set = set.clone();
+                    async move {
+                        let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                        let value = unsigneddata::unsigned_data_set_to_proto(&set)
+                            .map_err(|err| SharedStepError(owned_step_err(err)))?;
+                        // Bound consensus by the duty deadline so a stuck
+                        // instance is cancelled (-> ConsensusTimeout) instead
+                        // of running until shutdown.
+                        let result =
+                            run_bounded_by_duty_deadline(
+                                &deadline_calc,
+                                &ct,
+                                duty.clone(),
+                                move |duty, dct| async move {
+                                    consensus.propose(dct, duty, value).await
+                                },
+                            )
                             .await;
-                        Err(returned.into())
+
+                        match result {
+                            Ok(()) => {
+                                tracker.consensus_proposed(duty, &pubkeys, None).await;
+                                Ok(())
+                            }
+                            Err(err) => {
+                                let (reported, returned) = share_step_err(err);
+                                tracker
+                                    .consensus_proposed(duty, &pubkeys, Some(reported))
+                                    .await;
+                                Err(returned)
+                            }
+                        }
                     }
-                }
-            })
+                },
+            );
+            Box::pin(dispatched())
         })
     };
 
@@ -671,35 +819,46 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner,
     ));
 
-    // Stitch: parsigdb.subscribe_internal(parsigex.broadcast).
+    // Stitch: parsigdb.subscribe_internal(parsigex.broadcast), dispatched onto
+    // the retry executor (charon `WithAsyncRetry`: `parsigex`/`broadcast`).
     {
         let broadcast = Arc::clone(&parsigex.broadcast);
         let tracker = Arc::clone(&tracker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         parsigdb
             .subscribe_internal(parsigdb::memory::internal_subscriber(
                 move |duty: Duty, set: ParSignedDataSet| {
                     let broadcast = Arc::clone(&broadcast);
                     let tracker = Arc::clone(&tracker);
-                    async move {
-                        match broadcast(duty.clone(), set.clone()).await {
-                            Ok(()) => {
-                                tracker.par_sig_ex_broadcasted(duty, &set, None).await;
-                                Ok(())
-                            }
-                            Err(err) => {
-                                let (reported, returned) = share_step_err(err);
-                                tracker
-                                    .par_sig_ex_broadcasted(duty, &set, Some(reported))
-                                    .await;
-                                Err(
-                                    parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                        source: Box::new(returned),
+                    spawn_retried(
+                        retry_opts.clone(),
+                        duty.clone(),
+                        "parsigex",
+                        "broadcast",
+                        RetryPolicy::Retry,
+                        move || {
+                            let broadcast = Arc::clone(&broadcast);
+                            let tracker = Arc::clone(&tracker);
+                            let duty = duty.clone();
+                            let set = set.clone();
+                            async move {
+                                match broadcast(duty.clone(), set.clone()).await {
+                                    Ok(()) => {
+                                        tracker.par_sig_ex_broadcasted(duty, &set, None).await;
+                                        Ok(())
                                     }
-                                    .into(),
-                                )
+                                    Err(err) => {
+                                        let (reported, returned) = share_step_err(err);
+                                        tracker
+                                            .par_sig_ex_broadcasted(duty, &set, Some(reported))
+                                            .await;
+                                        Err(returned)
+                                    }
+                                }
                             }
-                        }
-                    }
+                        },
+                    );
+                    dispatched()
                 },
             ))
             .await;
@@ -744,45 +903,65 @@ pub async fn wire_core_workflow(
             .await
             .map_err(AppError::Broadcaster)?,
     );
-    // Stitch: sigagg.subscribe(broadcaster.broadcast).
+    // Stitch: sigagg.subscribe(broadcaster.broadcast), dispatched onto the
+    // retry executor (charon `WithAsyncRetry`: `bcast`/`broadcast`).
     {
         let broadcaster = Arc::clone(&broadcaster);
         let tracker = Arc::clone(&tracker);
         let inclusion = Arc::clone(&inclusion_checker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         aggregator.subscribe(Arc::new(move |duty: &Duty, set: &SignedDataSet| {
             let broadcaster = Arc::clone(&broadcaster);
             let tracker = Arc::clone(&tracker);
             let inclusion = Arc::clone(&inclusion);
             let duty = duty.clone();
             let set = set.clone();
-            Box::pin(async move {
-                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+            spawn_retried(
+                retry_opts.clone(),
+                duty.clone(),
+                "bcast",
+                "broadcast",
+                RetryPolicy::Retry,
+                move || {
+                    let broadcaster = Arc::clone(&broadcaster);
+                    let tracker = Arc::clone(&tracker);
+                    let inclusion = Arc::clone(&inclusion);
+                    let duty = duty.clone();
+                    let set = set.clone();
+                    async move {
+                        let pubkeys: Vec<PubKey> = set.keys().copied().collect();
 
-                // Register for inclusion checking before broadcasting, and even
-                // if the broadcast fails: peers may still succeed, so the duty
-                // can land on-chain regardless. Parity: charon
-                // `core/tracking.go` `BroadcasterBroadcast`.
-                if let Err(err) = inclusion.submitted(&duty, &set) {
-                    tracing::error!(
-                        ?err,
-                        duty = %duty,
-                        "Internal error: failed to submit duty to inclusion checker. \
-                         This indicates a tracking bug that should be reported",
-                    );
-                }
+                        // Register for inclusion checking before broadcasting,
+                        // and even if the broadcast fails: peers may still
+                        // succeed, so the duty can land on-chain regardless.
+                        // Parity: charon `core/tracking.go`
+                        // `BroadcasterBroadcast`, which sits inside the retry
+                        // loop for the same reason.
+                        if let Err(err) = inclusion.submitted(&duty, &set) {
+                            tracing::error!(
+                                ?err,
+                                duty = %duty,
+                                "Internal error: failed to submit duty to inclusion checker. \
+                                 This indicates a tracking bug that should be reported",
+                            );
+                        }
 
-                let step_err = match broadcaster.broadcast(duty.clone(), set).await {
-                    Ok(()) => None,
-                    Err(err) => {
-                        tracing::warn!(?err, "broadcaster: broadcast");
-                        Some(owned_step_err(err))
+                        let result = broadcaster.broadcast(duty.clone(), set).await;
+                        let (step_err, returned) = match result {
+                            Ok(()) => (None, Ok(())),
+                            Err(err) => {
+                                let (reported, returned) = share_step_err(err);
+                                (Some(reported), Err(returned))
+                            }
+                        };
+                        tracker
+                            .broadcaster_broadcast(duty, &pubkeys, step_err)
+                            .await;
+                        returned
                     }
-                };
-                tracker
-                    .broadcaster_broadcast(duty, &pubkeys, step_err)
-                    .await;
-                Ok(())
-            })
+                },
+            );
+            Box::pin(dispatched())
         }));
     }
     let aggregator = Arc::new(aggregator);
@@ -873,67 +1052,112 @@ pub async fn wire_core_workflow(
     // scheduler.subscribe_duty(consensus.participate), registered on the
     // builder before `.build()` (which blocks until chain start + sync).
     let mut sched_builder = SchedulerBuilder::new();
-    {
+    // Stitch: scheduler.subscribe_duty(fetcher.fetch), dispatched onto the
+    // retry executor (charon `WithAsyncRetry`: `fetcher`/`fetch` — the one
+    // callback that is genuinely retried, so a transient beacon-node failure
+    // no longer drops the duty on this node).
+    let fetch_duty: DutyCallback = {
         let fetcher = Arc::clone(&fetcher);
         let ct = ct.clone();
         let tracker = Arc::clone(&tracker);
-        sched_builder.subscribe_duty(
-            move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
+        let retry_opts = retry_options(&deadline_calc, &ct);
+        Arc::new(
+            move |duty: Duty, set: pluto_core::types::DutyDefinitionSet| {
                 let fetcher = Arc::clone(&fetcher);
                 let ct = ct.clone();
                 let tracker = Arc::clone(&tracker);
-                let duty = duty.clone();
-                let set = set.clone();
-                async move {
-                    let pubkeys: Vec<PubKey> = set.keys().copied().collect();
-                    match fetcher.fetch(duty.clone(), set).await {
-                        // In-flight fetches racing shutdown fail against already
-                        // terminated components (e.g. the aggsigdb back-edge);
-                        // don't surface those as duty errors.
-                        Err(err) if ct.is_cancelled() => {
-                            tracing::debug!(?err, "fetch aborted by shutdown");
-                            Ok(())
+                spawn_retried(
+                    retry_opts.clone(),
+                    duty.clone(),
+                    "fetcher",
+                    "fetch",
+                    RetryPolicy::Retry,
+                    move || {
+                        let fetcher = Arc::clone(&fetcher);
+                        let ct = ct.clone();
+                        let tracker = Arc::clone(&tracker);
+                        let duty = duty.clone();
+                        let set = set.clone();
+                        async move {
+                            let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                            match fetcher.fetch(duty.clone(), set).await {
+                                // In-flight fetches racing shutdown fail against
+                                // already terminated components (e.g. the
+                                // aggsigdb back-edge); don't surface those as
+                                // duty errors.
+                                Err(err) if ct.is_cancelled() => {
+                                    tracing::debug!(?err, "fetch aborted by shutdown");
+                                    Ok(())
+                                }
+                                Ok(()) => {
+                                    tracker.fetcher_fetched(duty, &pubkeys, None).await;
+                                    Ok(())
+                                }
+                                Err(err) => {
+                                    let (reported, returned) = share_step_err(err);
+                                    tracker
+                                        .fetcher_fetched(duty, &pubkeys, Some(reported))
+                                        .await;
+                                    Err(returned)
+                                }
+                            }
                         }
-                        Ok(()) => {
-                            tracker.fetcher_fetched(duty, &pubkeys, None).await;
-                            Ok(())
-                        }
-                        Err(err) => {
-                            let (reported, returned) = share_step_err(err);
-                            tracker
-                                .fetcher_fetched(duty, &pubkeys, Some(reported))
-                                .await;
-                            // `subscribe_duty` is generic over the error type,
-                            // so the shared wrapper
-                            // propagates as-is.
-                            Err(returned)
-                        }
-                    }
-                }
+                    },
+                );
+            },
+        )
+    };
+    {
+        let fetch_duty = Arc::clone(&fetch_duty);
+        sched_builder.subscribe_duty(
+            move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
+                fetch_duty(duty.clone(), set.clone());
+                dispatched::<std::convert::Infallible>()
             },
             "fetcher",
         );
     }
+    // Stitch: scheduler.subscribe_duty(consensus.participate), dispatched onto
+    // the retry executor (charon `WithAsyncRetry`: `consensus`/`participate`,
+    // async but not retried).
     {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
         let deadline_calc = Arc::clone(&deadline_calc);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         sched_builder.subscribe_duty(
             move |duty: &Duty, _set: &pluto_core::types::DutyDefinitionSet| {
                 let consensus = Arc::clone(&consensus);
                 let ct = ct.clone();
                 let deadline_calc = Arc::clone(&deadline_calc);
                 let duty = duty.clone();
-                async move {
-                    // Bound consensus by the duty deadline (see fetch stitch).
-                    run_bounded_by_duty_deadline(
-                        &deadline_calc,
-                        &ct,
-                        duty,
-                        move |duty, dct| async move { consensus.participate(dct, duty).await },
-                    )
-                    .await
-                }
+                spawn_retried(
+                    retry_opts.clone(),
+                    duty.clone(),
+                    "consensus",
+                    "participate",
+                    RetryPolicy::Once,
+                    move || {
+                        let consensus = Arc::clone(&consensus);
+                        let ct = ct.clone();
+                        let deadline_calc = Arc::clone(&deadline_calc);
+                        let duty = duty.clone();
+                        async move {
+                            // Bound consensus by the duty deadline (see fetch
+                            // stitch).
+                            run_bounded_by_duty_deadline(
+                                &deadline_calc,
+                                &ct,
+                                duty,
+                                move |duty, dct| async move {
+                                    consensus.participate(dct, duty).await
+                                },
+                            )
+                            .await
+                        }
+                    },
+                );
+                dispatched::<std::convert::Infallible>()
             },
             "consensus",
         );
@@ -1105,6 +1329,7 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner_rx,
         aggsigdb,
         fetcher,
+        fetch_duty,
         inclusion_checker,
         validator_api_router,
     })
