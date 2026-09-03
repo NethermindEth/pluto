@@ -173,13 +173,13 @@ pub struct InclusionCore {
     tracker_incl_fn: TrackerInclFn,
     missed_fn: MissedFn,
     att_included_fn: AttIncludedFn,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
 }
 
 impl InclusionCore {
     /// Creates a core with the production reporters (`report_missed` and
     /// `report_att_inclusion`) and the given tracker callback.
-    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: &'static FeatureSet) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
             Box::new(report_missed),
@@ -193,7 +193,7 @@ impl InclusionCore {
         tracker_incl_fn: TrackerInclFn,
         missed_fn: MissedFn,
         att_included_fn: AttIncludedFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Self {
         Self {
             submissions: HashMap::new(),
@@ -216,7 +216,7 @@ impl InclusionCore {
         data: Box<dyn SignedData>,
         delay: Duration,
     ) -> Result<(), InclusionError> {
-        if !incl_supported(&self.feature_set).contains(&duty.duty_type) {
+        if !incl_supported(self.feature_set).contains(&duty.duty_type) {
             return Ok(());
         }
 
@@ -631,7 +631,7 @@ impl InclusionChecker {
     pub async fn new(
         eth2_cl: EthBeaconNodeApiClient,
         tracker_incl_fn: TrackerInclFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Result<Self, EthBeaconNodeApiClientError> {
         let genesis = eth2_cl.fetch_genesis_time().await?;
         let (slot_duration, _slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
@@ -794,19 +794,19 @@ mod tests {
     /// Shared recorder of duties passed to a callback.
     type Rec = Arc<Mutex<Vec<Duty>>>;
 
-    fn featureset(attestation_inclusion: bool) -> Arc<FeatureSet> {
+    fn featureset(attestation_inclusion: bool) -> &'static FeatureSet {
         let enabled = if attestation_inclusion {
             vec![Feature::AttestationInclusion]
         } else {
             vec![]
         };
-        Arc::new(
+        Box::leak(Box::new(
             FeatureSet::from_config(Config {
                 enabled,
                 ..Config::default()
             })
             .expect("test featureset is valid"),
-        )
+        ))
     }
 
     fn pubkey() -> PubKey {

@@ -84,7 +84,7 @@ pub(crate) struct WireP2PParams {
     pub consensus: Arc<qbft::Consensus>,
     pub min_required: i64,
     pub deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator>,
-    pub feature_set: Arc<pluto_featureset::FeatureSet>,
+    pub feature_set: &'static pluto_featureset::FeatureSet,
     pub duty_gater: DutyGaterFn,
     pub eth2_cl: EthBeaconNodeApiClient,
     pub pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
@@ -202,7 +202,7 @@ pub(crate) async fn wire_p2p(
         pluto_core::version::SUPPORTED.to_vec(),
         local_protocols(),
         local_proposal_types(builder_enabled),
-        &feature_set,
+        feature_set,
     ));
 
     // Clone the context before it is moved into the node so the readiness
