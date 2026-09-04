@@ -18,7 +18,7 @@ use pluto_p2p::{
     bootnode, gater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    peer::{Peer, peer_id_from_key, verify_p2p_key},
+    peer::{self, Peer},
     relay::RelayManager,
 };
 use pluto_parsigex as parsigex;
@@ -56,9 +56,9 @@ pub(crate) async fn setup_p2p(
     ct: CancellationToken,
 ) -> Result<(Node<DkgBehaviour>, Handlers)> {
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
-    let local_peer_id = peer_id_from_key(key.public_key())?;
+    let local_peer_id = peer::peer_id_from_key(key.public_key())?;
 
-    verify_p2p_key(peers, &key)?;
+    peer::verify_p2p_key(peers, &key)?;
 
     let relays = bootnode::new_relays(ct, &conf.p2p.relays, &hex::encode(&def_hash)).await?;
 

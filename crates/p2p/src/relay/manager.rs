@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     metrics::P2P_METRICS,
-    name::peer_name,
+    name,
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
 };
@@ -231,7 +231,7 @@ impl RelayManager {
     /// `p2p_relay_connections` — not how many transport connections exist,
     /// matching Charon's `relay.go`.
     fn report_relay_connection(relay_id: PeerId, reserved: bool) {
-        P2P_METRICS.relay_connections[&peer_name(&relay_id)].set(i64::from(reserved));
+        P2P_METRICS.relay_connections[&name::peer_name(&relay_id)].set(i64::from(reserved));
     }
 
     /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for

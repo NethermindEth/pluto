@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use pluto_crypto::tbls;
-use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
+use pluto_eth2util::helpers;
 use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
@@ -31,9 +31,9 @@ pub fn verify_sig(
     digest: &[u8],
     sig: &[u8],
 ) -> std::result::Result<bool, VerifySigError> {
-    let expected_addr = checksum_address(expected_addr)?;
+    let expected_addr = helpers::checksum_address(expected_addr)?;
     let recovered = pluto_k1util::recover(digest, sig)?;
-    let actual_addr = public_key_to_address(&recovered);
+    let actual_addr = helpers::public_key_to_address(&recovered);
     Ok(expected_addr == actual_addr)
 }
 

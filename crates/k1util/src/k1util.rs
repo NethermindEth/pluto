@@ -212,8 +212,8 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
 }
 
 /// Load loads a secret key from a file.
-pub fn load(file: &Path) -> Result<SecretKey> {
-    let contents = std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?;
+pub fn load(file: impl AsRef<Path>) -> Result<SecretKey> {
+    let contents = std::fs::read_to_string(file.as_ref()).map_err(K1UtilError::FailedToReadFile)?;
 
     let decoded = hex::decode(contents.trim())?;
 
@@ -228,7 +228,8 @@ pub fn load(file: &Path) -> Result<SecretKey> {
 /// matching Charon's `app/k1util/k1util.go` `Save` which writes via
 /// `os.WriteFile(file, ..., 0o600)`. This prevents the private key from being
 /// world-readable.
-pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
+pub fn save(key: &SecretKey, file: impl AsRef<Path>) -> Result<()> {
+    let file = file.as_ref();
     let encoded = hex::encode(key.to_bytes());
 
     #[cfg(unix)]

@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 
 use pluto_eth2api::spec::phase0;
-use pluto_ssz::decode::{decode_u32, decode_u64};
+use pluto_ssz::decode;
 use serde::{Deserialize, Deserializer, de};
 use ssz::{Decode, Encode};
 
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
-    parsigex_codec::looks_like_json,
+    parsigex_codec,
     signeddata::{
         AttestationData, AttesterDuty, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
@@ -162,7 +162,7 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
         return Ok(proposal);
     }
 
-    if looks_like_json(data) {
+    if parsigex_codec::looks_like_json(data) {
         // Reuses `VersionedProposal`'s `Deserialize` impl (shared per-fork JSON
         // dispatch in `signeddata`).
         return serde_json::from_slice(data).map_err(ParSigExCodecError::from);
@@ -189,7 +189,7 @@ fn decode_aggregated_attestation(
         return Ok(wrap_phase0_aggregated_attestation(att));
     }
 
-    if looks_like_json(data) {
+    if parsigex_codec::looks_like_json(data) {
         if let Ok(decoded) = serde_json::from_slice::<crate::signeddata::VersionedAttestation>(data)
         {
             return Ok(VersionedAggregatedAttestation(decoded.0));
@@ -222,7 +222,7 @@ fn decode_sync_contribution(data: &[u8]) -> Result<SyncContribution, ParSigExCod
         return Ok(contribution);
     }
 
-    if looks_like_json(data) {
+    if parsigex_codec::looks_like_json(data) {
         let contribution = serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
         return Ok(SyncContribution(contribution));
     }
@@ -237,7 +237,7 @@ fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodec
         return Ok(data);
     }
 
-    if looks_like_json(data) {
+    if parsigex_codec::looks_like_json(data) {
         let decoded: AttestationDataJson =
             serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
         return Ok(AttestationData {
@@ -259,11 +259,12 @@ fn decode_attestation_data_ssz(data: &[u8]) -> Result<AttestationData, ParSigExC
     }
 
     let data_offset = usize::try_from(
-        decode_u32(&data[..4]).map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))?,
+        decode::decode_u32(&data[..4])
+            .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))?,
     )
     .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))?;
     let duty_offset = usize::try_from(
-        decode_u32(&data[4..ATTESTATION_DATA_SSZ_OFFSET])
+        decode::decode_u32(&data[4..ATTESTATION_DATA_SSZ_OFFSET])
             .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))?,
     )
     .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))?;
@@ -296,7 +297,7 @@ fn decode_attester_duty_ssz(data: &[u8]) -> Result<AttesterDuty, ParSigExCodecEr
     }
 
     let field = |start, end| {
-        decode_u64(&data[start..end])
+        decode::decode_u64(&data[start..end])
             .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))
     };
 

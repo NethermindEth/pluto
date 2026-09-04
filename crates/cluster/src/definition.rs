@@ -3,13 +3,9 @@ use std::collections::HashSet;
 use pluto_ssz::{Hasher, serde_utils::HexBytes};
 
 use crate::{
-    eip712sigs::{
-        EIP712Error, digest_eip712, eip712_creator_config_hash, eip712_enr,
-        get_operator_eip712_type,
-    },
-    helpers::from_0x_hex_str,
+    eip712sigs::{self, EIP712Error},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
-    ssz::{SSZ_MAX_VALIDATORS, SSZError, hash_definition},
+    ssz::{self, SSZ_MAX_VALIDATORS, SSZError},
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use chrono::{DateTime, Timelike, Utc};
@@ -25,7 +21,7 @@ use serde_with::{
 };
 use uuid::Uuid;
 
-use crate::helpers::{VerifySigError, verify_sig};
+use crate::helpers::{self, VerifySigError};
 
 /// Length of the fork version in bytes.
 pub const FORK_VERSION_LEN: usize = 4;
@@ -488,7 +484,7 @@ impl Definition {
             })
             .collect();
 
-        def.fork_version = from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
+        def.fork_version = helpers::from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
 
         for opt in opts {
             opt(&mut def);
@@ -559,8 +555,8 @@ impl Definition {
             };
         }
 
-        let operator_config_hash_digest = digest_eip712(
-            &get_operator_eip712_type(self.version.as_str())?,
+        let operator_config_hash_digest = eip712sigs::digest_eip712(
+            &eip712sigs::get_operator_eip712_type(self.version.as_str())?,
             self,
             &Operator::default(),
         )?;
@@ -591,7 +587,7 @@ impl Definition {
             }
 
             // Check that we have a valid config signature for each operator.
-            let is_valid_operator_config_sig = verify_sig(
+            let is_valid_operator_config_sig = helpers::verify_sig(
                 operator.address.as_str(),
                 operator_config_hash_digest.as_slice(),
                 operator.config_signature.as_slice(),
@@ -612,9 +608,9 @@ impl Definition {
             }
 
             // Check that we have a valid enr signature for each operator.
-            let enr_digest = digest_eip712(&eip712_enr(), self, operator)?;
+            let enr_digest = eip712sigs::digest_eip712(&eip712sigs::eip712_enr(), self, operator)?;
 
-            let is_valid_operator_enr_sig = verify_sig(
+            let is_valid_operator_enr_sig = helpers::verify_sig(
                 operator.address.as_str(),
                 enr_digest.as_slice(),
                 operator.enr_signature.as_slice(),
@@ -654,10 +650,13 @@ impl Definition {
                 return Err(DefinitionError::EmptyCreatorConfigSignature);
             }
 
-            let creator_config_hash_digest =
-                digest_eip712(&eip712_creator_config_hash(), self, &Operator::default())?;
+            let creator_config_hash_digest = eip712sigs::digest_eip712(
+                &eip712sigs::eip712_creator_config_hash(),
+                self,
+                &Operator::default(),
+            )?;
 
-            let is_valid_creator_sig = verify_sig(
+            let is_valid_creator_sig = helpers::verify_sig(
                 self.creator.address.as_str(),
                 creator_config_hash_digest.as_slice(),
                 self.creator.config_signature.as_slice(),
@@ -738,12 +737,12 @@ impl Definition {
     /// Sets the definition hashes.
     pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
         let config_hash =
-            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            ssz::hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         self.config_hash = config_hash.to_vec();
 
-        let definition_hash =
-            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let definition_hash = ssz::hash_definition(self, false)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         self.definition_hash = definition_hash.to_vec();
 
@@ -754,7 +753,7 @@ impl Definition {
     /// doesn't matches actual hashes.
     pub fn verify_hashes(&self) -> Result<(), DefinitionError> {
         let config_hash =
-            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            ssz::hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         if config_hash != self.config_hash.as_slice() {
             return Err(DefinitionError::InvalidConfigHash {
@@ -763,8 +762,8 @@ impl Definition {
             });
         }
 
-        let definition_hash =
-            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let definition_hash = ssz::hash_definition(self, false)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         if definition_hash != self.definition_hash.as_slice() {
             return Err(DefinitionError::InvalidDefinitionHash {

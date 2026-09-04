@@ -8,7 +8,7 @@ use tracing::{debug, instrument};
 
 use crate::{
     metrics::{ConnectionType, P2P_METRICS, PeerConnectionLabels, Protocol, RelayConnectionLabels},
-    name::peer_name,
+    name,
     p2p_context::{P2PContext, Peer},
     utils,
 };
@@ -59,12 +59,12 @@ impl ConnectionLoggerMetrics for DefaultConnectionLoggerMetrics {
     }
 
     fn inc_peer_connection_total(&self, peer: &PeerId) {
-        P2P_METRICS.peer_connection_total[&peer_name(peer)].inc();
+        P2P_METRICS.peer_connection_total[&name::peer_name(peer)].inc();
     }
 
     fn set_peer_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
         P2P_METRICS.peer_connection_types[&PeerConnectionLabels::new(
-            &peer_name(peer),
+            &name::peer_name(peer),
             utils::addr_type(addr),
             utils::addr_protocol(addr),
         )]
@@ -73,7 +73,7 @@ impl ConnectionLoggerMetrics for DefaultConnectionLoggerMetrics {
 
     fn set_relay_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
         P2P_METRICS.relay_connection_types[&RelayConnectionLabels::new(
-            &peer_name(peer),
+            &name::peer_name(peer),
             utils::addr_type(addr),
             utils::addr_protocol(addr),
         )]
@@ -171,7 +171,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
     type ConnectionHandler = dummy::ConnectionHandler;
     type ToSwarm = ();
 
-    #[instrument(skip(self, _local_addr, remote_addr), fields(peer = %peer_name(&peer), addr = %remote_addr))]
+    #[instrument(skip(self, _local_addr, remote_addr), fields(peer = %name::peer_name(&peer), addr = %remote_addr))]
     fn handle_established_inbound_connection(
         &mut self,
         _connection_id: ConnectionId,
@@ -180,7 +180,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
         remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         debug!(
-            peer = %peer_name(&peer),
+            peer = %name::peer_name(&peer),
             addr = %remote_addr,
             conn_type = ?utils::addr_type(remote_addr),
             protocol = ?utils::addr_protocol(remote_addr),
@@ -190,7 +190,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
         Ok(dummy::ConnectionHandler)
     }
 
-    #[instrument(skip(self, _role_override, _port_use), fields(peer = %peer_name(&peer), addr = %addr))]
+    #[instrument(skip(self, _role_override, _port_use), fields(peer = %name::peer_name(&peer), addr = %addr))]
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
@@ -200,7 +200,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         debug!(
-            peer = %peer_name(&peer),
+            peer = %name::peer_name(&peer),
             addr = %addr,
             conn_type = ?utils::addr_type(addr),
             protocol = ?utils::addr_protocol(addr),
@@ -214,7 +214,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
         match event {
             libp2p::swarm::FromSwarm::ConnectionEstablished(event) => {
                 debug!(
-                    peer = %peer_name(&event.peer_id),
+                    peer = %name::peer_name(&event.peer_id),
                     endpoint = ?event.endpoint,
                     other_established = event.other_established,
                     "connection established"
@@ -236,7 +236,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
             }
             libp2p::swarm::FromSwarm::ConnectionClosed(event) => {
                 debug!(
-                    peer = %peer_name(&event.peer_id),
+                    peer = %name::peer_name(&event.peer_id),
                     endpoint = ?event.endpoint,
                     num_established = event.remaining_established,
                     "connection closed"
@@ -326,12 +326,12 @@ mod tests {
         }
 
         fn inc_peer_connection_total(&self, peer: &PeerId) {
-            self.metrics.peer_connection_total[&peer_name(peer)].inc();
+            self.metrics.peer_connection_total[&name::peer_name(peer)].inc();
         }
 
         fn set_peer_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
             self.metrics.peer_connection_types[&PeerConnectionLabels::new(
-                &peer_name(peer),
+                &name::peer_name(peer),
                 utils::addr_type(addr),
                 utils::addr_protocol(addr),
             )]
@@ -340,7 +340,7 @@ mod tests {
 
         fn set_relay_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
             self.metrics.relay_connection_types[&RelayConnectionLabels::new(
-                &peer_name(peer),
+                &name::peer_name(peer),
                 utils::addr_type(addr),
                 utils::addr_protocol(addr),
             )]
@@ -518,12 +518,16 @@ mod tests {
         behaviour.increment_connection(peer, &addr);
 
         // Check peer_connection_total was incremented
-        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
+        let total =
+            behaviour.metrics().inner().peer_connection_total[&name::peer_name(&peer)].get();
         assert_eq!(total, 1);
 
         // Check peer_connection_types was set
-        let labels =
-            PeerConnectionLabels::new(&peer_name(&peer), ConnectionType::Direct, Protocol::Tcp);
+        let labels = PeerConnectionLabels::new(
+            &name::peer_name(&peer),
+            ConnectionType::Direct,
+            Protocol::Tcp,
+        );
         let count = behaviour.metrics().inner().peer_connection_types[&labels].get();
         assert_eq!(count, 1);
     }
@@ -539,7 +543,7 @@ mod tests {
 
         // Check relay_connection_types was set (not peer_connection_types)
         let labels = RelayConnectionLabels::new(
-            &peer_name(&unknown_peer),
+            &name::peer_name(&unknown_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );
@@ -548,8 +552,9 @@ mod tests {
 
         // peer_connection_total should not have been incremented for unknown
         // peer
-        let total =
-            behaviour.metrics().inner().peer_connection_total[&peer_name(&unknown_peer)].get();
+        let total = behaviour.metrics().inner().peer_connection_total
+            [&name::peer_name(&unknown_peer)]
+            .get();
         assert_eq!(total, 0);
     }
 
@@ -563,8 +568,11 @@ mod tests {
         behaviour.decrement_connection(peer, &addr);
 
         // After decrementing to zero, the gauge should be set to 0
-        let labels =
-            PeerConnectionLabels::new(&peer_name(&peer), ConnectionType::Direct, Protocol::Tcp);
+        let labels = PeerConnectionLabels::new(
+            &name::peer_name(&peer),
+            ConnectionType::Direct,
+            Protocol::Tcp,
+        );
         let count = behaviour.metrics().inner().peer_connection_types[&labels].get();
         assert_eq!(count, 0);
     }
@@ -581,7 +589,7 @@ mod tests {
 
         // After decrementing, relay_connection_types should be 0
         let labels = RelayConnectionLabels::new(
-            &peer_name(&relay_peer),
+            &name::peer_name(&relay_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );
@@ -647,7 +655,8 @@ mod tests {
         assert_eq!(behaviour.counts().get(&key), Some(&1));
 
         // Verify metrics were updated
-        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
+        let total =
+            behaviour.metrics().inner().peer_connection_total[&name::peer_name(&peer)].get();
         assert_eq!(total, 1);
     }
 
@@ -678,7 +687,8 @@ mod tests {
         assert_eq!(behaviour.counts().get(&key), Some(&1));
 
         // Verify metrics were updated
-        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
+        let total =
+            behaviour.metrics().inner().peer_connection_total[&name::peer_name(&peer)].get();
         assert_eq!(total, 1);
     }
 
@@ -916,17 +926,17 @@ mod tests {
 
         // Known peer should have peer_connection_total incremented
         let known_total =
-            behaviour.metrics().inner().peer_connection_total[&peer_name(&known_peer)].get();
+            behaviour.metrics().inner().peer_connection_total[&name::peer_name(&known_peer)].get();
         assert_eq!(known_total, 1);
 
         // Relay peer should NOT have peer_connection_total incremented
         let relay_total =
-            behaviour.metrics().inner().peer_connection_total[&peer_name(&relay_peer)].get();
+            behaviour.metrics().inner().peer_connection_total[&name::peer_name(&relay_peer)].get();
         assert_eq!(relay_total, 0);
 
         // But relay_connection_types should be set
         let relay_labels = RelayConnectionLabels::new(
-            &peer_name(&relay_peer),
+            &name::peer_name(&relay_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );

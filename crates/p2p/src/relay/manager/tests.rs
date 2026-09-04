@@ -869,7 +869,7 @@ async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
 fn relay_connections(relay_id: PeerId) -> Option<i64> {
     P2P_METRICS
         .relay_connections
-        .get(&peer_name(&relay_id))
+        .get(&crate::name::peer_name(&relay_id))
         .map(vise::Gauge::get)
 }
 
