@@ -64,11 +64,6 @@ pub enum QbftError {
     UnexpectedCompareError(Box<QbftError>),
 
     /// An internal sanity check failed.
-    ///
-    /// Mirrors charon `core/qbft/qbft.go:187-198`, which recovers exactly the
-    /// panics whose message contains "bug" and turns them into
-    /// `fmt.Errorf("qbft sanity check: %v", r)`. The payload keeps charon's
-    /// original panic string so log output stays greppable.
     #[error("qbft sanity check: {0}")]
     SanityCheck(&'static str),
 

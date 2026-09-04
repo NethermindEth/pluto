@@ -46,12 +46,6 @@ const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 // protocol progress, so slow-but-progressing parallel runs should not fail.
 const TEST_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// What one `qbft::run` thread reported back.
-///
-/// `run` no longer panics on an internal sanity-check failure — it returns
-/// [`QbftError::SanityCheck`] — so the harness collects a plain [`Result`]
-/// instead of catching unwinds. Charon's `qbft.Run` behaves the same way after
-/// its `recover` in `core/qbft/qbft.go:187-198`.
 type RunOutcome = Result<()>;
 type TestMsgRef = Msg<TestQbft>;
 
