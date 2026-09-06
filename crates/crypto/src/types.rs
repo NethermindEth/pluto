@@ -331,4 +331,114 @@ mod tests {
         let eth2_sig = sig_to_eth2(sig);
         assert_eq!(sig[..], eth2_sig[..]);
     }
+
+    // Exhaustive over blst 0.3.17's eight variants. `BLST_SUCCESS` is the row
+    // that earns its place: it reaches `Unknown` through the catch-all. The
+    // table cannot notice a ninth variant a future blst adds — only dropping
+    // the `_` arm in production would, and this pass is test-only.
+    #[test_case(BLST_ERROR::BLST_SUCCESS, BlsError::Unknown ; "success falls through the catch-all")]
+    #[test_case(BLST_ERROR::BLST_BAD_ENCODING, BlsError::BadEncoding ; "bad encoding")]
+    #[test_case(BLST_ERROR::BLST_POINT_NOT_ON_CURVE, BlsError::PointNotOnCurve ; "point not on curve")]
+    #[test_case(BLST_ERROR::BLST_POINT_NOT_IN_GROUP, BlsError::PointNotInGroup ; "point not in group")]
+    #[test_case(BLST_ERROR::BLST_AGGR_TYPE_MISMATCH, BlsError::AggregateMismatch ; "aggregate type mismatch")]
+    #[test_case(BLST_ERROR::BLST_VERIFY_FAIL, BlsError::VerifyFailed ; "verify fail")]
+    #[test_case(BLST_ERROR::BLST_PK_IS_INFINITY, BlsError::InvalidPublicKey ; "public key is infinity")]
+    #[test_case(BLST_ERROR::BLST_BAD_SCALAR, BlsError::InvalidScalar ; "bad scalar")]
+    fn bls_error_from_blst_error(blst_error: BLST_ERROR, expected: BlsError) {
+        assert_eq!(BlsError::from(blst_error), expected);
+    }
+
+    // These five wrap a `BlsError` and interpolate it with `{0}`. Dropping the
+    // `{0}` compiles and silently discards why the operation failed. Each row
+    // carries a different inner error, so no fixed string satisfies the table.
+    // The static-text variants are deliberately not covered.
+    #[test_case(
+        Error::InvalidSecretKey(BlsError::KeyGeneration),
+        "Failed to deserialize secret key",
+        "Key generation failed"
+        ; "invalid secret key"
+    )]
+    #[test_case(
+        Error::InvalidPublicKey(BlsError::PointNotInGroup),
+        "Failed to deserialize public key",
+        "Point not in group"
+        ; "invalid public key"
+    )]
+    #[test_case(
+        Error::InvalidSignature(BlsError::BadEncoding),
+        "Failed to deserialize signature",
+        "Bad encoding"
+        ; "invalid signature"
+    )]
+    #[test_case(
+        Error::VerificationFailed(BlsError::VerifyFailed),
+        "Signature verification failed",
+        "Verification failed"
+        ; "verification failed"
+    )]
+    #[test_case(
+        Error::AggregationFailed(BlsError::AggregateMismatch),
+        "Signature aggregation failed",
+        "Aggregate mismatch"
+        ; "aggregation failed"
+    )]
+    fn error_display_carries_wrapped_bls_error(error: Error, context: &str, cause: &str) {
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.starts_with(context),
+            "expected the message to start with {context:?}"
+        );
+        assert!(
+            rendered.contains(cause),
+            "expected the message to carry the wrapped cause {cause:?}"
+        );
+    }
+
+    // Two fields of the same type: swapping them compiles and produces a
+    // plausible message that says the opposite of the truth.
+    #[test]
+    fn invalid_threshold_display_does_not_swap_fields() {
+        let rendered = Error::InvalidThreshold {
+            threshold: 3,
+            total: 5,
+        }
+        .to_string();
+
+        assert!(
+            rendered.contains("threshold=3") && rendered.contains("total=5"),
+            "expected threshold=3 and total=5"
+        );
+    }
+
+    // Unreachable on 64-bit targets, so nothing else constructs it.
+    #[test]
+    fn threshold_overflow_display_carries_threshold() {
+        let rendered = Error::ThresholdOverflow {
+            threshold: 4_294_967_296,
+        }
+        .to_string();
+
+        assert!(
+            rendered.contains("4294967296"),
+            "expected the offending threshold in the message"
+        );
+    }
+
+    // The `*_from_bytes_invalid` tables pin the struct *fields*; this pins the
+    // rendered message. Both fields are `usize`, so a swapped format string
+    // leaves those tables green.
+    #[test]
+    fn conv_error_display_does_not_swap_expected_and_got() {
+        let rendered = ConvError::InvalidLength {
+            expected: PUBLIC_KEY_LENGTH,
+            got: PRIVATE_KEY_LENGTH,
+        }
+        .to_string();
+
+        assert!(
+            rendered.contains("expected 48") && rendered.contains("got 32"),
+            "expected 'expected 48' and 'got 32'"
+        );
+    }
 }

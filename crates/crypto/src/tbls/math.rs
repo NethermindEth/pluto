@@ -289,7 +289,9 @@ fn scalar_div(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use test_case::test_case;
+
+    use super::{super::ETH2_DST, *};
 
     #[test]
     fn scalar_from_u64_upper_limbs_are_zero() {
@@ -311,5 +313,248 @@ mod tests {
                 "upper 24 bytes must be zero for val={val}"
             );
         }
+    }
+
+    /// The BLS12-381 scalar-field order minus 19, big-endian. Written from the
+    /// published curve order, not read off this implementation.
+    const R_MINUS_19: [u8; 32] = [
+        0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8,
+        0x05, 0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff,
+        0xff, 0xee,
+    ];
+
+    /// A secret key holding the non-zero field element `v`.
+    fn sk(v: u64) -> BlstSecretKey {
+        let scalar = scalar_from_u64(v);
+        let sk: &BlstSecretKey = (&scalar)
+            .try_into()
+            .expect("a small non-zero value is a valid BLS scalar");
+        sk.clone()
+    }
+
+    /// The big-endian encoding of a small field element.
+    fn be_bytes(v: u64) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out[24..].copy_from_slice(&v.to_be_bytes());
+        out
+    }
+
+    /// f(x) = 7 + 11x + 13x², so f(0) = 7 is the secret.
+    fn poly_7_11_13() -> Vec<BlstSecretKey> {
+        vec![sk(7), sk(11), sk(13)]
+    }
+
+    fn shares_at(indices: &[Index]) -> Vec<BlstSecretKey> {
+        indices
+            .iter()
+            .map(|&i| evaluate_polynomial(&poly_7_11_13(), i).expect("the polynomial is not empty"))
+            .collect()
+    }
+
+    #[test]
+    fn evaluate_polynomial_rejects_empty_polynomial() {
+        assert!(matches!(
+            evaluate_polynomial(&[], 1),
+            Err(Error::PolynomialIsEmpty)
+        ));
+    }
+
+    // Evaluated by hand, so the expectations do not come from the code under
+    // test: 7+11+13 = 31, 7+22+52 = 81, 7+55+325 = 387.
+    #[test_case(1, 31 ; "x = 1 sums the coefficients")]
+    #[test_case(2, 81 ; "x = 2")]
+    #[test_case(5, 387 ; "x = 5, where the squared term dominates")]
+    fn evaluate_polynomial_matches_hand_computed_values(x: Index, expected: u64) {
+        let value = evaluate_polynomial(&poly_7_11_13(), x).unwrap();
+
+        assert_eq!(
+            value.to_bytes(),
+            be_bytes(expected),
+            "f({x}) should be {expected}"
+        );
+    }
+
+    // The `skip(1)` loop never runs, so x must not reach the result.
+    #[test]
+    fn evaluate_polynomial_degree_zero_ignores_x() {
+        let poly = vec![sk(7)];
+
+        for x in [1u64, 2, 1_000] {
+            assert_eq!(
+                evaluate_polynomial(&poly, x).unwrap().to_bytes(),
+                be_bytes(7),
+                "a constant polynomial must evaluate to 7 at x = {x}"
+            );
+        }
+    }
+
+    // The descending set is the row that matters:
+    // `compute_lagrange_coefficients` negates in the scalar field when
+    // x_j < x_i instead of subtracting in the integers.
+    #[test_case(&[1, 2, 3] ; "contiguous ascending")]
+    #[test_case(&[2, 4, 5] ; "non-contiguous")]
+    #[test_case(&[5, 4, 2] ; "descending, driving the scalar_negate branch")]
+    fn lagrange_interpolate_secret_recovers_constant_term(indices: &[Index]) {
+        let recovered = lagrange_interpolate_secret(indices, &shares_at(indices)).unwrap();
+
+        assert_eq!(
+            recovered.to_bytes(),
+            be_bytes(7),
+            "f(0) = 7 must be recovered from {indices:?}"
+        );
+    }
+
+    // The negative property: too few shares do not fail, they silently
+    // interpolate a different field element. The line through f(1) and f(2)
+    // gives 2·f(1) − f(2) = 62 − 81 = −19, i.e. exactly r − 19.
+    #[test]
+    fn lagrange_interpolate_secret_below_threshold_yields_wrong_scalar() {
+        let recovered = lagrange_interpolate_secret(&[1, 2], &shares_at(&[1, 2]))
+            .expect("sub-threshold interpolation succeeds — that is the hazard");
+
+        assert_ne!(
+            recovered.to_bytes(),
+            be_bytes(7),
+            "two shares must not recover a 3-of-n secret"
+        );
+        assert_eq!(
+            recovered.to_bytes(),
+            R_MINUS_19,
+            "sub-threshold recovery yields 2·f(1) − f(2) = −19 mod r"
+        );
+    }
+
+    #[test]
+    fn lagrange_interpolate_secret_rejects_duplicate_indices() {
+        let indices = [1, 2, 2];
+
+        assert!(matches!(
+            lagrange_interpolate_secret(&indices, &shares_at(&indices)),
+            Err(Error::IndicesNotUnique)
+        ));
+    }
+
+    // Not `SharesAreEmpty`: that comes from `tbls::recover_secret`, which
+    // guards the empty map before this layer. Different guards, different
+    // errors.
+    #[test_case(&[], &[] ; "empty")]
+    #[test_case(&[1, 2, 3], &[1, 2] ; "more indices than shares")]
+    fn lagrange_interpolate_secret_rejects_length_mismatch(
+        indices: &[Index],
+        share_points: &[Index],
+    ) {
+        let result = lagrange_interpolate_secret(indices, &shares_at(share_points));
+
+        assert!(
+            matches!(result, Err(Error::IndicesSharesMismatch)),
+            "expected IndicesSharesMismatch"
+        );
+    }
+
+    // BLS signing is deterministic, so the interpolated signature must be
+    // byte-identical to the one the recovered secret produces. Descending
+    // indices again, for the negated-denominator branch.
+    #[test]
+    fn lagrange_interpolate_signature_recovers_group_signature() {
+        const MSG: &[u8] = b"lagrange interpolate signature";
+
+        let indices: [Index; 3] = [5, 4, 2];
+        let partials: Vec<BlstSignature> = shares_at(&indices)
+            .iter()
+            .map(|share| share.sign(MSG, ETH2_DST, &[]))
+            .collect();
+
+        let interpolated = lagrange_interpolate_signature(&indices, &partials).unwrap();
+
+        assert_eq!(
+            interpolated.to_bytes(),
+            sk(7).sign(MSG, ETH2_DST, &[]).to_bytes(),
+            "the interpolated signature must equal the group signature"
+        );
+    }
+
+    // Same shape of guard as the secret path, but a *different* variant:
+    // `EmptySignatureArray`, not `IndicesSharesMismatch`.
+    #[test_case(&[], &[] ; "empty")]
+    #[test_case(&[1, 2, 3], &[1, 2] ; "more indices than signatures")]
+    fn lagrange_interpolate_signature_rejects_length_mismatch(
+        indices: &[Index],
+        sig_points: &[Index],
+    ) {
+        let partials: Vec<BlstSignature> = shares_at(sig_points)
+            .iter()
+            .map(|share| share.sign(b"mismatch", ETH2_DST, &[]))
+            .collect();
+
+        let result = lagrange_interpolate_signature(indices, &partials);
+
+        assert!(
+            matches!(result, Err(Error::EmptySignatureArray)),
+            "expected EmptySignatureArray"
+        );
+    }
+
+    // pk(7) + pk(11) = pk(18). A fold that dropped or double-counted a term
+    // would still return a well-formed point.
+    #[test]
+    fn aggregate_public_keys_is_additively_homomorphic() {
+        let agg = aggregate_public_keys(&[sk(7).sk_to_pk(), sk(11).sk_to_pk()]).unwrap();
+
+        assert_eq!(
+            agg.to_bytes(),
+            sk(18).sk_to_pk().to_bytes(),
+            "pk(7) + pk(11) must equal pk(18)"
+        );
+    }
+
+    // n = 1 is the `skip(1)` boundary: the loop body never runs, so an
+    // off-by-one in the accumulator shows up only here.
+    #[test]
+    fn aggregate_public_keys_of_single_key_is_that_key() {
+        let agg = aggregate_public_keys(&[sk(7).sk_to_pk()]).unwrap();
+
+        assert_eq!(agg.to_bytes(), sk(7).sk_to_pk().to_bytes());
+    }
+
+    #[test]
+    fn scalar_div_rejects_zero_denominator() {
+        assert!(matches!(
+            scalar_div(&scalar_from_u64(42), &scalar_from_u64(0)),
+            Err(Error::DivisionByZero)
+        ));
+    }
+
+    #[test]
+    fn scalar_div_multiplies_by_modular_inverse() {
+        let quotient = scalar_div(&scalar_from_u64(42), &scalar_from_u64(6)).unwrap();
+
+        assert_eq!(
+            quotient.b,
+            scalar_from_u64(7).b,
+            "42 / 6 = 7 in the scalar field"
+        );
+    }
+
+    // Negating zero, −19 == r − 19, and involution.
+    #[test]
+    fn scalar_negate_computes_additive_inverse() {
+        assert_eq!(
+            scalar_negate(&scalar_from_u64(0)).unwrap().b,
+            scalar_from_u64(0).b,
+            "the additive inverse of zero is zero"
+        );
+
+        let negative_19 = scalar_negate(&scalar_from_u64(19)).unwrap();
+
+        // `blst_scalar` is little-endian; `R_MINUS_19` is written big-endian.
+        let mut expected = R_MINUS_19;
+        expected.reverse();
+        assert_eq!(negative_19.b, expected, "−19 must be r − 19");
+
+        assert_eq!(
+            scalar_negate(&negative_19).unwrap().b,
+            scalar_from_u64(19).b,
+            "negation must be an involution"
+        );
     }
 }
