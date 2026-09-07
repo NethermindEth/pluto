@@ -27,6 +27,7 @@ pluto/
     p2p/                   # P2P networking (libp2p)
     peerinfo/              # Peer info utilities
     relay-server/          # Relay server implementation
+    test-compose/          # Docker-compose smoke-test harness (test infrastructure, not shipped)
     testutil/              # Test helpers/fixtures (workspace-internal)
     tracing/               # Observability/tracing utilities
   test-infra/              # Docker-compose and local infra for integration testing/observability

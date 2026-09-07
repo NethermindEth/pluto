@@ -1,0 +1,30 @@
+[package]
+name = "pluto-test-compose"
+description = "Docker-compose smoke-test harness for pluto and charon clusters. Test infrastructure, not shipped."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+k256.workspace = true
+nix.workspace = true
+pluto-eth2util.workspace = true
+pluto-k1util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pluto-testutil.workspace = true
+tempfile.workspace = true
+test-case.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

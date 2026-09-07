@@ -8,13 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: "Scenario filter (go test -run regex). Empty runs the CI matrix; very_large is excluded."
+        description: "Space-separated scenario names (e.g. `default_alpha pluto_dkg`). Empty runs the CI matrix; very_large is always excluded."
         type: string
         default: ""
-      go_timeout:
-        description: "go test -timeout. Must exceed the sum of the selected scenarios."
-        type: string
-        default: "50m"
+      smoke_timeout:
+        description: "Minutes allowed for the smoke run itself (image and harness builds are separate steps). Must exceed the sum of the selected scenarios' windows."
+        type: number
+        default: 50
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,30 +24,47 @@ permissions:
   contents: read
   actions: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
+
 jobs:
   smoke:
     name: Compose smoke tests
     runs-on: ubuntu-24.04
     # Covers the pluto image build (release build of pluto-cli inside docker,
-    # uncached on a fresh runner) plus the scenario matrix.
-    timeout-minutes: 90
+    # uncached on a fresh runner), the harness build and the scenario matrix.
+    timeout-minutes: 100
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Update apt package list
+        run: sudo apt-get update
+
+      # The smoke test binary links pluto-testutil, which pulls in the eth2api
+      # and protobuf code generation, so it needs the same build tools as
+      # test.yml.
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
-          go-version-file: test-infra/compose/go.mod
-          cache-dependency-path: test-infra/compose/go.sum
+          packages: protobuf-compiler=3.21.12*
+          version: 3.21.12
+
+      - name: Install `oas3-gen`
+        run: cargo install oas3-gen@0.24.0 --locked
 
       - name: Build pluto image
-        # Built here rather than letting the harness do it inside `go test`, so
-        # the release compile does not consume the -timeout budget (which should
-        # bound observation, not compilation) and a build break fails in its own
-        # step. The harness still calls `docker build` during its define step;
-        # replicating the tag and build-arg exactly makes that a cache hit.
+        # Built here rather than letting the harness do it inside the smoke
+        # run, so the release compile does not consume the smoke budget (which
+        # should bound observation, not compilation) and a build break fails in
+        # its own step. The harness still calls `docker build` during its define
+        # step; replicating the tag and build-arg exactly makes that a cache hit.
         #
         # Deliberately plain `docker build`, not buildx: setup-buildx-action's
         # docker-container driver keeps a separate cache that the harness's
@@ -57,8 +74,15 @@ jobs:
           docker build -t pluto:local \
             --build-arg "GIT_COMMIT_HASH_SHORT=$(git rev-parse --short=7 HEAD)" .
 
+      - name: Build smoke harness
+        # Same reasoning: compiled in its own step so the smoke timeout bounds
+        # observation, and a build break fails here.
+        run: cargo test --locked -p pluto-test-compose --test smoke --no-run
+
       - name: Run smoke tests
-        working-directory: test-infra/compose
+        # fromJSON: the input arrives as a number, but coercing through JSON
+        # keeps this valid should it ever arrive as a string.
+        timeout-minutes: ${{ fromJSON(inputs.smoke_timeout) }}
         # Inputs are passed as env vars, never interpolated into the script:
         # `${{ inputs.* }}` inside `run:` is substituted before the shell sees
         # it, so a crafted value would execute as shell.
@@ -66,26 +90,34 @@ jobs:
           # The pluto image is built from this checkout during the define step.
           PLUTO_REPO: ${{ github.workspace }}
           SCENARIOS: ${{ inputs.scenarios }}
-          GO_TIMEOUT: ${{ inputs.go_timeout }}
-          LOG_DIR: ${{ runner.temp }}/smoke-logs
+          SMOKE_LOG_DIR: ${{ runner.temp }}/smoke-logs
+          # Containers run as root, so the artefacts they leave in the compose
+          # dir are root-owned; without this the runner cannot clean them up.
+          SMOKE_SUDO_PERMS: "1"
         run: |
-          mkdir -p "$LOG_DIR"
+          mkdir -p "$SMOKE_LOG_DIR"
 
-          args=(
-            ./smoke -v -integration
-            "-timeout=$GO_TIMEOUT"
-            "-log-dir=$LOG_DIR"
-            # Requires more CPU than a GitHub-hosted runner provides reliably.
-            "-skip=^TestSmoke/very_large$"
-            # Containers run as root, so the artefacts they leave in the compose
-            # dir are root-owned; without this the runner cannot clean them up.
-            -sudo-perms
-          )
+          # very_large requires more CPU than a GitHub-hosted runner provides
+          # reliably.
+          args=(--ignored --nocapture --skip scenario_very_large)
           if [ -n "$SCENARIOS" ]; then
-            args+=(-run "$SCENARIOS")
+            # Exact names: `dkg` alone would also select pluto_dkg.
+            args+=(--exact)
+            for name in $SCENARIOS; do
+              args+=("scenario_$name")
+            done
+
+            # libtest runs nothing, and passes, for a name that selects no test,
+            # so a typo would give a green run. Every name must select a test.
+            wanted=$(echo "$SCENARIOS" | wc -w | tr -d ' ')
+            found=$(cargo test --locked -p pluto-test-compose --test smoke -- "${args[@]}" --list | grep -c ': test$' || true)
+            if [ "$found" -ne "$wanted" ]; then
+              echo "::error::$found of $wanted scenario names select a test (very_large is always excluded): $SCENARIOS"
+              exit 1
+            fi
           fi
 
-          go test "${args[@]}"
+          cargo test --locked -p pluto-test-compose --test smoke -- "${args[@]}"
 
       - name: Upload scenario logs
         # Always: a passing run's logs are the baseline for triaging the next

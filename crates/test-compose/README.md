@@ -9,19 +9,21 @@ can be composed for cross-implementation testing.
 
 The harness generates `docker-compose.yml` files that stand up a full cluster (keygen +
 run) against a mock beacon node. It is driven programmatically by the integration tests
-under `smoke/` — there is no standalone CLI. Cluster generation happens in
-three stages, exposed as package functions and pinned by the golden tests in `testdata/`:
+in `tests/smoke.rs` — there is no standalone CLI. Cluster generation happens in
+three stages, exposed as crate functions and pinned by the golden tests in `testdata/`:
 
-1. **define** (`Define`): writes a `docker-compose.yml` that runs `create dkg` when keygen==dkg.
-2. **lock** (`Lock`): writes a `docker-compose.yml` that runs `create cluster` or `dkg`.
-3. **run** (`Run`): writes a `docker-compose.yml` that runs the cluster.
+1. **define** (`define`): writes a `docker-compose.yml` that runs `create dkg` when keygen==dkg.
+2. **lock** (`lock`): writes a `docker-compose.yml` that runs `create cluster` or `dkg`.
+3. **run** (`run`): writes a `docker-compose.yml` that runs the cluster.
 
-`Auto` (see `auto.go`) chains define → lock → run and runs `docker compose up`; it is what
-the tests call after writing a config with `WriteConfig`.
+`auto` (see `src/auto.rs`) chains define → lock → run and runs `docker compose up`; it is
+what the tests call after writing a config with `write_config`.
+
+This crate is test infrastructure: nothing in it ships in the `pluto` binary.
 
 ## Node implementations
 
-Each node runs either charon or pluto, assigned round-robin from a scenario's `NodeImpls`
+Each node runs either charon or pluto, assigned round-robin from a scenario's `node_impls`
 config (empty defaults to all charon):
 
 - Charon nodes run `obolnetwork/charon:{tag}` (smoke pins `v1.7.1`; the default config
@@ -29,7 +31,7 @@ uses `latest`). Set the tag to `local` to build from `CHARON_REPO`.
 - Pluto nodes run `pluto:{tag}` (default `local`), built automatically from the repo
 root `Dockerfile` during the define step. This requires the `PLUTO_REPO` env var
 pointing at the pluto repo.
-- `KeyGenImpl` selects which implementation runs the single-container keygen steps
+- `key_gen_impl` selects which implementation runs the single-container keygen steps
 (`create cluster` / `create dkg`); it defaults to node0's implementation.
 - The relay always runs the charon node-base image.
 
@@ -46,9 +48,9 @@ other than `charon` or `pluto` is rejected.
 
 ## Smoke tests
 
-`smoke/smoke_test.go` mirrors charon's compose smoke tests: each scenario generates
+`tests/smoke.rs` mirrors charon's compose smoke tests: each scenario generates
 and runs a full cluster with a mock beacon node (simnet), while a Prometheus container
-evaluates the generated alert rules (see `writeAlertRules` in `define.go`). A scenario
+evaluates the generated alert rules (see `write_alert_rules` in `src/define.rs`). A scenario
 fails if any alert fires.
 
 Alert semantics: collection starts once Prometheus answers its rules API. For the
@@ -59,30 +61,48 @@ node at the first epoch boundary, before the validator mock submits duties),
 duties broadcast before the p2p mesh forms). Any other alert fires the scenario
 immediately, warmup or not, and so does anything still firing after the warmup.
 
-Prerequisites: a running Docker daemon and Go. The first run builds `pluto:local`
-from `PLUTO_REPO` (a few minutes) and pulls `obolnetwork/charon:v1.7.1` — both
-happen automatically, no manual build or `go install` needed.
+Prerequisites: a running Docker daemon and the workspace build prerequisites (see
+`CONTRIBUTING.md`; the test binary links `pluto-testutil`, which needs `protoc` and
+`oas3-gen` like the rest of the workspace). The first run builds `pluto:local` from
+`PLUTO_REPO` (a few minutes) and pulls `obolnetwork/charon:v1.7.1` — both happen
+automatically, no manual build needed.
+
+The scenarios are `#[ignore]`d tests named `scenario_<name>`, so they only run when
+asked for:
 
 ```
-cd test-infra/compose
-
 # Pluto scenarios only (builds pluto:local from PLUTO_REPO; relay and
 # pluto_keygen_create runtime nodes pull obolnetwork/charon:v1.7.1):
-PLUTO_REPO=$(git rev-parse --show-toplevel) go test ./smoke -v -integration -timeout=35m \
-  -run 'TestSmoke/(pluto_keygen_create|all_pluto|mixed_2_charon_2_pluto|pluto_dkg)$'
+PLUTO_REPO=$(git rev-parse --show-toplevel) cargo test -p pluto-test-compose --test smoke -- \
+  --ignored --nocapture --exact \
+  scenario_pluto_keygen_create scenario_all_pluto scenario_mixed_2_charon_2_pluto scenario_pluto_dkg
 
 # Full matrix (pluto + charon-only scenarios):
-PLUTO_REPO=$(git rev-parse --show-toplevel) go test ./smoke -v -integration -timeout=35m
+PLUTO_REPO=$(git rev-parse --show-toplevel) cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture
 
-# Keep docker-compose logs per scenario:
-go test ./smoke -v -integration -timeout=35m -log-dir=.
+# The CI matrix: everything but the resource-heavy very_large scenario:
+PLUTO_REPO=$(git rev-parse --show-toplevel) cargo test -p pluto-test-compose --test smoke -- \
+  --ignored --nocapture --skip scenario_very_large
+
+# Keep docker-compose logs per scenario (<dir>/<scenario>.log):
+SMOKE_LOG_DIR=. cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture
 ```
 
-Scenarios that involve pluto (`pluto_keygen_create`, `all_pluto`,
-`mixed_2_charon_2_pluto`, `pluto_dkg`) skip when the `PLUTO_REPO` env var is unset;
-everything else always runs. `-timeout=35m` covers the full matrix (each scenario is
-bounded by its own 2–3 minute alert window plus image builds); the Go default of 10m
-is not enough.
+Without `--exact`, a name is a substring filter (`dkg` selects `pluto_dkg` too).
+Environment variables read by the suite:
+
+| Variable | Effect |
+|----------|--------|
+| `PLUTO_REPO` | pluto checkout to build `pluto:local` from; scenarios that run pluto (`pluto_keygen_create`, `all_pluto`, `mixed_2_charon_2_pluto`, `pluto_dkg`) skip when it is unset |
+| `SMOKE_SUDO_PERMS=1` | fix root-owned artefacts with `sudo chown`/`chmod` after each step (containers run as root); needed where the caller must clean the compose dir up afterwards, e.g. CI |
+| `SMOKE_LOG_DIR=<dir>` | write each scenario's `docker compose up` output to `<dir>/<scenario>.log` instead of stdout |
+| `SMOKE_EXTERNAL_RELAY=<url>` | route the cluster through an external relay instead of the compose one |
+
+There is no global timeout to set: each scenario is bounded by its own 2–3 minute alert
+window plus image builds, and libtest has no overall deadline. Scenarios run one at a
+time whatever `--test-threads` says, because clusters competing for CPU and memory
+produce duty timeouts a sequential run never sees. `.github/workflows/smoke-tests.yml`
+runs the CI matrix on manual dispatch and bounds the run with its step timeout.
 
 All smoke scenarios run the mock validator client. Real VCs cannot pass the alert
 gate against charon v1.7.1's beaconmock: it reports `head_slot: "1"` from
@@ -115,13 +135,11 @@ Scenarios that intentionally degrade the cluster tune the gate via config, not t
 
 | Config knob | Effect | Used by |
 |-------------|--------|---------|
-| `AlertExcludeJobs` | exempt a node from the per-node rules (never from `Pluto Down`) | `1_of_4_down`, `1_of_3_down` |
-| `AlertDisableRules` | drop an entire rule | `1_of_3_down` (disables the error-rate gates — a downed round-1 leader makes every third proposer duty unrecoverable on the mock) |
+| `alert_exclude_jobs` | exempt a node from the per-node rules (never from `Pluto Down`) | `1_of_4_down`, `1_of_3_down` |
+| `alert_disable_rules` | drop an entire rule | `1_of_3_down` (disables the error-rate gates — a downed round-1 leader makes every third proposer duty unrecoverable on the mock) |
 
 ## Versioning
 
-Charon is pinned to the pluto parity reference (`v1.7.1`): both the Go library in
-`go.mod` and the docker image tag used by smoke tests. The two `replace` directives in
-`go.mod` are copied from charon's own `go.mod` (Go does not propagate a dependency's
-replaces) and must be kept in sync when bumping charon. Bump deliberately alongside the
-parity target, not to track charon main.
+Charon is pinned to the pluto parity reference (`v1.7.1`) through the docker image tag
+the smoke tests use: `CHARON_IMAGE_TAG` in `src/smoke.rs`. Bump it deliberately alongside
+the parity target, not to track charon main.
