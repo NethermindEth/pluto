@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install `oas3-gen`
         run: cargo install oas3-gen@0.24.0 --locked
