@@ -39,7 +39,7 @@ use pluto_core::{
     },
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
-    validatorapi::{self, Component, Handler, SeenPubkeysFn},
+    validatorapi::{self, Component, Handler},
 };
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient,
@@ -278,10 +278,6 @@ pub struct WireInputs {
     /// Whether to fetch only committee index 0 at/after `electra_slot`
     /// (`Feature::FetchOnlyCommIdx0`).
     pub fetch_only_comm_idx0: bool,
-    /// Observer invoked with each DV root pubkey the validator client
-    /// references on the validator API, feeding the monitoring readiness
-    /// checker. `None` disables the signal (e.g. tests).
-    pub seen_pubkeys: Option<SeenPubkeysFn>,
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
@@ -422,7 +418,6 @@ pub async fn wire_core_workflow(
         graffiti_builder,
         electra_slot,
         fetch_only_comm_idx0,
-        seen_pubkeys,
         slot_tick,
         peers,
         feature_set,
@@ -1085,11 +1080,6 @@ pub async fn wire_core_workflow(
                 }
             }
         });
-    }
-
-    // Feed the monitoring readiness checker the pubkeys the VC references.
-    if let Some(observer) = seen_pubkeys {
-        vapi.register_seen_pubkeys(observer);
     }
 
     let validator_api_router = validatorapi::new_router(
