@@ -30,6 +30,17 @@ const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
 /// Jitter factor applied to backoff delays. Matches Charon's
 /// `DefaultConfig.Jitter`.
 const RELAY_BACKOFF_JITTER: f64 = 0.2;
+/// Floor applied to the next delay after a relay explicitly denied a circuit
+/// for exceeding a resource limit.
+///
+/// A `ResourceLimitExceeded` denial means the relay's circuit quota or
+/// circuit-source rate limiter is exhausted (rust-libp2p's defaults are 30
+/// circuits / 2 min per peer and 60 / min per IP). Retrying on the normal
+/// backoff ladder — which starts at 1s — keeps the bucket empty and turns a
+/// transient overload into a self-sustaining flood, so a denial parks the
+/// campaign for at least this long regardless of how early in the ladder it
+/// is.
+const RELAY_DENIAL_BACKOFF_MIN: Duration = Duration::from_secs(30);
 
 /// State of an in-flight dial campaign, polled to produce a `ToSwarm::Dial`
 /// event each time its backoff elapses.
@@ -59,6 +70,32 @@ impl RelayDialState {
             sleep: Box::pin(sleep_until(Instant::now())),
         }
     }
+
+    /// Replaces the address set in place, preserving the backoff schedule.
+    ///
+    /// Re-routing is re-evaluated whenever any relay enters or leaves
+    /// `Reserved`, so a flapping relay would otherwise rebuild this state from
+    /// scratch on every transition and reset `retry_count` to zero — the
+    /// campaign would then dial at the 1s base delay forever. Keeping the
+    /// counter and the pending deadline means the ladder survives route
+    /// churn.
+    pub(super) fn set_addrs(&mut self, addrs: Vec<Multiaddr>) {
+        self.addrs = addrs;
+    }
+
+    /// Parks the campaign after the relay denied a circuit for exceeding a
+    /// resource limit: advances the backoff ladder and re-arms the timer for
+    /// at least [`RELAY_DENIAL_BACKOFF_MIN`].
+    pub(super) fn throttle_denied(&mut self) -> Duration {
+        let delay = backoff_delay(self.retry_count).max(RELAY_DENIAL_BACKOFF_MIN);
+        self.retry_count = self.retry_count.saturating_add(1);
+        let deadline = Instant::now()
+            .checked_add(delay)
+            .unwrap_or_else(Instant::now);
+        self.sleep.as_mut().reset(deadline);
+
+        delay
+    }
 }
 
 impl Stream for RelayDialState {
@@ -87,8 +124,9 @@ impl Stream for RelayDialState {
 }
 
 /// Returns true if both slices contain the same multiaddrs (order-independent).
-/// Used to decide whether a routing refresh actually expanded the available
-/// circuit paths to a peer — if it did, the dial state's backoff is reset.
+/// Used to decide whether a routing refresh actually changed the available
+/// circuit paths to a peer — if it did, the dial state's address set is
+/// refreshed in place (see [`RelayDialState::set_addrs`]).
 pub(super) fn addr_sets_equal(a: &[Multiaddr], b: &[Multiaddr]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -150,6 +188,41 @@ mod tests {
                 "delay {d}s outside jitter envelope [{lower}, {upper}]"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn throttle_denied_floors_the_next_delay_and_advances_the_ladder() {
+        let mut state = RelayDialState::new(
+            RelayDialType::ClusterPeer,
+            PeerId::random(),
+            vec!["/ip4/10.0.0.1/tcp/9000".parse().expect("valid multiaddr")],
+        );
+
+        // Early in the ladder the normal delay is 1s; a denial must not let
+        // the campaign back onto that schedule.
+        let delay = state.throttle_denied();
+        assert!(
+            delay >= RELAY_DENIAL_BACKOFF_MIN,
+            "denial backoff {delay:?} below the floor {RELAY_DENIAL_BACKOFF_MIN:?}"
+        );
+        assert_eq!(state.retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn throttle_denied_keeps_the_ladder_when_it_already_exceeds_the_floor() {
+        let mut state = RelayDialState::new(
+            RelayDialType::ClusterPeer,
+            PeerId::random(),
+            vec!["/ip4/10.0.0.1/tcp/9000".parse().expect("valid multiaddr")],
+        );
+        state.retry_count = 50;
+
+        let delay = state.throttle_denied();
+        assert!(
+            delay >= RELAY_BACKOFF_MAX.mul_f64(1.0 - RELAY_BACKOFF_JITTER),
+            "a late-ladder denial must not shrink the delay to the floor, got {delay:?}"
+        );
+        assert_eq!(state.retry_count, 51);
     }
 
     #[test]
