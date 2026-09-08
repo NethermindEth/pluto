@@ -4,12 +4,14 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    any::Any, collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc, time::Duration,
+};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ValidatorId, ValidatorsFilter,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, ValidatorId, ValidatorsFilter,
     spec::phase0::{AttestationData, BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
@@ -270,7 +272,7 @@ impl Component {
             self.validator_cache.active_validators(),
         )
         .await
-        .map_err(|_: Elapsed| upstream_timeout("active validators"))?
+        .map_err(|_: Elapsed| upstream_timeout(Upstream::ActiveValidators))?
         .map_err(|err| {
             ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
                 .with_source(err)
@@ -899,8 +901,8 @@ impl Handler for Component {
             self.eth2_cl.get_proposer_duties(opts.epoch),
         )
         .await
-        .map_err(|_| upstream_timeout("proposer duties"))?
-        .map_err(|err| upstream_error("proposer duties", err, DUTIES_PROPAGATED_STATUSES))?;
+        .map_err(|_| upstream_timeout(Upstream::ProposerDuties))?
+        .map_err(|err| upstream_error(Upstream::ProposerDuties, err, DUTIES_PROPAGATED_STATUSES))?;
 
         self.observe_seen_pubkeys(payload.data.iter().map(|duty| &duty.pubkey));
         swap_proposer_pubshares(&mut payload.data, &self.pub_share_by_pubkey);
@@ -918,8 +920,8 @@ impl Handler for Component {
             self.eth2_cl.get_attester_duties(opts.epoch, &opts.indices),
         )
         .await
-        .map_err(|_| upstream_timeout("attester duties"))?
-        .map_err(|err| upstream_error("attester duties", err, DUTIES_PROPAGATED_STATUSES))?;
+        .map_err(|_| upstream_timeout(Upstream::AttesterDuties))?
+        .map_err(|err| upstream_error(Upstream::AttesterDuties, err, DUTIES_PROPAGATED_STATUSES))?;
 
         self.observe_seen_pubkeys(payload.data.iter().map(|duty| &duty.pubkey));
         swap_attester_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
@@ -938,8 +940,14 @@ impl Handler for Component {
                 .get_sync_committee_duties(opts.epoch, &opts.indices),
         )
         .await
-        .map_err(|_| upstream_timeout("sync committee duties"))?
-        .map_err(|err| upstream_error("sync committee duties", err, DUTIES_PROPAGATED_STATUSES))?;
+        .map_err(|_| upstream_timeout(Upstream::SyncCommitteeDuties))?
+        .map_err(|err| {
+            upstream_error(
+                Upstream::SyncCommitteeDuties,
+                err,
+                DUTIES_PROPAGATED_STATUSES,
+            )
+        })?;
 
         self.observe_seen_pubkeys(payload.data.iter().map(|duty| &duty.pubkey));
         swap_sync_committee_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
@@ -1533,10 +1541,10 @@ impl Handler for Component {
             self.eth2_cl.post_state_validators(&opts.state, &filter),
         )
         .await
-        .map_err(|_| upstream_timeout("validators"))?
+        .map_err(|_| upstream_timeout(Upstream::Validators))?
         .map_err(|err| {
             upstream_error(
-                "validators",
+                Upstream::Validators,
                 err,
                 &[StatusCode::BAD_REQUEST, StatusCode::NOT_FOUND],
             )
@@ -1599,20 +1607,29 @@ impl Handler for Component {
         let (slot_duration, _) =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
-                .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err))?;
+                .map_err(|_| upstream_timeout(Upstream::SlotsConfig))?
+                .map_err(|err| upstream_call_failed(Upstream::SlotsConfig, err))?;
         let genesis_time =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
                 .await
-                .map_err(|_| upstream_timeout("genesis time"))?
-                .map_err(|err| upstream_call_failed("genesis time", err))?;
+                .map_err(|_| upstream_timeout(Upstream::GenesisTime))?
+                .map_err(|err| upstream_call_failed(Upstream::GenesisTime, err))?;
         let builder_domain = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
             signing::get_domain(&self.eth2_cl, DomainName::ApplicationBuilder, 0),
         )
         .await
-        .map_err(|_| upstream_timeout("application builder domain"))?
-        .map_err(|err| upstream_call_failed("application builder domain", err))?;
+        .map_err(|_| upstream_timeout(Upstream::ApplicationBuilderDomain))?
+        .map_err(|err| match err {
+            SigningError::BeaconNode(err) => {
+                upstream_call_failed(Upstream::ApplicationBuilderDomain, err)
+            }
+            other => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application builder domain",
+            )
+            .with_source(other),
+        })?;
 
         for registration in registrations {
             self.submit_one_registration(registration, slot_duration, genesis_time, builder_domain)
@@ -1639,8 +1656,8 @@ impl Handler for Component {
         let (_, slots_per_epoch) =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
-                .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err))?;
+                .map_err(|_| upstream_timeout(Upstream::SlotsConfig))?
+                .map_err(|err| upstream_call_failed(Upstream::SlotsConfig, err))?;
 
         let exit_epoch = exit.0.message.epoch;
         let duty_slot = slots_per_epoch.saturating_mul(exit_epoch);
@@ -1854,12 +1871,40 @@ impl Handler for Component {
     }
 }
 
+/// Beacon node calls the validator API makes while serving a VC request.
+#[derive(Debug, Clone, Copy)]
+enum Upstream {
+    SlotsConfig,
+    GenesisTime,
+    ApplicationBuilderDomain,
+    AttesterDuties,
+    ProposerDuties,
+    SyncCommitteeDuties,
+    ActiveValidators,
+    Validators,
+}
+
+impl fmt::Display for Upstream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SlotsConfig => "slots config",
+            Self::GenesisTime => "genesis time",
+            Self::ApplicationBuilderDomain => "application builder domain",
+            Self::AttesterDuties => "attester duties",
+            Self::ProposerDuties => "proposer duties",
+            Self::SyncCommitteeDuties => "sync committee duties",
+            Self::ActiveValidators => "active validators",
+            Self::Validators => "validators",
+        })
+    }
+}
+
 /// Builds the `ApiError` returned when an upstream beacon-node call elapses
 /// past [`UPSTREAM_REQUEST_TIMEOUT`].
-fn upstream_timeout(endpoint: &'static str) -> ApiError {
+fn upstream_timeout(upstream: Upstream) -> ApiError {
     ApiError::new(
         StatusCode::GATEWAY_TIMEOUT,
-        format!("upstream {endpoint} timed out"),
+        format!("upstream {upstream} timed out"),
     )
 }
 
@@ -1874,13 +1919,10 @@ fn proposal_timeout() -> ApiError {
 
 /// Builds the `ApiError` returned when an upstream beacon-node call fails
 /// without an HTTP status.
-fn upstream_call_failed(
-    endpoint: &'static str,
-    err: impl std::error::Error + Send + Sync + 'static,
-) -> ApiError {
+fn upstream_call_failed(upstream: Upstream, err: EthBeaconNodeApiClientError) -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
-        format!("upstream {endpoint} failed"),
+        format!("upstream {upstream} failed"),
     )
     .with_source(err)
 }
@@ -1894,48 +1936,40 @@ const DUTIES_PROPAGATED_STATUSES: &[StatusCode] =
 /// status is an unexpected upstream response, and everything else is a
 /// transport-level failure.
 fn upstream_error(
-    endpoint: &'static str,
+    upstream: Upstream,
     err: EthBeaconNodeApiClientError,
     propagated: &[StatusCode],
 ) -> ApiError {
     match err {
         EthBeaconNodeApiClientError::Http(http) if propagated.contains(&http.status) => {
-            upstream_status_error(http.status, endpoint, &http.body)
+            upstream_status_error(upstream, http)
         }
-        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(endpoint, &http),
-        other => upstream_call_failed(endpoint, other),
+        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, http),
+        other => upstream_call_failed(upstream, other),
     }
 }
 
 /// Builds the `ApiError` returned when the upstream responds with a faithful
-/// HTTP status that we propagate (e.g. 400, 503). The upstream body is
+/// HTTP status that we propagate (e.g. 400, 503). The upstream response is
 /// attached as a `source` for debug logging, never serialized into the
 /// client-visible message.
-fn upstream_status_error<B: std::fmt::Debug>(
-    status: StatusCode,
-    endpoint: &'static str,
-    body: B,
-) -> ApiError {
+fn upstream_status_error(upstream: Upstream, http: HttpError) -> ApiError {
     ApiError::new(
-        status,
-        format!("upstream {endpoint} returned {}", status.as_u16()),
+        http.status,
+        format!("upstream {upstream} returned {}", http.status.as_u16()),
     )
-    .with_source(std::io::Error::other(format!(
-        "upstream {endpoint} body: {body:?}"
-    )))
+    .with_source(http)
 }
 
 /// Builds the `ApiError` returned when the upstream responds with an
 /// unexpected status. The response is attached as a `source` so the debug log
 /// retains it but the client message stays generic.
-fn upstream_unexpected<R: std::fmt::Debug>(endpoint: &'static str, response: R) -> ApiError {
+fn upstream_unexpected(upstream: Upstream, http: HttpError) -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
-        format!("unexpected upstream {endpoint} response"),
+        format!("unexpected upstream {upstream} response"),
     )
-    .with_source(std::io::Error::other(format!(
-        "upstream {endpoint} response: {response:?}"
-    )))
+    .with_source(http)
 }
 
 /// Maps a [`crate::dutydb::Error`] into the `ApiError` returned to the client
@@ -3087,14 +3121,25 @@ mod tests {
             stacktraces: vec!["at /etc/secret/lighthouse:42".to_owned()],
             failures: Vec::new(),
         };
-        let err = upstream_status_error(StatusCode::SERVICE_UNAVAILABLE, "attester duties", body);
+        let http = HttpError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/validator/duties/attester/1".into(),
+            body: body.clone(),
+        };
+        let err = upstream_status_error(Upstream::AttesterDuties, http);
 
         assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!err.message.contains("secret"));
         assert!(!err.message.contains("stacktrace"));
         // But the source carries it for debug logging.
-        let src = err.source.as_ref().unwrap().to_string();
-        assert!(src.contains("secret"));
+        let source = err
+            .source
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<HttpError>()
+            .unwrap();
+        assert_eq!(source.body.message, body.message);
     }
 
     /// `upstream_unexpected` mirrors `upstream_status_error`'s no-leak shape
@@ -3110,10 +3155,16 @@ mod tests {
                 ..Default::default()
             },
         };
-        let err = upstream_unexpected("attester duties", &http);
+        let err = upstream_unexpected(Upstream::AttesterDuties, http);
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
         assert!(!err.message.contains("secret"));
-        assert!(err.source.as_ref().unwrap().to_string().contains("secret"));
+        let source = err
+            .source
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<HttpError>()
+            .unwrap();
+        assert_eq!(source.body.message, "secret");
     }
 
     /// `upstream_error` forwards the listed statuses, treats other HTTP
@@ -3130,20 +3181,20 @@ mod tests {
         };
 
         let err = upstream_error(
-            "duties",
+            Upstream::ProposerDuties,
             http(StatusCode::BAD_REQUEST),
             DUTIES_PROPAGATED_STATUSES,
         );
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
         let err = upstream_error(
-            "duties",
+            Upstream::ProposerDuties,
             http(StatusCode::NOT_FOUND),
             DUTIES_PROPAGATED_STATUSES,
         );
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
         assert!(err.message.contains("unexpected"));
         let err = upstream_error(
-            "duties",
+            Upstream::ProposerDuties,
             EthBeaconNodeApiClientError::EmptyForkSchedule,
             DUTIES_PROPAGATED_STATUSES,
         );
