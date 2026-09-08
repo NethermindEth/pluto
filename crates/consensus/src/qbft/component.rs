@@ -431,9 +431,10 @@ impl Consensus {
             return Err(Error::InvalidConsensusMessage);
         }
 
-        if !qbft::MessageType::from_wire(msg.r#type).valid() {
-            return Err(Error::InvalidConsensusMessageType);
-        }
+        // The conversion is the admission check: `TryFrom` accepts exactly the
+        // wire values `MessageType::valid` accepted, so there is no separate
+        // validity test to keep in sync.
+        qbft::MessageType::try_from(msg.r#type).map_err(|_| Error::InvalidConsensusMessageType)?;
 
         let duty = msg.duty.as_ref().ok_or(Error::InvalidConsensusMessage)?;
         let duty_type =

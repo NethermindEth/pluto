@@ -13,7 +13,7 @@ pub mod types;
 #[cfg(test)]
 pub mod testutils;
 
-pub use component::{Component, SeenPubkeysFn};
+pub use component::Component;
 pub use error::ApiError;
 pub use handler::Handler;
 pub use router::new_router;
