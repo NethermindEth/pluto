@@ -101,12 +101,9 @@ impl Recaster {
             .validator_cache
             .get_by_head()
             .await
-            .map_err(
-                |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client {
-                    context: "get active validator",
-                    source,
-                },
-            )?
+            .map_err(|ValidatorCacheError::EthBeaconNodeApiClientError(source)| {
+                Error::Client(source)
+            })?
             .0
             .pubkeys()
             .map(|pubkey| PubKey::from(*pubkey))

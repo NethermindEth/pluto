@@ -35,14 +35,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Beacon node client error.
-    #[error("{context}: {source}")]
-    Client {
-        /// Operation context.
-        context: &'static str,
-        /// Underlying error.
-        #[source]
-        source: EthBeaconNodeApiClientError,
-    },
+    #[error(transparent)]
+    Client(#[from] EthBeaconNodeApiClientError),
 
     /// Signed-data conversion error.
     #[error("{context}: {source}")]
@@ -209,21 +203,8 @@ impl Broadcaster {
         client: EthBeaconNodeApiClient,
         validator_cache: ValidatorCache,
     ) -> Result<Self> {
-        let genesis_time = client
-            .fetch_genesis_time()
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch genesis time",
-                source,
-            })?;
-        let (slot_duration, _) =
-            client
-                .fetch_slots_config()
-                .await
-                .map_err(|source| Error::Client {
-                    context: "fetch slots config",
-                    source,
-                })?;
+        let genesis_time = client.fetch_genesis_time().await?;
+        let (slot_duration, _) = client.fetch_slots_config().await?;
         let slot_duration =
             Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
                 context: "slot duration",
@@ -337,10 +318,7 @@ impl Broadcaster {
             {
                 Ok(())
             }
-            Err(source) => Err(Error::Client {
-                context: "submit attestations",
-                source,
-            }),
+            Err(source) => Err(Error::Client(source)),
         }?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestations to beacon node");
@@ -364,19 +342,9 @@ impl Broadcaster {
             })?;
             self.client
                 .publish_blinded_block_v2(&proposal, None)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit blinded proposal",
-                    source,
-                })?;
+                .await?;
         } else {
-            self.client
-                .publish_block_v2(&block.0, None)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit proposal",
-                    source,
-                })?;
+            self.client.publish_block_v2(&block.0, None).await?;
         }
 
         tracing::info!(%duty, %pubkey, blinded, "Successfully submitted block proposal to beacon node");
@@ -390,11 +358,7 @@ impl Broadcaster {
         let registrations = set_to_registrations(set)?;
         self.client
             .submit_validator_registrations(registrations)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit validator registrations",
-                source,
-            })?;
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted validator registrations to beacon node");
         Ok(())
@@ -422,10 +386,7 @@ impl Broadcaster {
         }
 
         if let Some(source) = last_error {
-            return Err(Error::Client {
-                context: "submit voluntary exit",
-                source,
-            });
+            return Err(Error::Client(source));
         }
 
         Ok(())
@@ -438,11 +399,7 @@ impl Broadcaster {
         let aggregate_and_proofs = set_to_agg_and_proof(set)?;
         self.client
             .publish_aggregate_and_proofs_v2(&aggregate_and_proofs)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit aggregate attestations",
-                source,
-            })?;
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestation aggregations to beacon node");
         Ok(())
@@ -455,11 +412,7 @@ impl Broadcaster {
         let messages = set_to_sync_messages(set)?;
         self.client
             .submit_pool_sync_committee_signatures(&messages)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee messages",
-                source,
-            })?;
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted sync committee messages to beacon node");
         Ok(())
@@ -472,11 +425,7 @@ impl Broadcaster {
         let contributions = set_to_sync_contributions(set)?;
         self.client
             .publish_contribution_and_proofs(&contributions)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee contributions",
-                source,
-            })?;
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted sync committee contributions to beacon node");
         Ok(())
@@ -505,19 +454,8 @@ impl Broadcaster {
         let duties = self
             .client
             .fetch_attester_duties_for_indices(epoch, val_idxs)
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch attester duties",
-                source,
-            })?;
-        let domain = self
-            .client
-            .fetch_beacon_attester_domain(epoch)
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch beacon attester domain",
-                source,
-            })?;
+            .await?;
+        let domain = self.client.fetch_beacon_attester_domain(epoch).await?;
 
         // Try to find the matching attester duty and attestation by verifying
         // the full aggregated signature of the attestation with the
@@ -649,10 +587,7 @@ async fn resolve_active_validators_indices(
     epoch: phase0::Epoch,
 ) -> Result<Vec<phase0::ValidatorIndex>> {
     let (_, validators) = validator_cache.get_by_head().await.map_err(
-        |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client {
-            context: "complete validators",
-            source,
-        },
+        |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client(source),
     )?;
     let mut indices = Vec::new();
 
@@ -698,21 +633,8 @@ fn attestation_matches_duty(
 async fn first_slot_in_current_epoch(
     client: &EthBeaconNodeApiClient,
 ) -> Result<crate::types::SlotNumber> {
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .map_err(|source| Error::Client {
-            context: "fetch genesis time",
-            source,
-        })?;
-    let (slot_duration, slots_per_epoch) =
-        client
-            .fetch_slots_config()
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch slots config",
-                source,
-            })?;
+    let genesis_time = client.fetch_genesis_time().await?;
+    let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
     let slot_duration =
         Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
             context: "slot duration",
