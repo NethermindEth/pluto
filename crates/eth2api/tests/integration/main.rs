@@ -1,4 +1,10 @@
-use crate::{EthBeaconNodeApiClient, ForkSchedule, spec::DataVersion};
+//! Live tests of [`EthBeaconNodeApiClient`] against a Lighthouse beacon node
+//! running in a Docker container.
+//!
+//! Requires Docker and the `integration` feature:
+//! `cargo test -p pluto-eth2api --features integration`.
+
+use pluto_eth2api::{EthBeaconNodeApiClient, ForkSchedule, spec::DataVersion};
 use std::sync::{Arc, LazyLock, Weak};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,

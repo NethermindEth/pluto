@@ -36,7 +36,3 @@ pub mod valcache;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
-
-#[cfg(test)]
-#[cfg(feature = "integration")]
-mod integration;

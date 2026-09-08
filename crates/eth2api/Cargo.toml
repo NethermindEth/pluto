@@ -39,3 +39,7 @@ workspace = true
 [features]
 default = []
 integration = []
+
+[[test]]
+name = "integration"
+required-features = ["integration"]
