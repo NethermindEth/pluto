@@ -1,10 +1,22 @@
 //! Live tests of [`EthBeaconNodeApiClient`] against a Lighthouse beacon node
 //! running in a Docker container.
 //!
+//! The node runs on mainnet with discovery, UPnP and peering disabled, so it
+//! never syncs past the genesis block and every response is a fixed mainnet
+//! genesis value that the tests assert as a literal.
+//!
 //! Requires Docker and the `integration` feature:
 //! `cargo test -p pluto-eth2api --features integration`.
 
-use pluto_eth2api::{EthBeaconNodeApiClient, ForkSchedule, spec::DataVersion};
+mod attestations;
+mod blocks;
+mod chain;
+mod duties;
+mod node;
+mod proposals;
+mod validators;
+
+use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
 use std::sync::{Arc, LazyLock, Weak};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -13,120 +25,41 @@ use testcontainers::{
 };
 use tokio::sync::Mutex;
 
-#[tokio::test]
-async fn get_block_header_head_decodes() {
-    let bn = BeaconNodeContainer::shared().await;
-    let client =
-        EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
+pub(crate) const GENESIS_TIME: u64 = 1606824023;
+pub(crate) const GENESIS_FORK_VERSION: phase0::Version = [0x00, 0x00, 0x00, 0x00];
+pub(crate) const GENESIS_VALIDATORS_ROOT: &str =
+    "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95";
+pub(crate) const GENESIS_BLOCK_ROOT: &str =
+    "0x4d611d5b93fdab69013a7f0a2f961caca0c853f87cfe9595fe50038163079360";
+pub(crate) const GENESIS_STATE_ROOT: &str =
+    "0x7e76880eb67bbdc86250aa578958e9d0675e64e714337855204fb5abaaf82c2b";
+pub(crate) const VALIDATOR_0_PUBKEY: &str = "0x933ad9491b62059dd065b560d256d8957a8c402cc6e8d8ee7290ae11e8f7329267a8811c397529dac52ae1342ba58c95";
+pub(crate) const VALIDATOR_1_PUBKEY: &str = "0xa1d1ad0714035353258038e964ae9675dc0252ee22cea896825c01458e1807bfad2f9969338798548d9858a571f7425c";
 
-    let response = client
-        .get_block_header("head")
-        .await
-        .expect("Failed to get block header");
-
-    assert!(response.data.canonical, "head header should be canonical");
-    assert_ne!(response.data.root, [0; 32], "head root should be set");
+/// Decodes a `0x`-prefixed hex literal into an `N`-byte array.
+pub(crate) fn hex_bytes<const N: usize>(literal: &str) -> [u8; N] {
+    let hex = literal
+        .strip_prefix("0x")
+        .expect("hex literal starts with 0x");
+    let bytes = hex::decode(hex).expect("valid hex literal");
+    bytes
+        .try_into()
+        .expect("hex literal has the expected length")
 }
 
-#[tokio::test]
-async fn fetch_genesis_time() {
-    let bn = BeaconNodeContainer::shared().await;
-    let client =
-        EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
-
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .expect("Failed to fetch genesis time");
-
-    assert_eq!(genesis_time.timestamp(), 1606824023);
-}
-
-#[tokio::test]
-async fn fetch_slots_config() {
-    let bn = BeaconNodeContainer::shared().await;
-    let client =
-        EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
-
-    let (slot_duration, slots_per_epoch) = client
-        .fetch_slots_config()
-        .await
-        .expect("Failed to fetch slots config");
-
-    assert_eq!(slot_duration.as_secs(), 12);
-    assert_eq!(slots_per_epoch, 32);
-}
-
-#[tokio::test]
-async fn fetch_fork_config() {
-    let bn = BeaconNodeContainer::shared().await;
-    let client =
-        EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
-
-    let fork_schedule = client
-        .fetch_fork_config()
-        .await
-        .expect("Failed to fetch fork schedule");
-
-    let expected = vec![
-        (
-            DataVersion::Altair,
-            ForkSchedule {
-                epoch: 74240,
-                version: [1, 0, 0, 0],
-            },
-        ),
-        (
-            DataVersion::Bellatrix,
-            ForkSchedule {
-                epoch: 144896,
-                version: [2, 0, 0, 0],
-            },
-        ),
-        (
-            DataVersion::Capella,
-            ForkSchedule {
-                epoch: 194048,
-                version: [3, 0, 0, 0],
-            },
-        ),
-        (
-            DataVersion::Deneb,
-            ForkSchedule {
-                epoch: 269568,
-                version: [4, 0, 0, 0],
-            },
-        ),
-        (
-            DataVersion::Electra,
-            ForkSchedule {
-                epoch: 364032,
-                version: [5, 0, 0, 0],
-            },
-        ),
-        (
-            DataVersion::Fulu,
-            ForkSchedule {
-                epoch: 411392,
-                version: [6, 0, 0, 0],
-            },
-        ),
-    ]
-    .into_iter()
-    .collect();
-
-    assert_eq!(fork_schedule, expected);
-}
-
-struct BeaconNodeContainer {
+/// A Lighthouse container and the base URL of its HTTP API.
+pub(crate) struct BeaconNodeContainer {
     base_url: String,
-    // Store the container to keep it alive for the duration of the tests
+    // Keeps the container alive for the duration of the tests.
     _container: ContainerAsync<GenericImage>,
 }
 
 impl BeaconNodeContainer {
-    // Create a new Lighthouse container configured to run the HTTP API on port
-    // 5052
+    pub(crate) fn client(&self) -> EthBeaconNodeApiClient {
+        EthBeaconNodeApiClient::with_base_url(&self.base_url)
+            .expect("client for the shared container")
+    }
+
     async fn new() -> Self {
         let container = GenericImage::new("sigp/lighthouse", "v8.0.1")
             .with_exposed_port(5052.tcp())
@@ -142,6 +75,10 @@ impl BeaconNodeContainer {
                 "--allow-insecure-genesis-sync",
                 "--execution-endpoint",
                 "http://localhost:8551",
+                "--disable-discovery",
+                "--disable-upnp",
+                "--target-peers",
+                "0",
                 "--http",
                 "--http-address",
                 "0.0.0.0",
@@ -150,20 +87,14 @@ impl BeaconNodeContainer {
             .await
             .expect("Failed to start Lighthouse container");
 
-        // Get the mapped port for the HTTP API
         let host_port = container
             .get_host_port_ipv4(5052)
             .await
             .expect("Failed to get mapped port");
-
-        // Get the host of the container
         let host = container.get_host().await.expect("Failed to get host");
 
-        // Build the base URL for the API
-        let base_url = format!("http://{}:{}", host, host_port);
-
         Self {
-            base_url,
+            base_url: format!("http://{host}:{host_port}"),
             _container: container,
         }
     }
@@ -171,7 +102,7 @@ impl BeaconNodeContainer {
     /// Get a shared instance of the BeaconNodeContainer.
     ///
     /// The container gets stopped when there are no more references to it.
-    async fn shared() -> Arc<BeaconNodeContainer> {
+    pub(crate) async fn shared() -> Arc<BeaconNodeContainer> {
         static SHARED: LazyLock<Mutex<Weak<BeaconNodeContainer>>> =
             LazyLock::new(|| Mutex::new(Weak::new()));
         let mut guard = SHARED.lock().await;
