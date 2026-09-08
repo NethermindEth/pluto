@@ -12,8 +12,10 @@ mod attestations;
 mod blocks;
 mod chain;
 mod duties;
+mod errors;
 mod node;
 mod proposals;
+mod submissions;
 mod validators;
 
 use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
@@ -35,6 +37,13 @@ pub(crate) const GENESIS_STATE_ROOT: &str =
     "0x7e76880eb67bbdc86250aa578958e9d0675e64e714337855204fb5abaaf82c2b";
 pub(crate) const VALIDATOR_0_PUBKEY: &str = "0x933ad9491b62059dd065b560d256d8957a8c402cc6e8d8ee7290ae11e8f7329267a8811c397529dac52ae1342ba58c95";
 pub(crate) const VALIDATOR_1_PUBKEY: &str = "0xa1d1ad0714035353258038e964ae9675dc0252ee22cea896825c01458e1807bfad2f9969338798548d9858a571f7425c";
+
+/// The BLS point at infinity, a well-formed signature valid for no message.
+pub(crate) const BLS_INFINITY: phase0::BLSSignature = {
+    let mut signature = [0; 96];
+    signature[0] = 0xc0;
+    signature
+};
 
 /// Decodes a `0x`-prefixed hex literal into an `N`-byte array.
 pub(crate) fn hex_bytes<const N: usize>(literal: &str) -> [u8; N] {

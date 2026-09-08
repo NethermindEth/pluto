@@ -1,6 +1,6 @@
 //! Block production on a head fixed at genesis.
 
-use crate::{BeaconNodeContainer, GENESIS_BLOCK_ROOT};
+use crate::{BLS_INFINITY, BeaconNodeContainer, GENESIS_BLOCK_ROOT};
 use alloy::primitives::U256;
 use pluto_eth2api::{
     ProduceBlockOpts,
@@ -8,18 +8,10 @@ use pluto_eth2api::{
     versioned::ProposalBlock,
 };
 
-/// The BLS point at infinity, the reveal the node accepts when RANDAO
-/// verification is skipped.
-const RANDAO_REVEAL_AT_INFINITY: phase0::BLSSignature = {
-    let mut reveal = [0; 96];
-    reveal[0] = 0xc0;
-    reveal
-};
-
 fn produce_block_opts(graffiti: Option<phase0::Root>) -> ProduceBlockOpts {
     ProduceBlockOpts {
         slot: 1,
-        randao_reveal: RANDAO_REVEAL_AT_INFINITY,
+        randao_reveal: BLS_INFINITY,
         graffiti,
         skip_randao_verification: true,
         builder_boost_factor: None,
@@ -53,7 +45,7 @@ async fn produce_block_v3_builds_an_empty_phase0_block_on_genesis() {
         block.parent_root,
         crate::hex_bytes::<32>(GENESIS_BLOCK_ROOT)
     );
-    assert_eq!(block.body.randao_reveal, RANDAO_REVEAL_AT_INFINITY);
+    assert_eq!(block.body.randao_reveal, BLS_INFINITY);
     assert!(block.body.proposer_slashings.0.is_empty());
     assert!(block.body.attester_slashings.0.is_empty());
     assert!(block.body.attestations.0.is_empty());
