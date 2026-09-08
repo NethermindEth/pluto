@@ -17,7 +17,7 @@
 use crate::{
     EthBeaconNodeApiClientError, PayloadError,
     spec::{BuilderVersion, DataVersion, altair, electra, phase0},
-    types::*,
+    types::{self, *},
     v1, versioned,
 };
 use alloy::primitives::U256;
@@ -1031,7 +1031,7 @@ impl EthBeaconNodeApiClient {
     ) -> Result<phase0::Domain> {
         let genesis = self.fetch_genesis_data().await?;
 
-        Ok(compute_domain(
+        Ok(types::compute_domain(
             domain_type,
             genesis.genesis_fork_version,
             phase0::Root::default(),
@@ -1083,7 +1083,7 @@ impl EthBeaconNodeApiClient {
             fork_version_from_schedule(&schedule, epoch)?
         };
 
-        Ok(compute_domain(
+        Ok(types::compute_domain(
             domain_type,
             fork_version,
             genesis.genesis_validators_root,

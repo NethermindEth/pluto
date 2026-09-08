@@ -20,14 +20,7 @@ use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0::Root};
 use serde_json::Value;
 use wiremock::MockServer;
 
-use defaults::{default_genesis, default_genesis_time, mount_defaults};
-use fuzzer::mount_fuzzer;
 use headproducer::HeadProducer;
-use options::{
-    mount_endpoint_override, mount_no_attester_duties, mount_no_proposer_duties,
-    mount_no_sync_committee_duties,
-};
-use state::{hex_0x, set_object_field, write_lock};
 
 pub use defaults::{default_spec, default_spec_with};
 pub use state::{MockState, Validator, ValidatorSet, active_validator, mock_dv_validator};
@@ -78,11 +71,11 @@ impl BeaconMock {
         deterministic_sync_comm_duties: Option<(u64, u64)>,
     ) -> Result<Self> {
         let mut spec = spec.unwrap_or_else(default_spec);
-        let mut genesis = default_genesis();
+        let mut genesis = defaults::default_genesis();
         let validator_set = validator_set.unwrap_or_default();
 
         let effective_slot_duration = slot_duration.unwrap_or(Duration::from_secs(12));
-        let effective_genesis_time = genesis_time.unwrap_or_else(default_genesis_time);
+        let effective_genesis_time = genesis_time.unwrap_or_else(defaults::default_genesis_time);
 
         if let Some(slot_duration) = slot_duration {
             // `SECONDS_PER_SLOT` truncates to whole seconds, but the head
@@ -90,7 +83,7 @@ impl BeaconMock {
             // derived from `SECONDS_PER_SLOT` only stay aligned
             // when callers pass whole seconds (the simnet path
             // does, via `normalize_simnet_slot_duration`).
-            set_object_field(
+            state::set_object_field(
                 &mut spec,
                 "SECONDS_PER_SLOT",
                 slot_duration.as_secs().to_string(),
@@ -98,45 +91,45 @@ impl BeaconMock {
         }
 
         if let Some(slots_per_epoch) = slots_per_epoch {
-            set_object_field(&mut spec, "SLOTS_PER_EPOCH", slots_per_epoch.to_string());
+            state::set_object_field(&mut spec, "SLOTS_PER_EPOCH", slots_per_epoch.to_string());
         }
 
         if let Some(genesis_time) = genesis_time {
             let timestamp = genesis_time.timestamp().to_string();
-            set_object_field(&mut genesis, "genesis_time", timestamp.clone());
-            set_object_field(&mut spec, "MIN_GENESIS_TIME", timestamp);
+            state::set_object_field(&mut genesis, "genesis_time", timestamp.clone());
+            state::set_object_field(&mut spec, "MIN_GENESIS_TIME", timestamp);
         }
 
         if let Some(genesis_validators_root) = genesis_validators_root {
-            set_object_field(
+            state::set_object_field(
                 &mut genesis,
                 "genesis_validators_root",
-                hex_0x(genesis_validators_root),
+                state::hex_0x(genesis_validators_root),
             );
         }
 
         if let Some(fork_version) = fork_version {
-            let formatted = hex_0x(fork_version);
-            set_object_field(&mut spec, "GENESIS_FORK_VERSION", formatted.clone());
-            set_object_field(&mut genesis, "genesis_fork_version", formatted);
+            let formatted = state::hex_0x(fork_version);
+            state::set_object_field(&mut spec, "GENESIS_FORK_VERSION", formatted.clone());
+            state::set_object_field(&mut genesis, "genesis_fork_version", formatted);
         }
 
         if let Some(size) = sync_committee_size {
-            set_object_field(&mut spec, "SYNC_COMMITTEE_SIZE", size.to_string());
+            state::set_object_field(&mut spec, "SYNC_COMMITTEE_SIZE", size.to_string());
         }
 
         if let Some(count) = sync_committee_subnet_count {
-            set_object_field(&mut spec, "SYNC_COMMITTEE_SUBNET_COUNT", count.to_string());
+            state::set_object_field(&mut spec, "SYNC_COMMITTEE_SUBNET_COUNT", count.to_string());
         }
 
         if let Some((n, _)) = deterministic_sync_comm_duties {
-            set_object_field(&mut spec, "EPOCHS_PER_SYNC_COMMITTEE_PERIOD", n.to_string());
+            state::set_object_field(&mut spec, "EPOCHS_PER_SYNC_COMMITTEE_PERIOD", n.to_string());
         }
 
         let state = Arc::new(MockState::new(spec, genesis, validator_set));
-        *write_lock(&state.deterministic_attester_duties) = deterministic_attester_duties;
-        *write_lock(&state.deterministic_proposer_duties) = deterministic_proposer_duties;
-        *write_lock(&state.deterministic_sync_comm_duties) = deterministic_sync_comm_duties;
+        *state::write_lock(&state.deterministic_attester_duties) = deterministic_attester_duties;
+        *state::write_lock(&state.deterministic_proposer_duties) = deterministic_proposer_duties;
+        *state::write_lock(&state.deterministic_sync_comm_duties) = deterministic_sync_comm_duties;
 
         let server = MockServer::start().await;
 
@@ -144,19 +137,19 @@ impl BeaconMock {
         // defaults so wiremock falls back to the default routes when no
         // override matches.
         for (endpoint, value) in endpoint_overrides {
-            mount_endpoint_override(&server, endpoint, value).await;
+            options::mount_endpoint_override(&server, endpoint, value).await;
         }
         if no_proposer_duties {
-            mount_no_proposer_duties(&server).await;
+            options::mount_no_proposer_duties(&server).await;
         }
         if no_attester_duties {
-            mount_no_attester_duties(&server).await;
+            options::mount_no_attester_duties(&server).await;
         }
         if no_sync_committee_duties {
-            mount_no_sync_committee_duties(&server).await;
+            options::mount_no_sync_committee_duties(&server).await;
         }
 
-        mount_defaults(&server, Arc::clone(&state)).await;
+        defaults::mount_defaults(&server, Arc::clone(&state)).await;
         attestation::mount(&server, Arc::clone(&state)).await;
         proposal::mount(&server, Arc::clone(&state)).await;
 
@@ -164,7 +157,7 @@ impl BeaconMock {
             HeadProducer::spawn(&server, effective_genesis_time, effective_slot_duration).await;
 
         if fuzzer.unwrap_or(false) {
-            mount_fuzzer(&server).await;
+            fuzzer::mount_fuzzer(&server).await;
         }
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).map_err(Error::Client)?;
