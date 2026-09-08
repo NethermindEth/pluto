@@ -6,7 +6,9 @@
 
 use crate::error::CliError;
 use clap::FromArgMatches;
-use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
+use cli::{
+    AlphaCommands, Cli, Commands, CreateCommands, ExitCommands, TestCommands, UnsafeCommands,
+};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -108,6 +110,9 @@ async fn run(command: Commands) -> std::result::Result<(), CliError> {
             let config: commands::run::RunConfig = (*args).try_into()?;
             commands::run::run(config, ct).await
         }
+        Commands::Exit(args) => match args.command {
+            ExitCommands::Delete(args) => commands::exit::run_delete(*args).await,
+        },
         Commands::Unsafe(args) => match args.command {
             UnsafeCommands::Run(args) => {
                 let config: commands::run::RunConfig = (*args).try_into()?;

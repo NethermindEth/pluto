@@ -133,6 +133,46 @@ pub enum CliError {
     #[error("{0}")]
     App(#[from] pluto_app::node::AppError),
 
+    /// The cluster lock could not be loaded or verified.
+    #[error("load cluster lock {path}: {source}")]
+    LoadClusterLock {
+        /// Path of the cluster lock file.
+        path: PathBuf,
+        /// Why the lock could not be loaded.
+        #[source]
+        source: pluto_cluster::load::LoadError,
+    },
+
+    /// Cluster definition error (e.g. resolving the operator's node index).
+    #[error("Cluster definition error: {0}")]
+    ClusterDefinition(#[from] pluto_cluster::definition::DefinitionError),
+
+    /// Distributed validator error (e.g. reading a validator public key).
+    #[error("Distributed validator error: {0}")]
+    DistValidator(#[from] pluto_cluster::distvalidator::DistValidatorError),
+
+    /// The supplied validator public key is not a valid BLS public key.
+    #[error("convert validator pubkey to bytes '{pubkey}': {source}")]
+    InvalidValidatorPubKey {
+        /// The offending validator public key.
+        pubkey: String,
+        /// Why the public key was rejected.
+        #[source]
+        source: pluto_core::types::PubKeyError,
+    },
+
+    /// `--validator-public-key` is required when exiting a single validator.
+    // Verbatim Charon message.
+    #[error("validator-public-key must be specified when exiting single validator.")]
+    ValidatorPubkeyRequired,
+
+    /// `--validator-public-key` is meaningless alongside `--all`.
+    // Verbatim Charon message.
+    #[error(
+        "validator-public-key should not be specified when all is, as it is obsolete and misleading."
+    )]
+    ValidatorPubkeyWithAll,
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),

@@ -9,6 +9,7 @@ use crate::commands::{
     create_enr::CreateEnrArgs,
     dkg::DkgArgs,
     enr::EnrArgs,
+    exit::ExitDeleteArgs,
     relay::RelayArgs,
     run::{RunArgs, RunUnsafeArgs},
     test::{
@@ -79,11 +80,34 @@ pub enum Commands {
     Run(Box<RunArgs>),
 
     #[command(
+        about = "Exit a distributed validator.",
+        long_about = "Sign and broadcast distributed validator exit messages using a remote API."
+    )]
+    Exit(ExitArgs),
+
+    #[command(
         hide = true,
         about = "Unsafe subcommands provides regular pluto commands for testing purposes",
         long_about = "Unsafe subcommands is a group of subcommands that includes both normal and test flags. It is intended for internal testing of the Pluto client and should be used with caution."
     )]
     Unsafe(UnsafeArgs),
+}
+
+/// Arguments for the exit command.
+#[derive(clap::Args)]
+pub struct ExitArgs {
+    #[command(subcommand)]
+    pub command: ExitCommands,
+}
+
+/// Exit subcommands.
+#[derive(Subcommand)]
+pub enum ExitCommands {
+    #[command(
+        about = "Delete a signed exit message from the remote API",
+        long_about = "Deletes a partially signed exit message for a given validator from the remote API."
+    )]
+    Delete(Box<ExitDeleteArgs>),
 }
 
 /// Arguments for the hidden unsafe command.
