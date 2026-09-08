@@ -17,6 +17,9 @@ pub mod beaconmock;
 /// Validator mock — drives validator-side duties against a [`BeaconMock`].
 pub mod validatormock;
 
+/// Pull-request template verification.
+pub mod verifypr;
+
 pub use beaconmock::{BeaconMock, MockState, Validator, ValidatorSet};
 pub use random::{
     random_deneb_versioned_attestation, random_eth2_signature, random_eth2_signature_bytes,
