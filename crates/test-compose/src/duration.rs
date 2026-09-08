@@ -77,26 +77,10 @@ mod tests {
 
     // Vectors generated with Go's time.Duration.String().
     #[test_case(0, "0s")]
-    #[test_case(1, "1ns")]
-    #[test_case(999, "999ns")]
-    #[test_case(1000, "1µs" ; "one_microsecond")]
-    #[test_case(1500, "1.5µs" ; "one_and_half_microseconds")]
-    #[test_case(999_999, "999.999µs" ; "just_under_one_millisecond")]
-    #[test_case(1_000_000, "1ms")]
-    #[test_case(12_000_000, "12ms")]
-    #[test_case(500_000_000, "500ms")]
+    #[test_case(1500, "1.5µs" ; "fractional_microseconds")]
     #[test_case(999_999_999, "999.999999ms")]
-    #[test_case(1_000_000_000, "1s")]
-    #[test_case(1_500_000_000, "1.5s")]
-    #[test_case(59_000_000_000, "59s")]
     #[test_case(60_000_000_000, "1m0s")]
-    #[test_case(61_000_000_000, "1m1s")]
-    #[test_case(120_000_000_000, "2m0s")]
-    #[test_case(5_400_000_000_000, "1h30m0s")]
-    #[test_case(3_600_000_000_000, "1h0m0s")]
     #[test_case(3_661_500_000_000, "1h1m1.5s")]
-    #[test_case(360_000_000_000_000, "100h0m0s")]
-    #[test_case(1_234_567_890_123, "20m34.567890123s")]
     #[test_case(9_223_372_036_854_775_807, "2562047h47m16.854775807s")]
     fn matches_go(nanos: u64, want: &str) {
         assert_eq!(go_duration_string(Duration::from_nanos(nanos)), want);

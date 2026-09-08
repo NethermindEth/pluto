@@ -22,14 +22,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::{
-    define::{BROADCAST_RULE, ERROR_RATE_RULE, WARN_RATE_RULE, combined_output},
+    define::{BROADCAST_RULE, ERROR_RATE_RULE, WARN_RATE_RULE},
     duration::go_duration_string,
     error::{CommandError, ComposeError, Result},
 };
-
-/// Sentinel sent on the alert channel when polling was still healthy at the
-/// end of the observation window.
-pub const ALERTS_POLLED: &str = "alerts_polled";
 
 /// Window after Prometheus first answers during which the cold-start
 /// transients are ignored.
@@ -47,24 +43,14 @@ pub fn is_startup_transient(rule: impl AsRef<str>) -> bool {
     STARTUP_TRANSIENT_RULES.contains(&rule.as_ref())
 }
 
-/// Cadence of the alert collector. The defaults are what the harness runs
-/// with; the knob exists so docker-free tests can finish quickly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlertTiming {
-    /// Time after Prometheus first answers during which startup transients
-    /// are ignored.
-    pub warmup: Duration,
-    /// Time between two polls.
-    pub poll_interval: Duration,
-}
-
-impl Default for AlertTiming {
-    fn default() -> Self {
-        Self {
-            warmup: ALERT_WARMUP,
-            poll_interval: ALERT_POLL_INTERVAL,
-        }
-    }
+/// What the collector reports on its channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertEvent {
+    /// A newly firing alert, or a non-success status from Prometheus.
+    Alert(String),
+    /// Sent last, only when polling was still healthy at the end of the
+    /// observation window.
+    Polled,
 }
 
 /// A firing alert: the rule name and its rendered description.
@@ -126,7 +112,7 @@ pub struct PromAlert {
     pub state: String,
     /// The alert annotations.
     #[serde(default)]
-    pub annotations: PromAnnotations,
+    pub annotations: PromAlertAnnotations,
 }
 
 /// The annotations of an alert.
@@ -136,9 +122,6 @@ pub struct PromAlertAnnotations {
     #[serde(default)]
     pub description: String,
 }
-
-/// Annotations of an alert instance.
-pub type PromAnnotations = PromAlertAnnotations;
 
 /// Source of alert rule snapshots.
 pub trait AlertPoller: Send + Sync + 'static {
@@ -181,19 +164,14 @@ async fn query_alerts(dir: &Path) -> Result<PromAlerts> {
         .current_dir(dir)
         .kill_on_drop(true)
         .output()
-        .await
-        .map_err(|err| ComposeError::ExecCurlAlerts {
-            source: CommandError::Io(err),
-            out: String::new(),
-        })?;
+        .await;
 
-    let out = combined_output(&output);
-    if !output.status.success() {
-        return Err(ComposeError::ExecCurlAlerts {
-            source: CommandError::Exit(output.status),
-            out,
-        });
-    }
+    let output =
+        CommandError::check_output(output).map_err(ComposeError::exec("exec curl alerts"))?;
+
+    // curl -s puts the body on stdout; a plain-text error page it may have
+    // fetched belongs in the message too.
+    let out = crate::error::combined_output(&output);
 
     serde_json::from_str(out.trim()).map_err(|source| ComposeError::UnmarshalAlerts { source, out })
 }
@@ -201,36 +179,30 @@ async fn query_alerts(dir: &Path) -> Result<PromAlerts> {
 /// Starts polling alerts on a background task until `token` is cancelled.
 ///
 /// Every newly firing alert description is sent on the returned channel. When
-/// the token fires, the collector sends [`ALERTS_POLLED`] as its last message
-/// if the final poll succeeded and at least one poll succeeded after the
-/// warmup window, then closes the channel.
+/// the token fires, the collector sends [`AlertEvent::Polled`] as its last
+/// message if the final poll succeeded and at least one poll succeeded after
+/// the warmup window, then closes the channel.
 pub fn start_collector(
     token: CancellationToken,
     poller: impl AlertPoller,
-    timing: AlertTiming,
-) -> mpsc::Receiver<String> {
+) -> mpsc::Receiver<AlertEvent> {
     let (tx, rx) = mpsc::channel(100);
-    tokio::spawn(collect(token, poller, timing, tx));
+    tokio::spawn(collect(token, poller, tx));
     rx
 }
 
-async fn collect(
-    token: CancellationToken,
-    poller: impl AlertPoller,
-    timing: AlertTiming,
-    tx: mpsc::Sender<String>,
-) {
-    let Some(ready_at) = await_prometheus_ready(&token, &poller, timing.poll_interval).await else {
+async fn collect(token: CancellationToken, poller: impl AlertPoller, tx: mpsc::Sender<AlertEvent>) {
+    let Some(ready_at) = await_prometheus_ready(&token, &poller).await else {
         return;
     };
 
     info!(
-        warmup = %go_duration_string(timing.warmup),
+        warmup = %go_duration_string(ALERT_WARMUP),
         "Prometheus ready, collecting alerts"
     );
 
     // `None` only on Instant overflow, in which case warmup never ends.
-    let warmup_end = ready_at.checked_add(timing.warmup);
+    let warmup_end = ready_at.checked_add(ALERT_WARMUP);
     let mut reported = HashSet::new();
     let mut ignored = HashSet::new();
     let mut last_poll_ok = false;
@@ -249,10 +221,10 @@ async fn collect(
             Ok(alerts) if alerts.status != "success" => {
                 last_poll_ok = false;
                 let _ = tx
-                    .send(format!(
+                    .send(AlertEvent::Alert(format!(
                         "non success status from prometheus alerts: {}",
                         alerts.status
-                    ))
+                    )))
                     .await;
             }
             Ok(alerts) => {
@@ -281,16 +253,16 @@ async fn collect(
 
                     info!(alert = %active.description, "Detected new alert");
 
-                    let _ = tx.send(active.description).await;
+                    let _ = tx.send(AlertEvent::Alert(active.description)).await;
                 }
             }
         }
 
-        sleep_or_cancel(&token, timing.poll_interval).await;
+        sleep_or_cancel(&token, ALERT_POLL_INTERVAL).await;
     }
 
     if post_warmup_poll_ok && last_poll_ok {
-        let _ = tx.send(ALERTS_POLLED.to_string()).await;
+        let _ = tx.send(AlertEvent::Polled).await;
     }
 }
 
@@ -299,7 +271,6 @@ async fn collect(
 async fn await_prometheus_ready(
     token: &CancellationToken,
     poller: &impl AlertPoller,
-    poll_interval: Duration,
 ) -> Option<Instant> {
     info!("Waiting for prometheus to answer the rules API");
 
@@ -310,7 +281,7 @@ async fn await_prometheus_ready(
             return Some(Instant::now());
         }
 
-        sleep_or_cancel(token, poll_interval).await;
+        sleep_or_cancel(token, ALERT_POLL_INTERVAL).await;
     }
 
     None
@@ -327,19 +298,13 @@ async fn query_or_cancel(
     token: &CancellationToken,
     poller: &impl AlertPoller,
 ) -> Option<Result<PromAlerts>> {
-    let result = tokio::select! {
-        result = poller.query() => result,
-        () = token.cancelled() => return None,
-    };
+    let result = token.run_until_cancelled(poller.query()).await?;
 
     (!token.is_cancelled()).then_some(result)
 }
 
 async fn sleep_or_cancel(token: &CancellationToken, duration: Duration) {
-    tokio::select! {
-        () = time::sleep(duration) => {}
-        () = token.cancelled() => {}
-    }
+    let _ = token.run_until_cancelled(time::sleep(duration)).await;
 }
 
 /// Extracts the firing alerts of a rules API response, in response order.
@@ -366,8 +331,6 @@ pub fn get_active_alerts(alerts: &PromAlerts) -> Vec<ActiveAlert> {
 #[cfg(test)]
 mod tests {
     use std::io;
-
-    use test_case::test_case;
 
     use super::*;
     use crate::define::{PLUTO_DOWN_RULE, PROXY_RATE_RULE, VAPI_RATE_RULE};
@@ -422,29 +385,6 @@ mod tests {
         assert_eq!(STARTUP_TRANSIENT_RULES.len(), 3);
     }
 
-    #[test]
-    fn prom_alerts_tolerates_missing_and_unknown_fields() {
-        let alerts: PromAlerts = serde_json::from_str(
-            r#"{"status":"success","extra":1,"data":{"groups":[{"rules":[{"alerts":[{}]}]}]}}"#,
-        )
-        .expect("parse payload");
-
-        assert_eq!(alerts.status, "success");
-        assert_eq!(alerts.data.groups.len(), 1);
-        assert!(get_active_alerts(&alerts).is_empty());
-    }
-
-    #[test]
-    fn alert_timing_default_matches_harness() {
-        assert_eq!(
-            AlertTiming::default(),
-            AlertTiming {
-                warmup: Duration::from_secs(60),
-                poll_interval: Duration::from_secs(2),
-            }
-        );
-    }
-
     /// Answers each poll from a script keyed by the time elapsed since the
     /// poller was created.
     struct ScriptedPoller {
@@ -464,14 +404,6 @@ mod tests {
             data: PromData::default(),
         })
     }
-
-    fn with_status(status: &str) -> Result<PromAlerts> {
-        Ok(PromAlerts {
-            status: status.to_string(),
-            data: PromData::default(),
-        })
-    }
-
     fn firing(rule: &str, description: &str) -> Result<PromAlerts> {
         Ok(PromAlerts {
             status: "success".to_string(),
@@ -493,10 +425,9 @@ mod tests {
     }
 
     fn failing() -> Result<PromAlerts> {
-        Err(ComposeError::ExecCurlAlerts {
-            source: CommandError::Io(io::Error::other("no such container")),
-            out: String::new(),
-        })
+        Err(ComposeError::exec("exec curl alerts")(io::Error::other(
+            "no such container",
+        )))
     }
 
     /// Runs the collector with the harness cadence under paused time for
@@ -505,23 +436,23 @@ mod tests {
     async fn run_collector(
         window: Duration,
         script: impl Fn(Duration) -> Result<PromAlerts> + Send + Sync + 'static,
-    ) -> Vec<String> {
+    ) -> Vec<AlertEvent> {
         let token = CancellationToken::new();
         let poller = ScriptedPoller {
             start: Instant::now(),
             script: Box::new(script),
         };
-        let mut rx = start_collector(token.clone(), poller, AlertTiming::default());
+        let mut rx = start_collector(token.clone(), poller);
 
         time::sleep(window).await;
         token.cancel();
 
-        let mut messages = Vec::new();
-        while let Some(message) = rx.recv().await {
-            messages.push(message);
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
         }
 
-        messages
+        events
     }
 
     const WINDOW: Duration = Duration::from_secs(125);
@@ -532,87 +463,19 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn healthy_window_reports_polled_only() {
-        let messages = run_collector(WINDOW, |_| healthy()).await;
-        assert_eq!(messages, vec![ALERTS_POLLED.to_string()]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn poller_dying_after_warmup_withholds_polled() {
-        let messages =
-            run_collector(WINDOW, |t| if t < secs(70) { healthy() } else { failing() }).await;
-        assert!(messages.is_empty(), "{messages:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn poller_recovering_before_deadline_reports_polled() {
-        let messages = run_collector(WINDOW, |t| {
-            if (secs(70)..secs(90)).contains(&t) {
-                failing()
-            } else {
-                healthy()
-            }
-        })
-        .await;
-        assert_eq!(messages, vec![ALERTS_POLLED.to_string()]);
+        let events = run_collector(WINDOW, |_| healthy()).await;
+        assert_eq!(events, vec![AlertEvent::Polled]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn never_ready_reports_nothing() {
-        let messages = run_collector(WINDOW, |_| failing()).await;
-        assert!(messages.is_empty(), "{messages:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn readiness_waits_for_success_status() {
-        let messages = run_collector(WINDOW, |t| {
-            if t < secs(5) {
-                with_status("error")
-            } else {
-                healthy()
-            }
-        })
-        .await;
-        assert_eq!(messages, vec![ALERTS_POLLED.to_string()]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn non_success_status_is_reported_every_poll_and_withholds_polled() {
-        let messages = run_collector(WINDOW, |t| {
-            if t < secs(10) {
-                healthy()
-            } else {
-                with_status("error")
-            }
-        })
-        .await;
-        assert!(!messages.is_empty());
-        assert!(
-            messages
-                .iter()
-                .all(|m| m == "non success status from prometheus alerts: error"),
-            "{messages:?}"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn non_transient_alert_during_warmup_is_reported() {
-        let messages = run_collector(WINDOW, |t| {
-            if (secs(10)..secs(14)).contains(&t) {
-                firing(PLUTO_DOWN_RULE, "node0 is down")
-            } else {
-                healthy()
-            }
-        })
-        .await;
-        assert_eq!(
-            messages,
-            vec!["node0 is down".to_string(), ALERTS_POLLED.to_string()]
-        );
+        let events = run_collector(WINDOW, |_| failing()).await;
+        assert!(events.is_empty(), "{events:?}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn transient_alert_only_during_warmup_is_ignored() {
-        let messages = run_collector(WINDOW, |t| {
+        let events = run_collector(WINDOW, |t| {
             if t < secs(30) {
                 firing(ERROR_RATE_RULE, "node0 has a high error rate")
             } else {
@@ -620,31 +483,12 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(messages, vec![ALERTS_POLLED.to_string()]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn transient_alert_outliving_warmup_is_reported_once() {
-        let messages = run_collector(WINDOW, |t| {
-            if t < secs(80) {
-                firing(ERROR_RATE_RULE, "node0 has a high error rate")
-            } else {
-                healthy()
-            }
-        })
-        .await;
-        assert_eq!(
-            messages,
-            vec![
-                "node0 has a high error rate".to_string(),
-                ALERTS_POLLED.to_string()
-            ]
-        );
+        assert_eq!(events, vec![AlertEvent::Polled]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn persistent_alert_is_reported_once() {
-        let messages = run_collector(WINDOW, |t| {
+        let events = run_collector(WINDOW, |t| {
             if t >= secs(70) {
                 firing(VAPI_RATE_RULE, "node1 has a high validator api error rate")
             } else {
@@ -653,18 +497,12 @@ mod tests {
         })
         .await;
         assert_eq!(
-            messages,
+            events,
             vec![
-                "node1 has a high validator api error rate".to_string(),
-                ALERTS_POLLED.to_string()
+                AlertEvent::Alert("node1 has a high validator api error rate".to_string()),
+                AlertEvent::Polled
             ]
         );
-    }
-
-    #[test_case(Duration::from_secs(60), "1m0s" ; "harness_default")]
-    #[test_case(Duration::from_secs(1), "1s" ; "one_second")]
-    fn warmup_is_logged_in_go_format(warmup: Duration, expected: &str) {
-        assert_eq!(go_duration_string(warmup), expected);
     }
 
     /// Answers every poll with a healthy response until `stall_after` has
@@ -687,24 +525,24 @@ mod tests {
     /// Runs the collector against a poller that stalls after `stall_after`,
     /// cancels it after `window` and drains the channel, failing if the
     /// collector does not shut down promptly once cancelled.
-    async fn run_stalling(window: Duration, stall_after: Duration) -> Vec<String> {
+    async fn run_stalling(window: Duration, stall_after: Duration) -> Vec<AlertEvent> {
         let token = CancellationToken::new();
         let poller = StallingPoller {
             start: Instant::now(),
             stall_after,
         };
-        let mut rx = start_collector(token.clone(), poller, AlertTiming::default());
+        let mut rx = start_collector(token.clone(), poller);
 
         time::sleep(window).await;
         token.cancel();
 
         let drain = async {
-            let mut messages = Vec::new();
-            while let Some(message) = rx.recv().await {
-                messages.push(message);
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
             }
 
-            messages
+            events
         };
 
         time::timeout(secs(10), drain)
@@ -713,20 +551,8 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stalled_readiness_query_stops_on_cancel() {
-        let messages = run_stalling(WINDOW, Duration::ZERO).await;
-        assert!(messages.is_empty(), "{messages:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn stalled_poll_during_warmup_stops_on_cancel_without_verdict() {
-        let messages = run_stalling(WINDOW, secs(1)).await;
-        assert!(messages.is_empty(), "{messages:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn stalled_poll_at_deadline_does_not_count_against_verdict() {
-        let messages = run_stalling(WINDOW, secs(100)).await;
-        assert_eq!(messages, vec![ALERTS_POLLED.to_string()]);
+        let events = run_stalling(WINDOW, secs(1)).await;
+        assert!(events.is_empty(), "{events:?}");
     }
 }

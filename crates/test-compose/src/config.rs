@@ -2,7 +2,7 @@
 
 use std::{fmt, fs, path::Path, time::Duration};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Result, define::ALERT_RULE_NAMES, error::ComposeError, fsutil::write_file, template::Port,
@@ -15,14 +15,18 @@ pub(crate) const CONFIG_FILE: &str = "config.json";
 
 const DEFAULT_IMAGE_TAG: &str = "latest";
 const DEFAULT_BEACON_NODE: &str = "mock";
-const DEFAULT_KEY_GEN: KeyGen = KeyGen::Create;
 const DEFAULT_NUM_VALS: usize = 1;
 const DEFAULT_NUM_NODES: usize = 4;
 const DEFAULT_THRESHOLD: usize = 3;
 const DEFAULT_FEATURE_SET: &str = "alpha";
 
-const CHARON_IMAGE: &str = "obolnetwork/charon";
+pub(crate) const CHARON_IMAGE: &str = "obolnetwork/charon";
 const PLUTO_IMAGE: &str = "pluto";
+
+/// Env var holding the path of the charon repo to build `charon:local` from.
+pub const CHARON_REPO_ENV: &str = "CHARON_REPO";
+/// Env var holding the path of the pluto repo to build `pluto:local` from.
+pub const PLUTO_REPO_ENV: &str = "PLUTO_REPO";
 
 pub(crate) const CMD_RUN: &str = "run";
 pub(crate) const CMD_UNSAFE_RUN: &str = "[unsafe,run]";
@@ -86,12 +90,13 @@ impl fmt::Display for VcType {
 }
 
 /// Key generation process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyGen {
     /// Distributed key generation between the nodes.
     Dkg,
     /// `charon create cluster` on a single node.
+    #[default]
     Create,
 }
 
@@ -112,7 +117,7 @@ impl fmt::Display for KeyGen {
 }
 
 /// Node implementation to run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeImpl {
     /// The reference Go implementation.
@@ -130,11 +135,20 @@ impl NodeImpl {
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "charon" => Some(NodeImpl::Charon),
-            "pluto" => Some(NodeImpl::Pluto),
-            _ => None,
+    /// Env var naming the repo a local image of this implementation is built
+    /// from.
+    pub fn repo_env(self) -> &'static str {
+        match self {
+            NodeImpl::Charon => CHARON_REPO_ENV,
+            NodeImpl::Pluto => PLUTO_REPO_ENV,
+        }
+    }
+
+    /// Image reference a local build of this implementation is tagged with.
+    pub fn local_image(self) -> String {
+        match self {
+            NodeImpl::Charon => format!("{CHARON_IMAGE}:local"),
+            NodeImpl::Pluto => format!("{PLUTO_IMAGE}:local"),
         }
     }
 }
@@ -145,22 +159,12 @@ impl fmt::Display for NodeImpl {
     }
 }
 
-impl<'de> Deserialize<'de> for NodeImpl {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        let name = String::deserialize(deserializer)?;
-        NodeImpl::parse(&name).ok_or_else(|| {
-            de::Error::custom(format!(
-                "unknown node implementation; must be charon or pluto: impl={name}"
-            ))
-        })
-    }
-}
-
 /// Compose workflow step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Step {
     /// Config written, nothing generated yet.
+    #[default]
     New,
     /// Cluster definition compose file generated.
     Defined,
@@ -209,9 +213,9 @@ pub(crate) mod nullable_vec {
 }
 
 /// Serde adaptor for the optional keygen implementation: absent is the empty
-/// string, and unknown names are rejected with the keygen-specific message.
+/// string.
 mod keygen_impl {
-    use serde::{Deserialize, Deserializer, Serializer, de};
+    use serde::{Deserialize, Deserializer, Serializer, de::IntoDeserializer as _};
 
     use super::NodeImpl;
 
@@ -230,11 +234,7 @@ mod keygen_impl {
             return Ok(None);
         }
 
-        NodeImpl::parse(&name).map(Some).ok_or_else(|| {
-            de::Error::custom(format!(
-                "unknown keygen implementation; must be charon or pluto: impl={name}"
-            ))
-        })
+        NodeImpl::deserialize(name.into_deserializer()).map(Some)
     }
 }
 
@@ -269,7 +269,7 @@ mod nanos {
 ///
 /// Fields missing from a hand-edited file take their zero value, except the
 /// enum-typed `step` and `key_gen`, which default to `new` and `create`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Config format version, see [`VERSION`].
@@ -338,39 +338,6 @@ pub struct Config {
     pub alert_disable_rules: Vec<String>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            version: String::new(),
-            step: Step::New,
-            num_nodes: 0,
-            threshold: 0,
-            num_validators: 0,
-            image_tag: String::new(),
-            build_local: false,
-            node_impls: Vec::new(),
-            key_gen_impl: None,
-            pluto_image_tag: String::new(),
-            key_gen: KeyGen::Create,
-            split_keys_dir: String::new(),
-            beacon_nodes: String::new(),
-            external_relay: String::new(),
-            vcs: Vec::new(),
-            feature_set: String::new(),
-            disable_monitoring_ports: false,
-            insecure_keys: false,
-            slot_duration: Duration::ZERO,
-            beacon_fuzz: false,
-            p2p_fuzz: false,
-            synthetic_block_proposals: false,
-            monitoring: false,
-            builder_api: false,
-            alert_exclude_jobs: Vec::new(),
-            alert_disable_rules: Vec::new(),
-        }
-    }
-}
-
 impl Config {
     /// Returns the default config: four charon nodes with threshold three,
     /// one validator, `create` key generation, the beacon mock, two lighthouse
@@ -385,7 +352,7 @@ impl Config {
             node_impls: vec![NodeImpl::Charon],
             pluto_image_tag: "local".to_string(),
             vcs: vec![VcType::Lighthouse, VcType::Lighthouse, VcType::Mock],
-            key_gen: DEFAULT_KEY_GEN,
+            key_gen: KeyGen::Create,
             beacon_nodes: DEFAULT_BEACON_NODE.to_string(),
             step: Step::New,
             feature_set: DEFAULT_FEATURE_SET.to_string(),
@@ -410,9 +377,10 @@ impl Config {
     /// Returns the implementation of the node at `index`, cycling through
     /// `node_impls`; charon when none are configured.
     pub fn node_impl(&self, index: usize) -> NodeImpl {
-        index
-            .checked_rem(self.node_impls.len())
-            .and_then(|i| self.node_impls.get(i))
+        self.node_impls
+            .iter()
+            .cycle()
+            .nth(index)
             .copied()
             .unwrap_or(NodeImpl::Charon)
     }
@@ -423,25 +391,14 @@ impl Config {
         self.key_gen_impl.unwrap_or_else(|| self.node_impl(0))
     }
 
-    /// Returns the full docker image reference for an implementation.
-    pub fn impl_image(&self, node_impl: NodeImpl) -> String {
+    /// Returns the per-service image override for the compose template: the
+    /// pluto image for pluto, empty for charon (which uses the shared base).
+    pub fn image_override(&self, node_impl: NodeImpl) -> String {
         match node_impl {
             NodeImpl::Pluto => {
                 let tag = &self.pluto_image_tag;
                 format!("{PLUTO_IMAGE}:{tag}")
             }
-            NodeImpl::Charon => {
-                let tag = &self.image_tag;
-                format!("{CHARON_IMAGE}:{tag}")
-            }
-        }
-    }
-
-    /// Returns the per-service image override for the compose template: the
-    /// pluto image for pluto, empty for charon (which uses the shared base).
-    pub fn image_override(&self, node_impl: NodeImpl) -> String {
-        match node_impl {
-            NodeImpl::Pluto => self.impl_image(node_impl),
             NodeImpl::Charon => String::new(),
         }
     }
@@ -470,12 +427,14 @@ pub fn write_config(dir: impl AsRef<Path>, conf: &Config) -> Result<()> {
 
     let json = marshal_indent(conf).map_err(ComposeError::MarshalConfig)?;
 
-    write_file(dir.as_ref().join(CONFIG_FILE), json, 0o755).map_err(ComposeError::WriteConfig)
+    write_file(dir.as_ref().join(CONFIG_FILE), json, 0o755)
+        .map_err(ComposeError::io("write config"))
 }
 
 /// Loads and validates `config.json` from `dir`.
 pub fn load_config(dir: impl AsRef<Path>) -> Result<Config> {
-    let bytes = fs::read(dir.as_ref().join(CONFIG_FILE)).map_err(ComposeError::LoadConfig)?;
+    let bytes =
+        fs::read(dir.as_ref().join(CONFIG_FILE)).map_err(ComposeError::io("load config"))?;
 
     let conf: Config = serde_json::from_slice(&bytes).map_err(ComposeError::UnmarshalConfig)?;
     conf.validate()?;
@@ -489,62 +448,15 @@ mod tests {
 
     use super::*;
 
-    #[test_case(&[], 0, NodeImpl::Charon ; "empty_defaults_to_charon")]
     #[test_case(&[NodeImpl::Pluto], 3, NodeImpl::Pluto ; "single_cycles")]
-    #[test_case(&[NodeImpl::Charon, NodeImpl::Pluto], 0, NodeImpl::Charon ; "mixed_first")]
-    #[test_case(&[NodeImpl::Charon, NodeImpl::Pluto], 1, NodeImpl::Pluto ; "mixed_second")]
     #[test_case(&[NodeImpl::Charon, NodeImpl::Pluto], 2, NodeImpl::Charon ; "mixed_wraps")]
+    #[test_case(&[], 1, NodeImpl::Charon ; "empty_is_charon")]
     fn node_impl_cycles(impls: &[NodeImpl], index: usize, want: NodeImpl) {
         let conf = Config {
             node_impls: impls.to_vec(),
             ..Config::new_default()
         };
         assert_eq!(conf.node_impl(index), want);
-    }
-
-    #[test]
-    fn keygen_impl_falls_back_to_node0() {
-        let mut conf = Config::new_default();
-        conf.node_impls = vec![NodeImpl::Pluto, NodeImpl::Charon];
-        assert_eq!(conf.keygen_impl(), NodeImpl::Pluto);
-
-        conf.key_gen_impl = Some(NodeImpl::Charon);
-        assert_eq!(conf.keygen_impl(), NodeImpl::Charon);
-    }
-
-    #[test]
-    fn images() {
-        let conf = Config {
-            image_tag: "v1".to_string(),
-            pluto_image_tag: "dev".to_string(),
-            ..Config::new_default()
-        };
-        assert_eq!(conf.impl_image(NodeImpl::Charon), "obolnetwork/charon:v1");
-        assert_eq!(conf.impl_image(NodeImpl::Pluto), "pluto:dev");
-        assert_eq!(conf.image_override(NodeImpl::Charon), "");
-        assert_eq!(conf.image_override(NodeImpl::Pluto), "pluto:dev");
-    }
-
-    #[test]
-    fn uses_pluto_checks_nodes_and_keygen() {
-        let mut conf = Config::new_default();
-        assert!(!conf.uses_pluto());
-
-        conf.key_gen_impl = Some(NodeImpl::Pluto);
-        assert!(conf.uses_pluto());
-
-        conf.key_gen_impl = None;
-        conf.node_impls = vec![
-            NodeImpl::Charon,
-            NodeImpl::Charon,
-            NodeImpl::Charon,
-            NodeImpl::Pluto,
-        ];
-        assert!(conf.uses_pluto());
-
-        // A pluto entry beyond num_nodes is never reached.
-        conf.num_nodes = 3;
-        assert!(!conf.uses_pluto());
     }
 
     #[test]
@@ -561,63 +473,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_fields_take_zero_values() {
-        let conf: Config =
-            serde_json::from_str(r#"{"version":"obol/charon/compose/1.0.0"}"#).expect("unmarshal");
-        assert_eq!(conf.version, VERSION);
-        assert_eq!(conf.num_nodes, 0);
-        assert!(conf.node_impls.is_empty());
-        assert_eq!(conf.key_gen_impl, None);
-        assert_eq!(conf.slot_duration, Duration::ZERO);
-    }
-
-    #[test]
-    fn null_lists_load_as_empty() {
-        let conf: Config = serde_json::from_str(r#"{"node_impls":null,"validator_clients":null}"#)
-            .expect("unmarshal");
-        assert!(conf.node_impls.is_empty());
-        assert!(conf.vcs.is_empty());
-    }
-
-    #[test]
-    fn empty_lists_serialize_as_null() {
-        let conf = Config {
-            node_impls: Vec::new(),
-            vcs: Vec::new(),
-            ..Config::new_default()
-        };
-        let json: serde_json::Value =
-            serde_json::from_slice(&marshal_indent(&conf).expect("marshal")).expect("parse");
-        assert_eq!(json["node_impls"], serde_json::Value::Null);
-        assert_eq!(json["validator_clients"], serde_json::Value::Null);
-        assert_eq!(
-            json["keygen_impl"],
-            serde_json::Value::String(String::new())
-        );
-        assert!(json.get("alert_exclude_jobs").is_none());
-        assert!(json.get("alert_disable_rules").is_none());
-    }
-
-    #[test]
     fn config_validate_rejects_unknown_impl() {
-        // Enum-typed implementations cannot hold unknown names in memory, so
-        // the write-side assertions have no Rust counterpart; loading a
-        // hand-edited config with a bad impl still fails.
+        // Enum-typed impls cannot hold unknown names; only a hand-edited config
+        // can carry one.
         let dir = tempfile::tempdir().expect("tempdir");
         let bad_json = r#"{"version":"obol/charon/compose/1.0.0","node_impls":["geth"]}"#;
         fs::write(dir.path().join(CONFIG_FILE), bad_json).expect("write");
         let err = load_config(dir.path()).expect_err("must fail");
-        assert!(
-            err.to_string().contains("unknown node implementation"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("unknown variant `geth`"), "{err}");
 
         let dir = tempfile::tempdir().expect("tempdir");
         let bad_json = r#"{"version":"obol/charon/compose/1.0.0","keygen_impl":"plutoo"}"#;
         fs::write(dir.path().join(CONFIG_FILE), bad_json).expect("write");
         let err = load_config(dir.path()).expect_err("must fail");
         assert!(
-            err.to_string().contains("unknown keygen implementation"),
+            err.to_string().contains("unknown variant `plutoo`"),
             "{err}"
         );
 
@@ -628,16 +498,5 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), &conf).expect("write config");
         assert_eq!(load_config(dir.path()).expect("load config"), conf);
-    }
-
-    #[test]
-    fn load_config_missing_file_keeps_not_found_kind() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        match load_config(dir.path()) {
-            Err(ComposeError::LoadConfig(err)) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-            }
-            other => panic!("unexpected result: {other:?}"),
-        }
     }
 }

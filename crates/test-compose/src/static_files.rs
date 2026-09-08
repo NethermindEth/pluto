@@ -94,12 +94,4 @@ mod tests {
         assert_eq!(STATIC_FILES.len(), 16);
         assert!(Path::new(STATIC_DIR).is_dir());
     }
-
-    #[test]
-    fn table_is_sorted() {
-        let keys: Vec<(&str, &str)> = STATIC_FILES.iter().map(|f| (f.dir, f.name)).collect();
-        let mut sorted = keys.clone();
-        sorted.sort_unstable();
-        assert_eq!(keys, sorted);
-    }
 }

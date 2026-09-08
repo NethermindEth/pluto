@@ -14,6 +14,15 @@ use crate::{
     template::{Kv, TmplData, TmplNode, write_docker_compose},
 };
 
+/// What a node container does, which selects its flag set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeMode {
+    /// `charon dkg` against the cluster definition.
+    Dkg,
+    /// `charon run` alongside the given validator client.
+    Run(VcType),
+}
+
 /// Writes the `locked` config and a `docker-compose.yml` that generates the
 /// validator keys and cluster lock: a single `charon create cluster`
 /// container for `create` key generation, or one `charon dkg` container per
@@ -71,7 +80,7 @@ pub fn lock(dir: impl AsRef<Path>, mut conf: Config) -> Result<TmplData> {
         KeyGen::Dkg => {
             let nodes = (0..conf.num_nodes)
                 .map(|i| TmplNode {
-                    env_vars: new_node_envs(i, &conf, None),
+                    env_vars: new_node_envs(i, &conf, NodeMode::Dkg),
                     image: conf.image_override(conf.node_impl(i)),
                     command: CMD_DKG.to_string(),
                     ..TmplNode::default()
@@ -106,9 +115,9 @@ pub(crate) fn quoted_bool(value: bool) -> String {
 }
 
 /// Returns the environment variables for a charon node container: the
-/// common flags, then either the DKG flags (config step `defined`) or the
-/// run flags, plus the loki/tempo flags when monitoring is on.
-pub(crate) fn new_node_envs(index: usize, conf: &Config, vc_type: Option<VcType>) -> Vec<Kv> {
+/// common flags, then either the DKG flags or the run flags plus the
+/// loki/tempo flags when monitoring is on.
+pub(crate) fn new_node_envs(index: usize, conf: &Config, mode: NodeMode) -> Vec<Kv> {
     let mut beacon_mock = false;
 
     let mut beacon_node = conf.beacon_nodes.as_str();
@@ -117,9 +126,8 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, vc_type: Option<VcType>
         beacon_node = "";
     }
 
-    // The path-less URL form (multiaddrs response) instead of charon-compose's
-    // /enr path: pluto's relay parsing roundtrips URLs through a multiaddr,
-    // which cannot represent a URL path. Charon supports both forms.
+    // Path-less URL (multiaddrs response): pluto's relay parsing roundtrips
+    // URLs through a multiaddr, which cannot carry a path. Charon accepts both.
     let p2p_relay_addr = if conf.external_relay.is_empty() {
         "http://relay:3640"
     } else {
@@ -141,18 +149,19 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, vc_type: Option<VcType>
         Kv::new("feature-set", conf.feature_set.as_str()),
     ];
 
-    if conf.step == Step::Defined {
-        // Define lock config
-        kvs.extend([
-            Kv::new("data-dir", format!("/compose/node{index}")),
-            Kv::new("definition-file", "/compose/cluster-definition.json"),
-            Kv::new("insecure-keys", quoted_bool(conf.insecure_keys)),
-        ]);
+    let vc_type = match mode {
+        NodeMode::Dkg => {
+            kvs.extend([
+                Kv::new("data-dir", format!("/compose/node{index}")),
+                Kv::new("definition-file", "/compose/cluster-definition.json"),
+                Kv::new("insecure-keys", quoted_bool(conf.insecure_keys)),
+            ]);
 
-        return kvs;
-    }
+            return kvs;
+        }
+        NodeMode::Run(vc_type) => vc_type,
+    };
 
-    // Define run config
     kvs.extend([
         Kv::new(
             "lock-file",
@@ -163,7 +172,7 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, vc_type: Option<VcType>
         Kv::new("simnet-beacon_mock", quoted_bool(beacon_mock)),
         Kv::new(
             "simnet-validator-mock",
-            quoted_bool(vc_type == Some(VcType::Mock)),
+            quoted_bool(vc_type == VcType::Mock),
         ),
         Kv::new(
             "simnet-slot-duration",
@@ -181,9 +190,8 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, vc_type: Option<VcType>
         Kv::new("builder-api", quoted_bool(conf.builder_api)),
     ]);
 
-    // Unlike charon's compose, only point nodes at loki/tempo when the
-    // monitoring stack actually runs: failed pushes to absent services are
-    // logged as errors, tripping the Error Log Rate alert.
+    // Only point nodes at loki/tempo when they run: failed pushes are logged
+    // as errors and trip the Error Log Rate alert.
     if conf.monitoring {
         kvs.extend([
             Kv::new("otlp-address", "tempo:4317"),
@@ -212,41 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn defined_step_uses_dkg_flags() {
-        let mut conf = Config::new_default();
-        conf.step = Step::Defined;
-
-        let kvs = new_node_envs(2, &conf, None);
-        assert_eq!(
-            keys(&kvs),
-            [
-                "private-key-file",
-                "monitoring-address",
-                "p2p-external-hostname",
-                "p2p-tcp-address",
-                "p2p-relays",
-                "log-level",
-                "log-color",
-                "feature-set",
-                "data-dir",
-                "definition-file",
-                "insecure-keys",
-            ]
-        );
-        assert_eq!(value(&kvs, "data-dir"), "/compose/node2");
-        assert_eq!(value(&kvs, "p2p-relays"), "http://relay:3640");
-        assert_eq!(value(&kvs, "insecure-keys"), "\"false\"");
-    }
-
-    #[test]
     fn run_step_reflects_config_toggles() {
         let mut conf = Config::new_default();
-        conf.step = Step::Locked;
         conf.monitoring = false;
         conf.external_relay = "http://example.org:3640".to_string();
         conf.beacon_nodes = "http://beacon:5052".to_string();
 
-        let kvs = new_node_envs(0, &conf, Some(VcType::Mock));
+        let kvs = new_node_envs(0, &conf, NodeMode::Run(VcType::Mock));
         assert_eq!(value(&kvs, "p2p-relays"), "http://example.org:3640");
         assert_eq!(value(&kvs, "beacon-node-endpoints"), "http://beacon:5052");
         assert_eq!(value(&kvs, "simnet-beacon_mock"), "\"false\"");
@@ -256,10 +236,14 @@ mod tests {
         assert!(!keys(&kvs).contains(&"loki-addresses"));
 
         conf.monitoring = true;
-        let kvs = new_node_envs(3, &conf, Some(VcType::Teku));
+        let kvs = new_node_envs(3, &conf, NodeMode::Run(VcType::Teku));
         assert_eq!(value(&kvs, "simnet-validator-mock"), "\"false\"");
         assert_eq!(value(&kvs, "otlp-service-name"), "node3");
         assert_eq!(value(&kvs, "loki-service"), "node3");
+
+        let kvs = new_node_envs(1, &conf, NodeMode::Dkg);
+        assert_eq!(value(&kvs, "data-dir"), "/compose/node1");
+        assert!(!keys(&kvs).contains(&"lock-file"));
     }
 
     #[test]
@@ -271,21 +255,5 @@ mod tests {
             err.to_string(),
             "compose config not defined, so can't be locked: step=new"
         );
-    }
-
-    #[test]
-    fn lock_create_maps_split_keys_dir_into_container() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let keys_dir = dir.path().join("split-keys");
-        std::fs::create_dir(&keys_dir).expect("mkdir");
-
-        let mut conf = Config::new_default();
-        conf.step = Step::Defined;
-        conf.split_keys_dir = keys_dir.to_string_lossy().into_owned();
-
-        let data = lock(dir.path(), conf).expect("lock");
-        let kvs = &data.nodes[0].env_vars;
-        assert_eq!(value(kvs, "split-existing-keys"), "\"true\"");
-        assert_eq!(value(kvs, "split-keys-dir"), "/compose/split-keys");
     }
 }

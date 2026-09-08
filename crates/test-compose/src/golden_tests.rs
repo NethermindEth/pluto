@@ -8,22 +8,26 @@
 
 use std::{fs, path::Path};
 
-use pluto_testutil::random::generate_insecure_k1_key;
+use k256::SecretKey;
 use test_case::test_case;
 
 use crate::{
-    Config, DefineOptions, KeyGen, NodeImpl, Result, Step, TmplData, config::marshal_indent,
-    define, lock, new, run,
+    config::{Config, KeyGen, NodeImpl, Step, marshal_indent, write_config},
+    define::{DefineOptions, define},
+    error::Result,
+    lock::lock,
+    run::run,
+    template::TmplData,
 };
 
 const TESTDATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata");
 
-/// Deterministic define options matching the Go test: seed-0 insecure keys,
-/// no image pulls or builds.
+/// Deterministic define options matching the Go test: the insecure seed-0
+/// key for every node, no image pulls or builds.
 fn test_define_options() -> DefineOptions {
     DefineOptions {
         pull_images: false,
-        key_gen: Box::new(|| Ok(generate_insecure_k1_key(0))),
+        key_gen: || SecretKey::from_slice(&[1u8; 32]).expect("valid secret key"),
     }
 }
 
@@ -114,7 +118,7 @@ fn docker_compose(
 fn new_default_config() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    new(dir.path(), Config::new_default()).expect("new");
+    write_config(dir.path(), &Config::new_default()).expect("write config");
 
     let conf = fs::read(dir.path().join("config.json")).expect("read config.json");
     assert_golden("TestNewDefaultConfig.golden", &conf);

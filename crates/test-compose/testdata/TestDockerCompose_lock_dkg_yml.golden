@@ -10,7 +10,6 @@ services:
     <<: *node-base
     container_name: node0
     command: [dkg,--shutdown-delay=2s]
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node0/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -23,12 +22,11 @@ services:
       CHARON_DATA_DIR: /compose/node0
       CHARON_DEFINITION_FILE: /compose/cluster-definition.json
       CHARON_INSECURE_KEYS: "false"
-    
+
   node1:
     <<: *node-base
     container_name: node1
     command: [dkg,--shutdown-delay=2s]
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node1/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -41,12 +39,11 @@ services:
       CHARON_DATA_DIR: /compose/node1
       CHARON_DEFINITION_FILE: /compose/cluster-definition.json
       CHARON_INSECURE_KEYS: "false"
-    
+
   node2:
     <<: *node-base
     container_name: node2
     command: [dkg,--shutdown-delay=2s]
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node2/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -59,12 +56,11 @@ services:
       CHARON_DATA_DIR: /compose/node2
       CHARON_DEFINITION_FILE: /compose/cluster-definition.json
       CHARON_INSECURE_KEYS: "false"
-    
+
   node3:
     <<: *node-base
     container_name: node3
     command: [dkg,--shutdown-delay=2s]
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node3/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -77,7 +73,7 @@ services:
       CHARON_DATA_DIR: /compose/node3
       CHARON_DEFINITION_FILE: /compose/cluster-definition.json
       CHARON_INSECURE_KEYS: "false"
-    
+
   relay:
     <<: *node-base
     container_name: relay
@@ -93,9 +89,6 @@ services:
       CHARON_P2P_UDP_ADDRESS: 0.0.0.0:3630
       CHARON_P2P_ADVERTISE_PRIVATE_ADDRESSES: "true"
       CHARON_LOKI_ADDRESS: http://loki:3100/loki/api/v1/push
-  
-
-  
 
 networks:
   compose:

@@ -18,30 +18,20 @@
 //!   `<dir>/<scenario>.log` instead of stdout.
 //! - `SMOKE_EXTERNAL_RELAY=<url>`: route the cluster through an external relay.
 
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
-use pluto_test_compose::{auto, smoke, write_config};
+use pluto_test_compose::{PLUTO_REPO_ENV, auto, env_non_empty, smoke, write_config};
 use tokio::sync::Mutex;
 
 /// Held for the whole of a scenario so the docker clusters never overlap.
 static SERIAL: Mutex<()> = Mutex::const_new(());
 
-fn env_flag(name: &str) -> bool {
-    env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
-}
-
-fn env_path(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 async fn run_scenario(name: &str) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     let scenario = smoke::scenario(name).unwrap_or_else(|| panic!("unknown scenario {name}"));
-    if scenario.require_pluto && env_path(smoke::PLUTO_REPO_ENV).is_none() {
-        eprintln!("skipping {name}: {} not set", smoke::PLUTO_REPO_ENV);
+    if scenario.requires_pluto() && env_non_empty(PLUTO_REPO_ENV).is_none() {
+        eprintln!("skipping {name}: {PLUTO_REPO_ENV} not set");
         return;
     }
 
@@ -54,8 +44,9 @@ async fn run_scenario(name: &str) {
     write_config(dir.path(), &scenario.config()).expect("write config");
 
     let mut conf = scenario.auto_config(dir.path());
-    conf.sudo_perms = env_flag("SMOKE_SUDO_PERMS");
-    conf.log_file = env_path("SMOKE_LOG_DIR").map(|log_dir| log_dir.join(format!("{name}.log")));
+    conf.sudo_perms = env_non_empty("SMOKE_SUDO_PERMS").is_some_and(|value| value != "0");
+    conf.log_file = env_non_empty("SMOKE_LOG_DIR")
+        .map(|log_dir| PathBuf::from(log_dir).join(format!("{name}.log")));
 
     // Display, not Debug: the failure line then reads as the Go harness prints
     // it.
@@ -95,6 +86,6 @@ smoke_tests! {
 
 #[test]
 fn every_scenario_has_a_test() {
-    let names: Vec<&str> = smoke::scenarios().iter().map(|s| s.name).collect();
+    let names: Vec<&str> = smoke::SCENARIOS.iter().map(|s| s.name).collect();
     assert_eq!(names, SCENARIO_NAMES);
 }

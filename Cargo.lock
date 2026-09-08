@@ -5701,7 +5701,6 @@ dependencies = [
  "nix",
  "pluto-eth2util",
  "pluto-k1util",
- "pluto-testutil",
  "serde",
  "serde_json",
  "tempfile",

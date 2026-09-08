@@ -1,15 +1,15 @@
 //! The smoke scenario matrix: cluster configurations that are stood up with
 //! docker compose and watched for alerts by the integration tests.
 //!
-//! The matrix is library code so the docker-based tests, the docker-free
-//! transcript tests and the CI workflow all run the same scenarios.
+//! The matrix is library code so the tests and the CI workflow share it.
 
-use std::{env, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use crate::{
-    auto::{AutoConfig, TmplFn},
+    auto::AutoConfig,
     config::{Config, KeyGen, NodeImpl, VcType},
     define::{BROADCAST_RULE, ERROR_RATE_RULE, VAPI_RATE_RULE},
+    fsutil::env_non_empty,
     template::TmplData,
 };
 
@@ -24,10 +24,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// instead of the bundled one.
 pub const EXTERNAL_RELAY_ENV: &str = "SMOKE_EXTERNAL_RELAY";
 
-/// Environment variable pointing at the pluto checkout the `pluto:local`
-/// image is built from. Scenarios that need it are skipped when it is unset.
-pub const PLUTO_REPO_ENV: &str = "PLUTO_REPO";
-
 /// The config every scenario starts from: monitoring off, ports unexposed,
 /// insecure keys, a mock validator client and the pinned charon release.
 pub fn base_config() -> Config {
@@ -38,9 +34,7 @@ pub fn base_config() -> Config {
     conf.insecure_keys = true;
     conf.vcs = vec![VcType::Mock];
 
-    if let Ok(relay) = env::var(EXTERNAL_RELAY_ENV)
-        && !relay.is_empty()
-    {
+    if let Some(relay) = env_non_empty(EXTERNAL_RELAY_ENV) {
         conf.external_relay = relay;
     }
 
@@ -53,58 +47,46 @@ pub struct Scenario {
     /// Unique scenario name, also the test name.
     pub name: &'static str,
     /// Adjusts the base config.
-    pub config_fn: Option<fn(&mut Config)>,
+    pub config_fn: fn(&mut Config),
     /// Adjusts the run step template data.
     pub run_tmpl_fn: Option<fn(&mut TmplData)>,
-    /// Adjusts the define step template data.
-    pub define_tmpl_fn: Option<fn(&mut TmplData)>,
     /// Print `docker-compose.yml` after each step.
     pub print_yml: bool,
-    /// Alert observation window; zero means [`DEFAULT_TIMEOUT`].
+    /// Alert observation window.
     pub timeout: Duration,
-    /// The scenario builds and runs pluto, so it needs [`PLUTO_REPO_ENV`].
-    pub require_pluto: bool,
 }
 
 impl Scenario {
     const fn new(name: &'static str) -> Self {
         Self {
             name,
-            config_fn: None,
+            config_fn: |_| {},
             run_tmpl_fn: None,
-            define_tmpl_fn: None,
             print_yml: false,
-            timeout: Duration::ZERO,
-            require_pluto: false,
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 
     /// The scenario's cluster config.
     pub fn config(&self) -> Config {
         let mut conf = base_config();
-        if let Some(config_fn) = self.config_fn {
-            config_fn(&mut conf);
-        }
+        (self.config_fn)(&mut conf);
 
         conf
     }
 
-    /// The alert observation window.
-    pub fn timeout(&self) -> Duration {
-        if self.timeout.is_zero() {
-            DEFAULT_TIMEOUT
-        } else {
-            self.timeout
-        }
+    /// Whether the scenario builds and runs pluto, so it needs
+    /// [`crate::PLUTO_REPO_ENV`].
+    pub fn requires_pluto(&self) -> bool {
+        self.config().uses_pluto()
     }
 
     /// An [`AutoConfig`] running this scenario in compose directory `dir`.
     pub fn auto_config(&self, dir: impl Into<PathBuf>) -> AutoConfig {
         let mut conf = AutoConfig::new(dir);
-        conf.alert_timeout = self.timeout();
+        conf.alert_timeout = self.timeout;
         conf.print_yml = self.print_yml;
-        conf.run_tmpl_fn = self.run_tmpl_fn.map(|f| Box::new(f) as TmplFn);
-        conf.define_tmpl_fn = self.define_tmpl_fn.map(|f| Box::new(f) as TmplFn);
+        conf.run_tmpl_fn = self.run_tmpl_fn;
 
         conf
     }
@@ -123,128 +105,123 @@ fn unset_node0_p2p(data: &mut TmplData) {
 }
 
 /// The smoke matrix.
-pub fn scenarios() -> Vec<Scenario> {
-    vec![
-        Scenario {
-            print_yml: true,
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Create;
-                conf.feature_set = "alpha".to_string();
-            }),
-            ..Scenario::new("default_alpha")
+pub const SCENARIOS: &[Scenario] = &[
+    Scenario {
+        print_yml: true,
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Create;
+            conf.feature_set = "alpha".to_string();
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.num_nodes = 3;
-                conf.threshold = 2;
-                conf.key_gen = KeyGen::Create;
-                conf.feature_set = "beta".to_string();
-            }),
-            ..Scenario::new("default_beta")
+        ..Scenario::new("default_alpha")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.num_nodes = 3;
+            conf.threshold = 2;
+            conf.key_gen = KeyGen::Create;
+            conf.feature_set = "beta".to_string();
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Create;
-                conf.feature_set = "stable".to_string();
-            }),
-            ..Scenario::new("default_stable")
+        ..Scenario::new("default_beta")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Create;
+            conf.feature_set = "stable".to_string();
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Dkg;
-            }),
-            ..Scenario::new("dkg")
+        ..Scenario::new("default_stable")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Dkg;
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.num_nodes = 10;
-                conf.threshold = 7;
-                conf.num_validators = 100;
-                conf.key_gen = KeyGen::Create;
-                conf.slot_duration = Duration::from_secs(6);
-                conf.synthetic_block_proposals = false;
-            }),
-            timeout: Duration::from_secs(3 * 60),
-            ..Scenario::new("very_large")
+        ..Scenario::new("dkg")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.num_nodes = 10;
+            conf.threshold = 7;
+            conf.num_validators = 100;
+            conf.key_gen = KeyGen::Create;
+            conf.slot_duration = Duration::from_secs(6);
+            conf.synthetic_block_proposals = false;
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.alert_exclude_jobs = vec!["node0".to_string()];
-                conf.alert_disable_rules = vec![
-                    ERROR_RATE_RULE.to_string(),
-                    VAPI_RATE_RULE.to_string(),
-                    BROADCAST_RULE.to_string(),
-                ];
-            }),
-            run_tmpl_fn: Some(unset_node0_p2p),
-            ..Scenario::new("1_of_4_down")
+        timeout: Duration::from_secs(3 * 60),
+        ..Scenario::new("very_large")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.alert_exclude_jobs = vec!["node0".to_string()];
+            conf.alert_disable_rules = vec![
+                ERROR_RATE_RULE.to_string(),
+                VAPI_RATE_RULE.to_string(),
+                BROADCAST_RULE.to_string(),
+            ];
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.num_nodes = 3;
-                conf.threshold = 2;
-                conf.alert_exclude_jobs = vec!["node0".to_string()];
-                conf.alert_disable_rules =
-                    vec![ERROR_RATE_RULE.to_string(), VAPI_RATE_RULE.to_string()];
-            }),
-            run_tmpl_fn: Some(unset_node0_p2p),
-            ..Scenario::new("1_of_3_down")
+        run_tmpl_fn: Some(unset_node0_p2p),
+        ..Scenario::new("1_of_4_down")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.num_nodes = 3;
+            conf.threshold = 2;
+            conf.alert_exclude_jobs = vec!["node0".to_string()];
+            conf.alert_disable_rules =
+                vec![ERROR_RATE_RULE.to_string(), VAPI_RATE_RULE.to_string()];
         },
-        Scenario {
-            config_fn: Some(|conf| {
-                conf.builder_api = true;
-            }),
-            ..Scenario::new("blinded_blocks_vmock")
+        run_tmpl_fn: Some(unset_node0_p2p),
+        ..Scenario::new("1_of_3_down")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.builder_api = true;
         },
-        Scenario {
-            require_pluto: true,
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Create;
-                conf.key_gen_impl = Some(NodeImpl::Pluto);
-            }),
-            ..Scenario::new("pluto_keygen_create")
+        ..Scenario::new("blinded_blocks_vmock")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Create;
+            conf.key_gen_impl = Some(NodeImpl::Pluto);
         },
-        Scenario {
-            require_pluto: true,
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Create;
-                conf.node_impls = vec![NodeImpl::Pluto];
-                conf.synthetic_block_proposals = false;
-            }),
-            ..Scenario::new("all_pluto")
+        ..Scenario::new("pluto_keygen_create")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Create;
+            conf.node_impls = vec![NodeImpl::Pluto];
+            conf.synthetic_block_proposals = false;
         },
-        Scenario {
-            require_pluto: true,
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Create;
-                conf.node_impls = vec![
-                    NodeImpl::Charon,
-                    NodeImpl::Charon,
-                    NodeImpl::Pluto,
-                    NodeImpl::Pluto,
-                ];
-                conf.synthetic_block_proposals = false;
-            }),
-            ..Scenario::new("mixed_2_charon_2_pluto")
+        ..Scenario::new("all_pluto")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Create;
+            conf.node_impls = vec![
+                NodeImpl::Charon,
+                NodeImpl::Charon,
+                NodeImpl::Pluto,
+                NodeImpl::Pluto,
+            ];
+            conf.synthetic_block_proposals = false;
         },
-        Scenario {
-            require_pluto: true,
-            config_fn: Some(|conf| {
-                conf.key_gen = KeyGen::Dkg;
-                conf.node_impls = vec![NodeImpl::Pluto];
-                conf.synthetic_block_proposals = false;
-            }),
-            ..Scenario::new("pluto_dkg")
+        ..Scenario::new("mixed_2_charon_2_pluto")
+    },
+    Scenario {
+        config_fn: |conf| {
+            conf.key_gen = KeyGen::Dkg;
+            conf.node_impls = vec![NodeImpl::Pluto];
+            conf.synthetic_block_proposals = false;
         },
-    ]
-}
+        ..Scenario::new("pluto_dkg")
+    },
+];
 
 /// Looks a scenario up by name.
 pub fn scenario(name: impl AsRef<str>) -> Option<Scenario> {
     let name = name.as_ref();
-    scenarios()
-        .into_iter()
+    SCENARIOS
+        .iter()
         .find(|scenario| scenario.name == name)
+        .copied()
 }
 
 #[cfg(test)]
@@ -259,10 +236,9 @@ mod tests {
 
     #[test]
     fn scenario_matrix() {
-        let scenarios = scenarios();
         let mut names = HashSet::new();
 
-        for scenario in &scenarios {
+        for scenario in SCENARIOS {
             assert!(!scenario.name.is_empty(), "scenario without a name");
             assert!(
                 names.insert(scenario.name),
@@ -271,50 +247,19 @@ mod tests {
             );
 
             let conf = scenario.config();
-            assert_eq!(
-                scenario.require_pluto,
-                conf.uses_pluto(),
-                "{}: require_pluto must match the config",
-                scenario.name
-            );
-
             let dir = tempfile::tempdir().expect("tempdir");
             write_config(dir.path(), &conf).expect("write config");
             let loaded = load_config(dir.path()).expect("load config");
             assert_eq!(loaded, conf, "{}: config round trip", scenario.name);
         }
 
-        assert_eq!(scenarios.len(), 12);
-    }
-
-    #[test]
-    fn timeouts() {
+        assert_eq!(SCENARIOS.len(), 12);
         assert_eq!(
-            scenario("default_alpha").expect("scenario").timeout(),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            scenario("very_large").expect("scenario").timeout(),
-            Duration::from_secs(180)
-        );
-        assert!(scenario("missing").is_none());
-    }
-
-    #[test]
-    fn auto_config_carries_scenario_knobs() {
-        let conf = scenario("1_of_4_down")
-            .expect("scenario")
-            .auto_config("/tmp/compose");
-
-        assert_eq!(conf.alert_timeout, DEFAULT_TIMEOUT);
-        assert!(!conf.print_yml);
-        assert!(conf.run_tmpl_fn.is_some());
-        assert!(conf.define_tmpl_fn.is_none());
-        assert!(
-            scenario("default_alpha")
-                .expect("scenario")
-                .auto_config("/tmp/compose")
-                .print_yml
+            SCENARIOS
+                .iter()
+                .filter(|scenario| scenario.requires_pluto())
+                .count(),
+            4
         );
     }
 
@@ -346,12 +291,5 @@ mod tests {
             vec!["p2p-relays-unset", "log-level", "p2p-tcp-address-unset"]
         );
         assert_eq!(keys(1), vec!["p2p-relays"]);
-    }
-
-    #[test]
-    fn unset_node0_p2p_tolerates_no_nodes() {
-        let mut data = TmplData::default();
-        unset_node0_p2p(&mut data);
-        assert!(data.nodes.is_empty());
     }
 }

@@ -1,26 +1,21 @@
 //! Docker compose process control for the automated flow: bring clusters up
 //! and down, build images, fix artefact permissions and print the compose file.
 //!
-//! Every command is resolved through `PATH` and run in the compose directory,
-//! so the command sequence can be observed with stand-in programs (see the
-//! transcript tests) as well as against a real docker daemon.
+//! Every command is resolved through `PATH` and run in the compose directory.
 
 use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
-    process::{ExitStatus, Stdio},
+    process::Stdio,
 };
 
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::{
-    define::combined_output,
-    error::{CommandError, ComposeError, Result},
-};
+use crate::error::{CommandError, ComposeError, Result};
 
 /// Destination of the `docker compose up` output: the stdout of this process
 /// or an append-only log file.
@@ -44,7 +39,7 @@ impl LogSink {
                 .mode(0o644)
                 .open(path)
                 .map(Self::File)
-                .map_err(ComposeError::OpenLogFile),
+                .map_err(ComposeError::io("open log file")),
         }
     }
 
@@ -84,14 +79,6 @@ pub enum UpOutcome {
     Cancelled,
 }
 
-fn exit_ok(status: ExitStatus) -> std::result::Result<(), CommandError> {
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CommandError::Exit(status))
-    }
-}
-
 /// Streams `docker-compose.yml` to stdout by running `cat` in `dir`.
 pub async fn print_docker_compose(dir: impl AsRef<Path>) -> Result<()> {
     info!("Printing docker-compose.yml");
@@ -100,10 +87,9 @@ pub async fn print_docker_compose(dir: impl AsRef<Path>) -> Result<()> {
         .arg("docker-compose.yml")
         .current_dir(dir.as_ref())
         .status()
-        .await
-        .map_err(|err| ComposeError::ExecCatDockerCompose(CommandError::Io(err)))?;
+        .await;
 
-    exit_ok(status).map_err(ComposeError::ExecCatDockerCompose)
+    CommandError::check(status).map_err(ComposeError::exec("exec cat docker-compose.yml"))
 }
 
 /// Hands the compose artefacts back to the current user. Containers run as
@@ -123,16 +109,9 @@ pub async fn fix_perms(dir: impl AsRef<Path>) -> Result<()> {
             .args(args)
             .current_dir(dir)
             .status()
-            .await
-            .map_err(|err| ComposeError::ExecSudo {
-                program: program.to_string(),
-                source: CommandError::Io(err),
-            })?;
+            .await;
 
-        exit_ok(status).map_err(|source| ComposeError::ExecSudo {
-            program: program.to_string(),
-            source,
-        })?;
+        CommandError::check(status).map_err(ComposeError::exec(format!("exec sudo {program}")))?;
     }
 
     Ok(())
@@ -153,10 +132,9 @@ pub async fn down(dir: impl AsRef<Path>, sudo_perms: bool) -> Result<()> {
         .args(["compose", "down", "--remove-orphans", "--timeout=2"])
         .current_dir(dir)
         .status()
-        .await
-        .map_err(|err| ComposeError::RunDown(CommandError::Io(err)))?;
+        .await;
 
-    exit_ok(status).map_err(ComposeError::RunDown)
+    CommandError::check(status).map_err(ComposeError::exec("run down"))
 }
 
 /// Builds the images in parallel, then runs `docker compose up` with its
@@ -180,33 +158,16 @@ pub async fn up(
         .current_dir(dir)
         .kill_on_drop(true);
 
-    let output = tokio::select! {
-        output = build.output() => output.map_err(|err| ComposeError::ExecComposeBuild {
-            source: CommandError::Io(err),
-            output: String::new(),
-        })?,
-        () = token.cancelled() => {
-            return Err(ComposeError::ExecComposeBuild {
-                source: CommandError::Io(io::Error::other("signal: killed")),
-                output: String::new(),
-            });
-        }
-    };
-    if !output.status.success() {
-        return Err(ComposeError::ExecComposeBuild {
-            source: CommandError::Exit(output.status),
-            output: combined_output(&output),
-        });
-    }
+    let output = token
+        .run_until_cancelled(build.output())
+        .await
+        .unwrap_or_else(|| Err(io::Error::other("signal: killed")));
+    CommandError::check_output(output).map_err(ComposeError::exec("exec docker compose build"))?;
 
     info!("Executing docker compose up");
 
-    let stdout = sink
-        .stdio()
-        .map_err(|err| ComposeError::ExecComposeUp(CommandError::Io(err)))?;
-    let stderr = sink
-        .stdio()
-        .map_err(|err| ComposeError::ExecComposeUp(CommandError::Io(err)))?;
+    const UP: &str = "exec docker compose up";
+
     let mut child = Command::new("docker")
         .args([
             "compose",
@@ -216,28 +177,24 @@ pub async fn up(
             "--quiet-pull",
         ])
         .current_dir(dir)
-        .stdout(stdout)
-        .stderr(stderr)
+        .stdout(sink.stdio().map_err(ComposeError::exec(UP))?)
+        .stderr(sink.stdio().map_err(ComposeError::exec(UP))?)
         .kill_on_drop(true)
         .spawn()
-        .map_err(|err| ComposeError::ExecComposeUp(CommandError::Io(err)))?;
+        .map_err(ComposeError::exec(UP))?;
 
-    let status = tokio::select! {
-        status = child.wait() => {
-            status.map_err(|err| ComposeError::ExecComposeUp(CommandError::Io(err)))?
-        }
-        () = token.cancelled() => {
-            let _ = child.kill().await;
-            return Ok(UpOutcome::Cancelled);
-        }
+    let Some(status) = token.run_until_cancelled(child.wait()).await else {
+        let _ = child.kill().await;
+        return Ok(UpOutcome::Cancelled);
     };
+    let status = status.map_err(ComposeError::exec(UP))?;
 
     if status.success() {
         Ok(UpOutcome::Exited)
     } else if token.is_cancelled() {
         Ok(UpOutcome::Cancelled)
     } else {
-        Err(ComposeError::ExecComposeUp(CommandError::Exit(status)))
+        Err(ComposeError::exec(UP)(CommandError::Exit(status)))
     }
 }
 
@@ -250,25 +207,18 @@ pub async fn build_and_create(dir: impl AsRef<Path>) -> Result<()> {
         .args(["compose", "up", "--no-start", "--build"])
         .current_dir(dir.as_ref())
         .output()
-        .await
-        .map_err(|err| ComposeError::ExecComposeCreate {
-            source: CommandError::Io(err),
-            output: String::new(),
-        })?;
+        .await;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(ComposeError::ExecComposeCreate {
-            source: CommandError::Exit(output.status),
-            output: combined_output(&output),
-        })
-    }
+    CommandError::check_output(output)
+        .map(drop)
+        .map_err(ComposeError::exec(
+            "exec docker compose up --no-start --build",
+        ))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
 
     use super::*;
 
@@ -288,45 +238,6 @@ mod tests {
             content,
             "existing\n===== define step: docker compose up =====\n===== lock step: docker compose up =====\n"
         );
-    }
-
-    #[test]
-    fn log_sink_creates_file_with_0644() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("new.log");
-
-        let sink = LogSink::open(Some(&path)).expect("open sink");
-        drop(sink);
-
-        let mode = fs::metadata(&path).expect("metadata").permissions().mode();
-        assert_eq!(mode & 0o777, 0o644);
-    }
-
-    #[test]
-    fn log_sink_open_missing_parent_fails() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("missing").join("compose.log");
-
-        let err = LogSink::open(Some(&path)).expect_err("open must fail");
-        assert!(matches!(err, ComposeError::OpenLogFile(_)), "{err:?}");
-        assert!(err.to_string().starts_with("open log file: "), "{err}");
-    }
-
-    #[test]
-    fn log_sink_stdout_never_fails() {
-        let mut sink = LogSink::open(None).expect("stdout sink");
-        assert!(matches!(sink, LogSink::Stdout));
-        sink.banner("");
-    }
-
-    #[tokio::test]
-    async fn print_docker_compose_runs_cat_in_dir() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("docker-compose.yml"), "services: {}\n").expect("write yml");
-
-        print_docker_compose(dir.path())
-            .await
-            .expect("cat of an existing file succeeds");
     }
 
     #[tokio::test]

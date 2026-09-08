@@ -3,7 +3,6 @@
 //! alerts.
 
 use std::{
-    fmt, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -13,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::{
-    alert::{ALERTS_POLLED, AlertTiming, DockerCurlPoller, start_collector},
+    alert::{AlertEvent, DockerCurlPoller, start_collector},
     config::{Config, load_config},
     define::{DefineOptions, define},
     error::{ComposeError, Result},
@@ -25,9 +24,10 @@ use crate::{
 
 /// Hook that adjusts a step's template data before `docker-compose.yml` is
 /// rewritten.
-pub type TmplFn = Box<dyn FnOnce(&mut TmplData) + Send>;
+pub type TmplFn = fn(&mut TmplData);
 
 /// Configuration of [`auto`].
+#[derive(Debug, Clone)]
 pub struct AutoConfig {
     /// The compose directory holding `config.json`.
     pub dir: PathBuf,
@@ -41,14 +41,8 @@ pub struct AutoConfig {
     pub print_yml: bool,
     /// Adjusts the run step template data.
     pub run_tmpl_fn: Option<TmplFn>,
-    /// Adjusts the define step template data.
-    pub define_tmpl_fn: Option<TmplFn>,
     /// Append the `docker compose up` output to this file instead of stdout.
     pub log_file: Option<PathBuf>,
-    /// Options of the define step.
-    pub define_options: DefineOptions,
-    /// Alert collector cadence.
-    pub timing: AlertTiming,
 }
 
 impl AutoConfig {
@@ -61,27 +55,8 @@ impl AutoConfig {
             sudo_perms: false,
             print_yml: false,
             run_tmpl_fn: None,
-            define_tmpl_fn: None,
             log_file: None,
-            define_options: DefineOptions::default(),
-            timing: AlertTiming::default(),
         }
-    }
-}
-
-impl fmt::Debug for AutoConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AutoConfig")
-            .field("dir", &self.dir)
-            .field("alert_timeout", &self.alert_timeout)
-            .field("sudo_perms", &self.sudo_perms)
-            .field("print_yml", &self.print_yml)
-            .field("run_tmpl_fn", &self.run_tmpl_fn.is_some())
-            .field("define_tmpl_fn", &self.define_tmpl_fn.is_some())
-            .field("log_file", &self.log_file)
-            .field("define_options", &self.define_options)
-            .field("timing", &self.timing)
-            .finish()
     }
 }
 
@@ -98,10 +73,7 @@ pub async fn auto(conf: AutoConfig) -> Result<()> {
         sudo_perms,
         print_yml,
         run_tmpl_fn,
-        define_tmpl_fn,
         log_file,
-        define_options,
-        timing,
     } = conf;
 
     let mut sink = LogSink::open(log_file.as_deref())?;
@@ -112,8 +84,8 @@ pub async fn auto(conf: AutoConfig) -> Result<()> {
         print_yml,
     };
 
-    step.run("define", define_tmpl_fn, move |dir: &Path, conf| {
-        define(dir, conf, &define_options)
+    step.run("define", None, |dir: &Path, conf| {
+        define(dir, conf, &DefineOptions::default())
     })
     .await?;
     sink.banner("===== define step: docker compose up =====\n");
@@ -127,8 +99,9 @@ pub async fn auto(conf: AutoConfig) -> Result<()> {
     step.run("run", run_tmpl_fn, |dir: &Path, conf| run(dir, conf))
         .await?;
 
-    // Ensure everything is clean before the alert test starts.
-    let _ = down(&dir, sudo_perms).await;
+    // Ensure everything is clean before the alert test starts. Permissions
+    // were fixed right after the run step, so plain down suffices here.
+    let _ = down(&dir, false).await;
 
     sink.banner("===== run step: docker compose up --no-start --build =====\n");
     build_and_create(&dir).await?;
@@ -142,7 +115,7 @@ pub async fn auto(conf: AutoConfig) -> Result<()> {
         });
     }
 
-    let mut alerts = start_collector(token.clone(), DockerCurlPoller::new(&dir), timing);
+    let mut alerts = start_collector(token.clone(), DockerCurlPoller::new(&dir));
 
     sink.banner("===== run step: docker compose up =====\n");
     let result = observe(&dir, &sink, &token, alert_timeout, &mut alerts).await;
@@ -159,12 +132,11 @@ async fn observe(
     sink: &LogSink,
     token: &CancellationToken,
     alert_timeout: Duration,
-    alerts: &mut mpsc::Receiver<String>,
+    alerts: &mut mpsc::Receiver<AlertEvent>,
 ) -> Result<()> {
     match up(dir, sink, token).await? {
-        // `--abort-on-container-exit` exits 0 when a container stops cleanly,
-        // taking the whole cluster down with it. Nothing was observed for the
-        // full window, so this is a failure rather than "no alerts detected".
+        // `--abort-on-container-exit` exits 0 when a container stops cleanly;
+        // the window was not observed, so this is a failure, not "no alerts".
         UpOutcome::Exited if !alert_timeout.is_zero() => return Err(ComposeError::ClusterStopped),
         // Without a window the cluster ran to completion. Stop the collector
         // so the channel drains and a verdict can be reached.
@@ -174,11 +146,10 @@ async fn observe(
 
     let mut detected = Vec::new();
     let mut polled = false;
-    while let Some(alert) = alerts.recv().await {
-        if alert == ALERTS_POLLED {
-            polled = true;
-        } else {
-            detected.push(alert);
+    while let Some(event) = alerts.recv().await {
+        match event {
+            AlertEvent::Alert(alert) => detected.push(alert),
+            AlertEvent::Polled => polled = true,
         }
     }
 
@@ -206,7 +177,7 @@ impl StepRunner<'_> {
     where
         F: FnOnce(&Path, Config) -> Result<TmplData> + Send + 'static,
     {
-        let mut tmpl = run_step(name, self.dir, false, run_fn).await?;
+        let mut tmpl = run_step(name, self.dir, run_fn).await?;
 
         if self.sudo_perms {
             fix_perms(self.dir).await?;
@@ -225,33 +196,18 @@ impl StepRunner<'_> {
     }
 }
 
-/// Loads the config in `dir`, runs the generator step `run_fn` on it and,
-/// when `up_after` is set, brings the resulting cluster up on stdout. `topic`
-/// names the step in the log.
-pub async fn run_step<F>(
-    topic: &'static str,
-    dir: impl AsRef<Path>,
-    up_after: bool,
-    run_fn: F,
-) -> Result<TmplData>
+/// Loads the config in `dir` and runs the generator step `run_fn` on it off
+/// the async runtime. `topic` names the step in the log.
+async fn run_step<F>(topic: &'static str, dir: &Path, run_fn: F) -> Result<TmplData>
 where
     F: FnOnce(&Path, Config) -> Result<TmplData> + Send + 'static,
 {
-    let dir = dir.as_ref().to_path_buf();
-
-    let conf = match load_config(&dir) {
-        Err(ComposeError::LoadConfig(err)) if err.kind() == io::ErrorKind::NotFound => {
-            return Err(ComposeError::ConfigNotFound {
-                dir: dir.display().to_string(),
-            });
-        }
-        other => other?,
-    };
+    let conf = load_config(dir)?;
 
     info!(command = topic, "Running compose command");
 
-    let step_dir = dir.clone();
-    let tmpl = task::spawn_blocking(move || run_fn(&step_dir, conf))
+    let step_dir = dir.to_path_buf();
+    task::spawn_blocking(move || run_fn(&step_dir, conf))
         .await
         .map_err(|err| {
             if err.is_panic() {
@@ -259,13 +215,7 @@ where
             } else {
                 ComposeError::StepCancelled(err)
             }
-        })??;
-
-    if up_after {
-        up(&dir, &LogSink::Stdout, &CancellationToken::new()).await?;
-    }
-
-    Ok(tmpl)
+        })?
 }
 
 #[cfg(test)]
@@ -274,68 +224,17 @@ mod tests {
     use crate::config::{Step, write_config};
 
     #[tokio::test]
-    async fn run_step_without_config_reports_not_found() {
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        let err = run_step("lock", dir.path(), false, |dir: &Path, conf| {
-            lock(dir, conf)
-        })
-        .await
-        .expect_err("missing config must fail");
-
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "compose config.json not found; write one with WriteConfig or New first: dir={}",
-                dir.path().display()
-            )
-        );
-    }
-
-    #[tokio::test]
     async fn run_step_runs_the_generator_on_the_loaded_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), &Config::new_default()).expect("write config");
 
-        let err = run_step("lock", dir.path(), false, |dir: &Path, conf| {
-            lock(dir, conf)
-        })
-        .await
-        .expect_err("lock on a new config must fail");
+        let err = run_step("lock", dir.path(), |dir: &Path, conf| lock(dir, conf))
+            .await
+            .expect_err("lock on a new config must fail");
 
         assert!(
             matches!(err, ComposeError::NotDefined { step: Step::New }),
             "{err:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn run_step_surfaces_other_load_errors() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("config.json"), "{").expect("write broken config");
-
-        let err = run_step("lock", dir.path(), false, |dir: &Path, conf| {
-            lock(dir, conf)
-        })
-        .await
-        .expect_err("broken config must fail");
-
-        assert!(matches!(err, ComposeError::UnmarshalConfig(_)), "{err:?}");
-    }
-
-    #[test]
-    fn auto_config_defaults() {
-        let conf = AutoConfig::new("/tmp/compose");
-
-        assert_eq!(conf.dir, PathBuf::from("/tmp/compose"));
-        assert_eq!(conf.alert_timeout, Duration::ZERO);
-        assert!(!conf.sudo_perms);
-        assert!(!conf.print_yml);
-        assert!(conf.run_tmpl_fn.is_none());
-        assert!(conf.define_tmpl_fn.is_none());
-        assert!(conf.log_file.is_none());
-        assert!(conf.define_options.pull_images);
-        assert_eq!(conf.timing, AlertTiming::default());
-        assert!(format!("{conf:?}").contains("run_tmpl_fn: false"));
     }
 }

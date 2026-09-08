@@ -3,13 +3,11 @@ x-node-base: &node-base
   command: [create,cluster]
   networks: [compose]
   volumes: [testdir:/compose]
-  
 
 services:
   node0:
     <<: *node-base
     container_name: node0
-    
     environment:
       CHARON_NAME: compose-4-1
       CHARON_THRESHOLD: 3
@@ -22,9 +20,6 @@ services:
       CHARON_WITHDRAWAL_ADDRESSES: "0x0000000000000000000000000000000000000000"
       CHARON_FEE_RECIPIENT_ADDRESSES: "0x0000000000000000000000000000000000000000"
       CHARON_NETWORK: goerli
-    
-
-  
 
 networks:
   compose:
