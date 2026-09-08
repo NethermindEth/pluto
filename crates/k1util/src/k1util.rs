@@ -9,6 +9,7 @@ use k256::{
     ecdsa::{self, RecoveryId, Signature, SigningKey, hazmat::VerifyPrimitive},
 };
 use libp2p::identity::PublicKey as Libp2pPublicKey;
+use zeroize::Zeroizing;
 
 /// `SCALAR_LEN` is the length of secp256k1 scalar.
 pub const SCALAR_LEN: usize = 32;
@@ -212,10 +213,15 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
 }
 
 /// Load loads a secret key from a file.
+///
+/// The hex-encoded file contents and the decoded scalar are intermediate
+/// buffers holding the raw secret, so both are wrapped in [`Zeroizing`] and
+/// wiped once the key has been parsed.
 pub fn load(file: &Path) -> Result<SecretKey> {
-    let contents = std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?;
+    let contents =
+        Zeroizing::new(std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?);
 
-    let decoded = hex::decode(contents.trim())?;
+    let decoded = Zeroizing::new(hex::decode(contents.trim())?);
 
     let key = SecretKey::from_slice(&decoded).map_err(K1UtilError::FailedToParseSecretKey)?;
 
@@ -228,8 +234,13 @@ pub fn load(file: &Path) -> Result<SecretKey> {
 /// matching Charon's `app/k1util/k1util.go` `Save` which writes via
 /// `os.WriteFile(file, ..., 0o600)`. This prevents the private key from being
 /// world-readable.
+///
+/// The serialized scalar and its hex encoding are intermediate buffers holding
+/// the raw secret, so both are wrapped in [`Zeroizing`] and wiped once the file
+/// has been written.
 pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
-    let encoded = hex::encode(key.to_bytes());
+    let raw = Zeroizing::new(key.to_bytes());
+    let encoded = Zeroizing::new(hex::encode(raw.as_slice()));
 
     #[cfg(unix)]
     {
@@ -258,7 +269,7 @@ pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
 
     #[cfg(not(unix))]
     {
-        std::fs::write(file, encoded).map_err(K1UtilError::FailedToWriteFile)?;
+        std::fs::write(file, encoded.as_bytes()).map_err(K1UtilError::FailedToWriteFile)?;
     }
 
     Ok(())
