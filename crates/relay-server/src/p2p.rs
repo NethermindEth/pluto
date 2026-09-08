@@ -229,11 +229,13 @@ pub async fn bind_relay(config: &Config, key: SecretKey) -> Result<BoundRelay> {
         sent: RELAY_METRICS.network_sent_bytes_total[&relay_labels(peer_id)].clone(),
         received: RELAY_METRICS.network_receive_bytes_total[&relay_labels(peer_id)].clone(),
     });
-    // Binds the configured TCP listeners; `listen_on` below binds the UDP ones.
+    // A QUIC relay serves both transports: it binds the configured TCP and UDP
+    // listeners, and its ENR needs the UDP one. Matches Charon's relay, which
+    // also passes `NodeTypeQUIC`.
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
-        NodeType::TCP,
+        NodeType::QUIC,
         config.filter_private_addrs,
         // Relay servers don't track cluster peers - they serve all connections.
         P2PContext::default(),
@@ -245,11 +247,6 @@ pub async fn bind_relay(config: &Config, key: SecretKey) -> Result<BoundRelay> {
             ))
         },
     )?;
-
-    for udp_addr in config.p2p_config.udp_multiaddrs()? {
-        debug!("Listening on UDP address {}", udp_addr);
-        node.listen_on(udp_addr)?;
-    }
 
     // First poll of the swarm, and so the first point at which this relay
     // services anything. Every other listener is already bound.

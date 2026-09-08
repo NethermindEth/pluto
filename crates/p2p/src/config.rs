@@ -10,6 +10,8 @@ use std::{
 use libp2p::{Multiaddr, multiaddr, ping};
 use url::Url;
 
+use crate::utils::TransportProtocol;
+
 /// Shared default relay endpoints used by commands and P2P-facing configs.
 pub const DEFAULT_RELAYS: [&str; 5] = [
     "https://pluto-relay-0.ovh.dev-nethermind.xyz",
@@ -173,28 +175,25 @@ pub struct P2PConfig {
 }
 
 impl P2PConfig {
-    /// Returns the TCP addresses of the node.
-    pub fn parse_tcp_addrs(&self) -> Result<Vec<SocketAddr>> {
-        self.tcp_addrs.iter().map(resolve_listen_tcp_addr).collect()
+    /// Returns the configured listen addresses for `proto`.
+    pub fn parse_addrs(&self, proto: TransportProtocol) -> Result<Vec<SocketAddr>> {
+        let configured = match proto {
+            TransportProtocol::Tcp => &self.tcp_addrs,
+            TransportProtocol::Quic => &self.udp_addrs,
+        };
+
+        configured
+            .iter()
+            .map(|addr| resolve_listen_addr(addr, proto))
+            .collect()
     }
 
-    /// Returns the UDP addresses of the node.
-    pub fn parse_udp_addrs(&self) -> Result<Vec<SocketAddr>> {
-        self.udp_addrs.iter().map(resolve_listen_udp_addr).collect()
-    }
-
-    /// Returns the UDP multiaddresses of the node.
-    pub fn udp_multiaddrs(&self) -> Result<Vec<Multiaddr>> {
-        let addrs = self.parse_udp_addrs()?;
-
-        addrs.into_iter().map(multi_addr_from_ip_udp_port).collect()
-    }
-
-    /// Returns the TCP multiaddresses of the node.
-    pub fn tcp_multiaddrs(&self) -> Result<Vec<Multiaddr>> {
-        let addrs = self.parse_tcp_addrs()?;
-
-        addrs.into_iter().map(multi_addr_from_ip_tcp_port).collect()
+    /// Returns the configured listen multiaddresses for `proto`.
+    pub fn multiaddrs(&self, proto: TransportProtocol) -> Result<Vec<Multiaddr>> {
+        self.parse_addrs(proto)?
+            .into_iter()
+            .map(|addr| multi_addr_from_socket_addr(addr, proto))
+            .collect()
     }
 
     /// Returns a new builder for configuring a P2P configuration.
@@ -279,54 +278,33 @@ pub fn default_ping_config() -> ping::Config {
         .with_timeout(DEFAULT_PING_TIMEOUT)
 }
 
-/// Resolves a TCP address string to a [`SocketAddr`].
-fn resolve_listen_tcp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
-    let socket_addr: SocketAddr = addr
-        .as_ref()
-        .parse()
-        .map_err(P2PConfigError::FailedToParseTcpAddresses)?;
+/// Resolves a `proto` listen address string to a [`SocketAddr`].
+fn resolve_listen_addr(addr: impl AsRef<str>, proto: TransportProtocol) -> Result<SocketAddr> {
+    let socket_addr: SocketAddr = addr.as_ref().parse().map_err(match proto {
+        TransportProtocol::Tcp => P2PConfigError::FailedToParseTcpAddresses,
+        TransportProtocol::Quic => P2PConfigError::FailedToParseUdpAddresses,
+    })?;
 
     Ok(socket_addr)
 }
 
-/// Resolves a UDP address string to a [`SocketAddr`].
-fn resolve_listen_udp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
-    let socket_addr: SocketAddr = addr
-        .as_ref()
-        .parse()
-        .map_err(P2PConfigError::FailedToParseUdpAddresses)?;
-
-    Ok(socket_addr)
-}
-
-pub(crate) fn multi_addr_from_ip_udp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
+/// Renders `socket_addr` as a `proto` multiaddr.
+pub(crate) fn multi_addr_from_socket_addr(
+    socket_addr: SocketAddr,
+    proto: TransportProtocol,
+) -> Result<Multiaddr> {
     let typ = match socket_addr.ip() {
         IpAddr::V4(_) => "ip4",
         IpAddr::V6(_) => "ip6",
     };
 
-    Multiaddr::from_str(&format!(
-        "/{}/{}/udp/{}/quic-v1",
-        typ,
-        socket_addr.ip(),
-        socket_addr.port()
-    ))
-    .map_err(P2PConfigError::FailedToParseMultiaddr)
-}
-
-pub(crate) fn multi_addr_from_ip_tcp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
-    let typ = match socket_addr.ip() {
-        IpAddr::V4(_) => "ip4",
-        IpAddr::V6(_) => "ip6",
+    let transport = match proto {
+        TransportProtocol::Tcp => format!("tcp/{}", socket_addr.port()),
+        TransportProtocol::Quic => format!("udp/{}/quic-v1", socket_addr.port()),
     };
 
-    Multiaddr::from_str(&format!(
-        "/{}/{}/tcp/{}",
-        typ,
-        socket_addr.ip(),
-        socket_addr.port()
-    ))
-    .map_err(P2PConfigError::FailedToParseMultiaddr)
+    Multiaddr::from_str(&format!("/{}/{}/{}", typ, socket_addr.ip(), transport))
+        .map_err(P2PConfigError::FailedToParseMultiaddr)
 }
 
 #[cfg(test)]
@@ -337,13 +315,13 @@ mod tests {
 
     #[test]
     fn resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
-        let err = resolve_listen_tcp_addr(":1234").unwrap_err();
+        let err = resolve_listen_addr(":1234", TransportProtocol::Tcp).unwrap_err();
         assert!(matches!(err, P2PConfigError::FailedToParseTcpAddresses(_)));
     }
 
     #[test]
     fn resolve_listen_addr_ip() {
-        let addr = resolve_listen_tcp_addr("10.4.3.3:1234").unwrap();
+        let addr = resolve_listen_addr("10.4.3.3:1234", TransportProtocol::Tcp).unwrap();
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 4, 3, 3)), 1234)
@@ -352,13 +330,13 @@ mod tests {
 
     #[test]
     fn resolve_listen_addr_all_interfaces() {
-        let tcp_addr = resolve_listen_tcp_addr("0.0.0.0:0").unwrap();
+        let tcp_addr = resolve_listen_addr("0.0.0.0:0", TransportProtocol::Tcp).unwrap();
         assert_eq!(
             tcp_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
         );
 
-        let udp_addr = resolve_listen_udp_addr("0.0.0.0:0").unwrap();
+        let udp_addr = resolve_listen_addr("0.0.0.0:0", TransportProtocol::Quic).unwrap();
         assert_eq!(
             udp_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
@@ -381,8 +359,8 @@ mod tests {
             ..Default::default()
         };
 
-        let tcp_multiaddrs = config.tcp_multiaddrs().unwrap();
-        let udp_multiaddrs = config.udp_multiaddrs().unwrap();
+        let tcp_multiaddrs = config.multiaddrs(TransportProtocol::Tcp).unwrap();
+        let udp_multiaddrs = config.multiaddrs(TransportProtocol::Quic).unwrap();
 
         let tcp_addrs_str = tcp_multiaddrs
             .iter()
@@ -515,6 +493,6 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(config.tcp_multiaddrs().is_err());
+        assert!(config.multiaddrs(TransportProtocol::Tcp).is_err());
     }
 }

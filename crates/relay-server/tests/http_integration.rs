@@ -14,7 +14,10 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 use k256::SecretKey;
 use libp2p::{Multiaddr, identity::Keypair};
 use pluto_eth2util::enr::Record;
-use pluto_p2p::{config::P2PConfig, utils::external_multiaddrs};
+use pluto_p2p::{
+    config::P2PConfig,
+    utils::{TransportProtocol, external_multiaddrs},
+};
 use rand::rngs::OsRng;
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
@@ -51,8 +54,14 @@ async fn spawn_server(
     // No swarm runs here, so the configured listen addresses stand in for the
     // ones libp2p would report having bound.
     let bound_addrs = {
-        let mut v = p2p_config.tcp_multiaddrs().expect("tcp listen addrs");
-        v.extend(p2p_config.udp_multiaddrs().expect("udp listen addrs"));
+        let mut v = p2p_config
+            .multiaddrs(TransportProtocol::Tcp)
+            .expect("tcp listen addrs");
+        v.extend(
+            p2p_config
+                .multiaddrs(TransportProtocol::Quic)
+                .expect("udp listen addrs"),
+        );
         v
     };
     let external_addrs = external_multiaddrs(&p2p_config, &bound_addrs).expect("externals");
