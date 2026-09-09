@@ -6,6 +6,7 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use bon::builder;
 use chrono::Utc;
 use k256::{PublicKey, SecretKey};
 use libp2p::PeerId;
@@ -255,10 +256,13 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-#[expect(
-    clippy::too_many_arguments,
-    reason = "constructor wires together the full priority component; each argument is a distinct collaborator"
-)]
+///
+/// Use the generated named setters (e.g.
+/// `new_component().peers(..)....call()`) rather than a positional call: the
+/// eight parameters all have distinct types, so Rust's type checker already
+/// rejects a swapped call — named setters are for call-site readability, not
+/// type safety.
+#[builder]
 pub fn new_component(
     peers: Vec<PeerId>,
     min_required: i64,
@@ -285,16 +289,16 @@ pub fn new_component(
 
     let (deadliner, expired) = DeadlinerTask::start(ct, "priority", calculator.clone());
 
-    let (prioritiser, behaviour) = Prioritiser::new_internal(
-        local_id,
-        peers,
-        min_required,
-        consensus,
-        verifier,
-        exchange_timeout,
-        deadliner,
-        p2p_context,
-    );
+    let (prioritiser, behaviour) = Prioritiser::new_internal()
+        .local_id(local_id)
+        .peers(peers)
+        .min_required(min_required)
+        .consensus(consensus)
+        .msg_validator(verifier)
+        .exchange_timeout(exchange_timeout)
+        .deadliner(deadliner)
+        .p2p_context(p2p_context)
+        .call();
 
     let component = Component {
         peer_id: local_id,
@@ -629,16 +633,16 @@ mod tests {
         let consensus: Arc<dyn Consensus> = Arc::new(NoopConsensus);
         // `(Component, Behaviour)` is not `Debug`, so match the result directly
         // rather than via `expect_err`.
-        let result = new_component(
-            peers,
-            2,
-            consensus,
-            Duration::from_secs(3600),
-            key,
-            pluto_core::deadline::NeverExpiringCalculator,
-            p2p_context,
-            CancellationToken::new(),
-        );
+        let result = new_component()
+            .peers(peers)
+            .min_required(2)
+            .consensus(consensus)
+            .exchange_timeout(Duration::from_secs(3600))
+            .privkey(key)
+            .calculator(pluto_core::deadline::NeverExpiringCalculator)
+            .p2p_context(p2p_context)
+            .ct(CancellationToken::new())
+            .call();
 
         assert!(
             matches!(result, Err(Error::PeerNotInContext { peer }) if peer == absent),

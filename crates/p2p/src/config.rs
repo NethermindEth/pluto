@@ -151,24 +151,39 @@ impl PartialEq for P2PConfigError {
 type Result<T> = std::result::Result<T, P2PConfigError>;
 
 /// P2P configuration.
-#[derive(Debug, Clone, Default)]
+///
+/// [`P2PConfig::builder`] is bon-generated; every non-`Option` field carries
+/// `#[builder(default)]` so omitting a setter keeps matching this struct's
+/// own [`Default`] impl (empty relays/addrs, reuse-port enabled) exactly as
+/// the former hand-rolled `P2PConfigBuilder` did. Each field also carries
+/// `#[builder(name = with_...)]` to keep the setter names the old hand-rolled
+/// builder used (`with_relays`, `with_tcp_addrs`, ...); other callers
+/// (e.g. `crates/relay-server/tests/http_integration.rs` from a sibling PR)
+/// already depend on those exact names.
+#[derive(Debug, Clone, Default, PartialEq, bon::Builder)]
 pub struct P2PConfig {
     /// Defines the libp2p relay multiaddrs or URLs.
+    #[builder(default, name = with_relays)]
     pub relays: Vec<RelayAddr>,
 
     /// The external IP address of the node.
+    #[builder(name = with_external_ip)]
     pub external_ip: Option<String>,
 
     /// The external host of the node.
+    #[builder(name = with_external_host)]
     pub external_host: Option<String>,
 
     /// The TCP addresses of the node.
+    #[builder(default, name = with_tcp_addrs)]
     pub tcp_addrs: Vec<String>,
 
     /// The UDP addresses of the node.
+    #[builder(default, name = with_udp_addrs)]
     pub udp_addrs: Vec<String>,
 
     /// Whether to disable the reuse port.
+    #[builder(default, name = with_disable_reuse_port)]
     pub disable_reuse_port: bool,
 }
 
@@ -196,11 +211,6 @@ impl P2PConfig {
 
         addrs.into_iter().map(multi_addr_from_ip_tcp_port).collect()
     }
-
-    /// Returns a new builder for configuring a P2P configuration.
-    pub fn builder() -> P2PConfigBuilder {
-        P2PConfigBuilder::new()
-    }
 }
 
 /// Returns the default relay endpoints parsed as [`RelayAddr`]s.
@@ -209,62 +219,6 @@ pub fn default_relays() -> Vec<RelayAddr> {
         .iter()
         .map(|relay| relay.parse().expect("default relay should parse"))
         .collect()
-}
-
-/// Builder for [`P2PConfig`].
-#[derive(Default, Debug, Clone)]
-pub struct P2PConfigBuilder {
-    config: P2PConfig,
-}
-
-impl P2PConfigBuilder {
-    /// Creates a new builder with default configuration.
-    pub fn new() -> Self {
-        Self {
-            config: P2PConfig::default(),
-        }
-    }
-
-    /// Sets the relay multiaddrs.
-    pub fn with_relays(mut self, relays: Vec<RelayAddr>) -> Self {
-        self.config.relays = relays;
-        self
-    }
-
-    /// Sets the external IP address.
-    pub fn with_external_ip(mut self, external_ip: String) -> Self {
-        self.config.external_ip = Some(external_ip);
-        self
-    }
-
-    /// Sets the external host.
-    pub fn with_external_host(mut self, external_host: String) -> Self {
-        self.config.external_host = Some(external_host);
-        self
-    }
-
-    /// Sets the TCP addresses.
-    pub fn with_tcp_addrs(mut self, tcp_addrs: Vec<String>) -> Self {
-        self.config.tcp_addrs = tcp_addrs;
-        self
-    }
-
-    /// Sets the UDP addresses.
-    pub fn with_udp_addrs(mut self, udp_addrs: Vec<String>) -> Self {
-        self.config.udp_addrs = udp_addrs;
-        self
-    }
-
-    /// Sets whether to disable the reuse port.
-    pub fn with_disable_reuse_port(mut self, disable_reuse_port: bool) -> Self {
-        self.config.disable_reuse_port = disable_reuse_port;
-        self
-    }
-
-    /// Builds the [`P2PConfig`].
-    pub fn build(self) -> P2PConfig {
-        self.config
-    }
 }
 
 /// The default ping interval.
@@ -516,5 +470,20 @@ mod tests {
         };
 
         assert!(config.tcp_multiaddrs().is_err());
+    }
+
+    #[test]
+    fn builder_defaults_match_default_impl() {
+        let built = P2PConfig::builder().build();
+        let default = P2PConfig::default();
+
+        assert_eq!(built, default);
+
+        assert!(built.relays.is_empty());
+        assert_eq!(built.external_ip, None);
+        assert_eq!(built.external_host, None);
+        assert!(built.tcp_addrs.is_empty());
+        assert!(built.udp_addrs.is_empty());
+        assert!(!built.disable_reuse_port);
     }
 }

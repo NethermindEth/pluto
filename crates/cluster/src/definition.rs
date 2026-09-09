@@ -12,6 +12,7 @@ use crate::{
     ssz::{SSZ_MAX_VALIDATORS, SSZError, hash_definition},
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
+use bon::bon;
 use chrono::{DateTime, Timelike, Utc};
 use libp2p::PeerId;
 use pluto_eth1wrap::{EthClient, EthClientError};
@@ -417,12 +418,15 @@ pub enum InvalidGasLimitError {
     GasLimitNotSet,
 }
 
+#[bon]
 impl Definition {
     /// Create a new cluster definition.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "constructor mirrors the full cluster definition field set"
-    )]
+    ///
+    /// Use [`Definition::builder`] to construct one: named setters remove the
+    /// positional `String`/`Vec<String>` swap hazard this constructor used to
+    /// have (`fee_recipient_addresses`, `withdrawal_addresses`, and
+    /// `fork_version_hex` run consecutively, all string-shaped).
+    #[builder]
     pub fn new(
         name: String,
         num_validators: u64,
@@ -436,7 +440,7 @@ impl Definition {
         consensus_protocol: String,
         target_gas_limit: u64,
         compounding: bool,
-        opts: Vec<fn(&mut Self) -> Self>,
+        #[builder(default)] opts: Vec<fn(&mut Self) -> Self>,
     ) -> Result<Self, DefinitionError> {
         if u64::try_from(fee_recipient_addresses.len())
             .map_err(|_| DefinitionError::FailedToConvertLength)?
@@ -1843,21 +1847,21 @@ mod tests {
 
     impl NewArgs {
         fn build(self) -> Result<Definition, DefinitionError> {
-            Definition::new(
-                "test".to_owned(),
-                self.num_validators,
-                2,
-                self.fee_recipient_addresses,
-                self.withdrawal_addresses,
-                "0x00000000".to_owned(),
-                Creator::default(),
-                Vec::new(),
-                self.deposit_amounts,
-                String::new(),
-                self.target_gas_limit,
-                self.compounding,
-                self.opts,
-            )
+            Definition::builder()
+                .name("test".to_owned())
+                .num_validators(self.num_validators)
+                .threshold(2)
+                .fee_recipient_addresses(self.fee_recipient_addresses)
+                .withdrawal_addresses(self.withdrawal_addresses)
+                .fork_version_hex("0x00000000".to_owned())
+                .creator(Creator::default())
+                .operators(Vec::new())
+                .deposit_amounts(self.deposit_amounts)
+                .consensus_protocol(String::new())
+                .target_gas_limit(self.target_gas_limit)
+                .compounding(self.compounding)
+                .opts(self.opts)
+                .build()
         }
     }
 

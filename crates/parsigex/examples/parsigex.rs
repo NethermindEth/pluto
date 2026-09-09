@@ -208,7 +208,7 @@ async fn main() -> Result<()> {
 
     pluto_tracing::init(
         &TracingConfig::builder()
-            .with_default_console()
+            .console(pluto_tracing::ConsoleConfig::default())
             .override_env_filter(&args.log_level)
             .build(),
     )?;

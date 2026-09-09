@@ -370,21 +370,20 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
 
     let deposit_amounts_gwei: Vec<u64> = eths_to_gweis(&args.deposit_amounts);
 
-    let mut def = Definition::new(
-        args.name.clone(),
-        args.num_validators,
-        threshold,
-        fee_recipient_addrs,
-        withdrawal_addrs,
-        fork_version_hex,
-        creator,
-        operators,
-        deposit_amounts_gwei,
-        args.consensus_protocol.clone(),
-        args.target_gas_limit,
-        args.compounding,
-        vec![],
-    )?;
+    let mut def = Definition::builder()
+        .name(args.name.clone())
+        .num_validators(args.num_validators)
+        .threshold(threshold)
+        .fee_recipient_addresses(fee_recipient_addrs)
+        .withdrawal_addresses(withdrawal_addrs)
+        .fork_version_hex(fork_version_hex)
+        .creator(creator)
+        .operators(operators)
+        .deposit_amounts(deposit_amounts_gwei)
+        .consensus_protocol(args.consensus_protocol.clone())
+        .target_gas_limit(args.target_gas_limit)
+        .compounding(args.compounding)
+        .build()?;
 
     def.dkg_algorithm = args.dkg_algo.clone();
     def.set_definition_hashes()?;

@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bon.workspace = true
 chrono.workspace = true
 either.workspace = true
 futures.workspace = true

@@ -185,16 +185,16 @@ pub(crate) async fn wire_p2p(
     // versions/protocols/proposal types. The 6s exchange timeout (half a slot)
     // matches Charon; `new_component` fails fast on a peer missing from the
     // shared `p2p_context`.
-    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component(
-        peer_ids.clone(),
-        min_required,
-        priority_consensus,
-        std::time::Duration::from_secs(6),
-        key.clone(),
-        deadline_calc,
-        p2p_context.clone(),
-        priority_cancellation,
-    )?;
+    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component()
+        .peers(peer_ids.clone())
+        .min_required(min_required)
+        .consensus(priority_consensus)
+        .exchange_timeout(std::time::Duration::from_secs(6))
+        .privkey(key.clone())
+        .calculator(deadline_calc)
+        .p2p_context(p2p_context.clone())
+        .ct(priority_cancellation)
+        .call()?;
     let priority_comp = Arc::new(priority_comp);
 
     let infosync = Arc::new(pluto_infosync::Component::new(

@@ -498,16 +498,16 @@ pub async fn wire_core_workflow(
     let tracker_feature_set = tracker_feature_set(feature_set);
 
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
-    let tracker = TrackerService::start(
-        ct.clone(),
-        tracker_analyser,
-        AnalyserRx(tracker_analyser_rx),
-        tracker_deleter,
-        DeleterRx(tracker_deleter_rx),
-        peers,
-        track_from,
-        tracker_feature_set,
-    );
+    let tracker = TrackerService::start()
+        .cancel(ct.clone())
+        .analyser(tracker_analyser)
+        .analyser_rx(AnalyserRx(tracker_analyser_rx))
+        .deleter(tracker_deleter)
+        .deleter_rx(DeleterRx(tracker_deleter_rx))
+        .peers(peers)
+        .from_slot(track_from)
+        .feature_set(tracker_feature_set)
+        .call();
 
     // Resolves the terminal `ChainInclusion` step; without it every duty with
     // an inclusion step would stall unresolved and be reported as failed.

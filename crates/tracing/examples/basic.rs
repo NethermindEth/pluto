@@ -13,7 +13,7 @@
 //! You can see the logs in Grafana at http://localhost:3000.
 use std::{collections::HashMap, net::SocketAddr};
 
-use pluto_tracing::{LokiConfig, config::TracingConfig, init::init};
+use pluto_tracing::{ConsoleConfig, LokiConfig, config::TracingConfig, init::init};
 use tracing::{debug, error, info, instrument, trace, warn};
 use vise_exporter::MetricsExporter;
 
@@ -21,7 +21,7 @@ use vise_exporter::MetricsExporter;
 async fn main() {
     // Initialize tracing with default console config
     let config = TracingConfig::builder()
-        .with_default_console()
+        .console(ConsoleConfig::default())
         .loki(LokiConfig {
             loki_url: "http://localhost:3100".to_string(),
             labels: HashMap::new(),

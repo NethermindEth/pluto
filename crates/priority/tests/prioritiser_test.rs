@@ -140,19 +140,21 @@ fn build_host(
     // A permissive verifier returning Ok for every message.
     let validator = Arc::new(|_: &PriorityMsg| Ok(()));
 
-    let (prioritiser, behaviour) = Prioritiser::new_internal(
-        peer_id,
-        peers.clone(),
-        i64::try_from(peers.len()).expect("peer count fits i64"),
-        consensus,
-        validator,
-        Duration::from_secs(3600),
-        deadliner,
-        // Cluster context for known-peer gating. Addresses are unused here: the
-        // test pre-dials a full mesh by address, so exchanges reuse existing
-        // connections rather than dialing by peer id.
-        P2PContext::new(peers.clone()),
-    );
+    // Cluster context for known-peer gating. Addresses are unused here: the
+    // test pre-dials a full mesh by address, so exchanges reuse existing
+    // connections rather than dialing by peer id.
+    let p2p_context = P2PContext::new(peers.clone());
+
+    let (prioritiser, behaviour) = Prioritiser::new_internal()
+        .local_id(peer_id)
+        .peers(peers.clone())
+        .min_required(i64::try_from(peers.len()).expect("peer count fits i64"))
+        .consensus(consensus)
+        .msg_validator(validator)
+        .exchange_timeout(Duration::from_secs(3600))
+        .deadliner(deadliner)
+        .p2p_context(p2p_context)
+        .call();
 
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
