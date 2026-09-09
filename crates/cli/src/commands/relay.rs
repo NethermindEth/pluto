@@ -1,26 +1,11 @@
 use crate::{
-    commands::common::{
-        ConsoleColor, LICENSE, LogLevel, build_console_tracing_config, parse_relay_addrs,
-    },
+    commands::common::{LICENSE, parse_relay_addrs},
     error::CliError,
 };
 use pluto_p2p::k1;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-/// Grace period given to the Loki background task to flush buffered logs
-/// once `BackgroundTaskController::shutdown` has been signalled.
-const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
-/// prefix-matches against every `libp2p_relay::*` target.
-fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
-    match relay_level {
-        Some(level) => format!("{base},libp2p_relay={level}"),
-        None => base.to_string(),
-    }
-}
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -36,12 +21,6 @@ pub struct RelayArgs {
 
     #[clap(flatten)]
     pub p2p: RelayP2PArgs,
-
-    #[clap(flatten)]
-    pub log: RelayLogFlags,
-
-    #[clap(flatten)]
-    pub loki: RelayLokiArgs,
 }
 
 impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
@@ -76,40 +55,6 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let loki_config = match self.loki.loki_addresses.as_slice() {
-            [] => None,
-            [loki_url, rest @ ..] => {
-                if !rest.is_empty() {
-                    // Charon fans logs out to every entry in `loki-addresses`,
-                    // but `pluto_tracing::TracingConfig`
-                    // only supports a single Loki
-                    // layer today. `tracing::warn!` would be a no-op here
-                    // because no subscriber is installed
-                    // yet (init happens later inside
-                    // `commands::relay::run`), so write directly to stderr.
-                    eprintln!(
-                        "warning: {extra} additional --loki-addresses ignored; only the first is used",
-                        extra = rest.len(),
-                    );
-                }
-
-                let labels =
-                    HashMap::from([("service".to_string(), self.loki.loki_service.clone())]);
-
-                Some(pluto_tracing::LokiConfig {
-                    loki_url: loki_url.clone(),
-                    labels,
-                    extra_fields: HashMap::new(),
-                })
-            }
-        };
-
-        let log_config = build_console_tracing_config(
-            relay_filter(self.log.level, self.relay.p2p_relay_log_level),
-            &self.log.color,
-            loki_config,
-        );
-
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
@@ -122,8 +67,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .filter_private_addrs(!self.relay.advertise_priv)
             .maybe_monitoring_addr(self.debug_monitoring.monitor_addr)
             .maybe_debug_addr(self.debug_monitoring.debug_addr)
-            .p2p_config(p2p_config)
-            .log_config(log_config);
+            .p2p_config(p2p_config);
 
         Ok(builder.build())
     }
@@ -157,14 +101,6 @@ pub struct RelayRelayArgs {
         help = "Automatically generate and persist a p2p key if one does not exist."
     )]
     pub auto_p2p_key: bool,
-
-    #[arg(
-        long = "p2p-relay-loglevel",
-        env = "CHARON_P2P_RELAY_LOGLEVEL",
-        ignore_case = true,
-        help = "Libp2p circuit relay log level. Defaults to --log-level."
-    )]
-    pub p2p_relay_log_level: Option<LogLevel>,
 
     // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is relevant for the Rust libp2p implementation
     // If so, decrease defaults after this has been addressed
@@ -260,112 +196,16 @@ pub struct RelayP2PArgs {
     pub disable_reuseport: bool,
 }
 
-#[derive(clap::Args, Clone)]
-pub struct RelayLogFlags {
-    #[arg(
-        long = "log-format",
-        env = "CHARON_LOG_FORMAT",
-        default_value = "console",
-        help = "Log format; console, logfmt or json"
-    )]
-    pub format: String,
-
-    #[arg(
-        long = "log-level",
-        env = "CHARON_LOG_LEVEL",
-        default_value = "info",
-        ignore_case = true,
-        help = "Log level"
-    )]
-    pub level: LogLevel,
-
-    #[arg(long = "log-color", default_value = "auto", help = "Log color")]
-    pub color: ConsoleColor,
-
-    #[arg(
-        long = "log-output-path",
-        env = "CHARON_LOG_OUTPUT_PATH",
-        help = "Path in which to write on-disk logs."
-    )]
-    pub log_output_path: Option<PathBuf>,
-}
-
-#[derive(clap::Args, Clone)]
-pub struct RelayLokiArgs {
-    #[arg(
-        long = "loki-addresses",
-        env = "CHARON_LOKI_ADDRESSES",
-        value_delimiter = ',',
-        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
-    )]
-    pub loki_addresses: Vec<String>,
-
-    #[arg(
-        long = "loki-service",
-        env = "CHARON_LOKI_SERVICE",
-        default_value = "pluto",
-        help = "Service label sent with logs to Loki."
-    )]
-    pub loki_service: String,
-}
-
 pub async fn run(
     config: pluto_relay_server::config::Config,
-    ct: CancellationToken,
-) -> Result<(), CliError> {
-    let loki_shutdown = match pluto_tracing::init(&config.log_config) {
-        Ok(Some(loki)) => {
-            let controller = loki.controller;
-            let handle = tokio::spawn(loki.task);
-            Some((controller, handle))
-        }
-        Ok(None) => None,
-        // In tests, the global tracing subscriber is shared across runs in the
-        // same process, so reinitializing fails. In production this would mean
-        // the relay silently uses an unrelated subscriber and Loki forwarding
-        // is dropped — fail loudly instead.
-        #[cfg(test)]
-        Err(pluto_tracing::init::Error::Init(_)) => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    // Run the relay in an inner scope so every early `?` / `return Err(..)` is
-    // captured into `result` and the Loki cleanup below always runs.
-    let result = serve_relay(&config, ct).await;
-
-    if let Err(err) = &result {
-        // Surface the shutdown reason through the subscriber so it reaches
-        // Loki before we close the worker; `main` only `eprintln!`s the
-        // returned error and that path bypasses the tracing subscriber.
-        error!(error = %err, "relay exited with error");
-    }
-
-    // Drain the Loki worker under a single budget so a hung Loki endpoint
-    // (e.g. `controller.shutdown` blocked on a full mpsc) cannot wedge
-    // process exit. After the budget elapses we hard-abort the worker.
-    if let Some((controller, handle)) = loki_shutdown {
-        let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
-            controller.shutdown().await;
-            let _ = handle.await;
-        })
-        .await;
-        abort_handle.abort();
-    }
-
-    result
-}
-
-async fn serve_relay(
-    config: &pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
     info!("{LICENSE}");
     info!(config = ?config);
 
-    let key = load_or_create_key(config)?;
+    let key = load_or_create_key(&config)?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
+    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
         .map_err(Into::into)
 }
@@ -403,7 +243,6 @@ fn load_or_create_key(
 
 #[cfg(test)]
 mod tests {
-    use clap::{Parser as _, ValueEnum as _};
     use std::{
         net::{Ipv4Addr, SocketAddr},
         path::Path,
@@ -413,10 +252,6 @@ mod tests {
     };
     use tokio::{net, task::JoinHandle};
     use tokio_util::sync::CancellationToken;
-    use tracing::{Level, enabled};
-    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
-
-    use crate::cli::Cli;
 
     /// Args mirroring the clap defaults (notably `debug_addr: Some("")`),
     /// plus a TCP address so the baseline conversion succeeds.
@@ -428,7 +263,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: "127.0.0.1:3640".into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: None,
                 max_res_per_peer: 512,
                 max_conns: 16384,
                 advertise_priv: false,
@@ -444,16 +278,6 @@ mod tests {
                 tcp_addrs: vec!["127.0.0.1:3610".into()],
                 udp_addrs: vec![],
                 disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: super::LogLevel::Error,
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "pluto".into(),
             },
         }
     }
@@ -524,10 +348,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = relay_args(dir.path());
 
-        // Covers the CLI entry point that the fixture bypasses: tracing init
-        // and the Loki drain. A pre-cancelled token is deterministic
-        // because the shutdown arm of the serve loop is the `biased`
-        // first branch.
+        // A pre-cancelled token is deterministic because the shutdown arm of
+        // the serve loop is the `biased` first branch.
         let ct = CancellationToken::new();
         ct.cancel();
 
@@ -771,7 +593,7 @@ mod tests {
     static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
     /// Relay arguments every test starts from: all listeners on [`ANY_ADDR`],
-    /// quiet logs, no relays to dial.
+    /// no relays to dial.
     ///
     /// `advertise_priv` is load-bearing: without it, `filter_private_addrs`
     /// drops the loopback listen addresses, and `/enr` answers 500 forever.
@@ -783,7 +605,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: ANY_ADDR.into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: None,
                 max_res_per_peer: 0,
                 max_conns: 0,
                 advertise_priv: true,
@@ -799,16 +620,6 @@ mod tests {
                 tcp_addrs: vec![ANY_ADDR.into()],
                 udp_addrs: vec![ANY_ADDR.into()],
                 disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: super::LogLevel::Error,
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "".into(),
             },
         }
     }
@@ -946,47 +757,5 @@ mod tests {
         let listener = net::TcpListener::bind(ANY_ADDR).await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         (listener, addr)
-    }
-
-    /// Runs `f` with a subscriber that only lets `filter` through.
-    fn with_filter(filter: &str, f: impl FnOnce()) {
-        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
-        tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
-    }
-
-    #[test]
-    fn relay_filter_scopes_upstream_relay_logs() {
-        // An unset relay level leaves the base filter alone.
-        with_filter(&super::relay_filter(super::LogLevel::Info, None), || {
-            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
-        });
-
-        // A relay level silences the upstream relay crate but not our own logs.
-        with_filter(
-            &super::relay_filter(super::LogLevel::Info, Some(super::LogLevel::Error)),
-            || {
-                assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
-                assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
-            },
-        );
-    }
-
-    #[test]
-    fn every_log_level_composes_into_a_valid_filter() {
-        for base in super::LogLevel::value_variants() {
-            for relay in super::LogLevel::value_variants() {
-                let filter = super::relay_filter(*base, Some(*relay));
-                EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
-            }
-        }
-    }
-    #[test]
-    fn unknown_log_level_is_rejected() {
-        let err = match Cli::try_parse_from(["pluto", "relay", "--p2p-relay-loglevel=fatal"]) {
-            Ok(_) => panic!("`fatal` is not an EnvFilter level"),
-            Err(err) => err,
-        };
-
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 }

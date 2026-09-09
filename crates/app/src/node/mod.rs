@@ -22,8 +22,8 @@ pub mod wire;
 pub use config::AppConfig;
 
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    collections::HashMap,
+    sync::{Arc, OnceLock},
     time::{Duration, SystemTime},
 };
 
@@ -39,7 +39,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use behaviour::{CoreBehaviour, CoreHandles};
-use pluto_core::types::PubKey;
 use wire::{ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, WiredComponents};
 
 use crate::{health, monitoringapi, privkeylock};
@@ -243,10 +242,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Resolve the injectable feature set now that the lock's fork version is
     // known.
-    let feature_set = Arc::new(resolve_feature_set(
-        &config.feature_set,
-        &lock.fork_version,
-    )?);
+    let feature_set: &'static pluto_featureset::FeatureSet = Box::leak(Box::new(
+        resolve_feature_set(&config.feature_set, &lock.fork_version)?,
+    ));
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 
@@ -299,9 +297,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // Per-validator data for this node.
     let validators = build_validators(&lock, share_idx)?;
 
-    // DV root pubkeys + count for the monitoring readiness + health checkers,
-    // captured before `validators` is moved into the core-workflow wiring.
-    let monitoring_pubkeys: Vec<PubKey> = validators.iter().map(|v| v.pubkey).collect();
+    // Validator count for the monitoring health checker, captured before
+    // `validators` is moved into the core-workflow wiring.
     let num_validators = validators.len();
 
     // Global labels stamped onto every exported metric (Charon parity).
@@ -382,10 +379,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
     }
 
-    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
-    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -471,8 +466,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             // Charon gates duplicate-attestation comparison on the alpha
             // `ChainSplitHalt` featureset flag (off by default).
             compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
-            feature_set: Arc::clone(&feature_set),
-            timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
+            feature_set,
+            timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         },
     )?);
 
@@ -490,7 +485,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
         deadline_calc: Arc::clone(&deadline_calc),
-        feature_set: Arc::clone(&feature_set),
+        feature_set,
         duty_gater: Arc::clone(&duty_gater),
         eth2_cl: eth2_cl.clone(),
         pub_shares_by_key,
@@ -518,21 +513,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // `eth2_cl` is moved into the workflow inputs below.
     let monitoring_beacon = eth2_cl.clone();
 
-    // Readiness observes which DV root pubkeys the validator client references
-    // on the validator API, so `/readyz` can tell whether the VC is exercising
-    // every validator. A deduped set (not a channel) keeps this bounded by the
-    // validator count on the request path: repeated validator-API calls just
-    // re-insert, and the ready checker drains the set each slot.
-    let seen_pubkeys: Arc<Mutex<HashSet<PubKey>>> = Arc::new(Mutex::new(HashSet::new()));
-    let seen_pubkeys_observer: pluto_core::validatorapi::SeenPubkeysFn = {
-        let seen_pubkeys = Arc::clone(&seen_pubkeys);
-        Arc::new(move |pubkey: PubKey| {
-            if let Ok(mut set) = seen_pubkeys.lock() {
-                set.insert(pubkey);
-            }
-        })
-    };
-
     // Simnet validator mock: drives this node's own validator API with the
     // share keys. Built here (while `eth2_cl`/`validators` are in scope) so
     // `wire_core_workflow` can register its `slot_ticked`; held past
@@ -558,9 +538,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         WireInputs {
             threshold,
             share_idx,
-            beacon_client,
             eth2_cl,
-            submission_client,
+            submission_api,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
@@ -571,10 +550,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             graffiti_builder,
             electra_slot,
             fetch_only_comm_idx0,
-            seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
             peers: tracker_peers,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             infosync: Some(Arc::clone(&handles.infosync)),
         },
         ct.clone(),
@@ -593,11 +571,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         MonitoringInputs {
             addr: config.monitoring_addr,
             beacon_node: monitoring_beacon,
-            pubkeys: monitoring_pubkeys,
             num_validators,
             num_peers,
             quorum_peers,
-            seen_pubkeys,
             labels: monitoring_labels,
         },
         ct,
@@ -612,17 +588,12 @@ struct MonitoringInputs {
     addr: std::net::SocketAddr,
     /// Beacon client the readiness checker queries for sync/peer/version state.
     beacon_node: pluto_eth2api::EthBeaconNodeApiClient,
-    /// DV root public keys tracked by the readiness checker.
-    pubkeys: Vec<PubKey>,
     /// Number of validators (health-checker cardinality + metadata).
     num_validators: usize,
     /// Number of cluster peers (health-checker metadata).
     num_peers: i64,
     /// Peers required for quorum (health-checker metadata).
     quorum_peers: i64,
-    /// Shared, deduped set of DV root pubkeys observed on the validator API,
-    /// drained each slot by the readiness checker.
-    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     /// Global labels stamped onto every metric in the `/metrics` exposition.
     labels: Vec<(String, String)>,
 }
@@ -786,11 +757,9 @@ async fn run_lifecycle(
     let MonitoringInputs {
         addr: monitoring_addr,
         beacon_node: monitoring_beacon,
-        pubkeys: monitoring_pubkeys,
         num_validators,
         num_peers,
         quorum_peers,
-        seen_pubkeys,
         labels: monitoring_labels,
     } = monitoring;
 
@@ -798,14 +767,9 @@ async fn run_lifecycle(
     // signal. Non-blocking sends drop when the buffer is full.
     let (vapi_calls_tx, vapi_calls_rx) = tokio::sync::mpsc::channel::<()>(VAPI_CALLS_BUFFER);
 
-    // `seen_pubkeys` collects the DV root pubkeys the validator client
-    // references on the validator API (via the component's observer); the
-    // checker drains it each slot so readiness knows every validator is served.
     let readiness = monitoringapi::start_ready_checker(
         handles.p2p_context.clone(),
         monitoring_beacon,
-        monitoring_pubkeys,
-        seen_pubkeys,
         vapi_calls_rx,
         ct.clone(),
     );

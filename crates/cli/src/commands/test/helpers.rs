@@ -14,7 +14,6 @@ use crate::{
 use k256::SecretKey;
 use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_eth2util::enr::Record;
-use pluto_k1util::{load, sign};
 use pluto_ssz::{HashRoot, HashWalker, Hasher};
 use reqwest::{Method, StatusCode, header::CONTENT_TYPE};
 use serde_with::{base64::Base64, serde_as};
@@ -293,7 +292,7 @@ pub(crate) async fn publish_result_to_obol_api(
     let enr = Record::new(&private_key, vec![])?;
     let sign_data_bytes = serde_json::to_vec(&data)?;
     let hash = hash_ssz(&sign_data_bytes)?;
-    let sig = sign(&private_key, &hash)?;
+    let sig = pluto_k1util::sign(&private_key, &hash)?;
 
     let result = ObolApiResult {
         enr: enr.to_string(),
@@ -559,7 +558,7 @@ pub(crate) fn must_output_to_file_on_quiet(
 
 async fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
     if tokio::fs::try_exists(path).await? {
-        Ok(load(path)?)
+        Ok(pluto_k1util::load(path)?)
     } else {
         tracing::warn!(
             private_key_file = %path.display(),

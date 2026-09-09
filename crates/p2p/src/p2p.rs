@@ -108,7 +108,7 @@ use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
     metrics::P2P_METRICS,
-    name::peer_name,
+    name,
     p2p_context::P2PContext,
     utils,
 };
@@ -682,7 +682,7 @@ impl<B: NetworkBehaviour> Node<B> {
             // Connection errors
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer) = peer_id {
-                    warn!(peer = %peer_name(peer), %error, "outgoing connection failed");
+                    warn!(peer = %name::peer_name(peer), %error, "outgoing connection failed");
                 } else {
                     warn!(%error, "outgoing connection failed");
                 }
@@ -757,7 +757,7 @@ fn record_ping_metrics(
         return;
     }
 
-    let peer_label = peer_name(peer);
+    let peer_label = name::peer_name(peer);
     match result {
         Ok(duration) => {
             P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
@@ -781,7 +781,7 @@ fn init_ping_metrics(ctx: &P2PContext) {
         if Some(*peer) == local {
             continue;
         }
-        P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+        P2P_METRICS.ping_success[&name::peer_name(peer)].set(0);
     }
 }
 
@@ -792,7 +792,7 @@ fn clear_ping_success(ctx: &P2PContext, peer: &PeerId) {
         return;
     }
 
-    P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+    P2P_METRICS.ping_success[&name::peer_name(peer)].set(0);
 }
 
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
@@ -856,7 +856,7 @@ mod tests {
     fn ping_metrics_recorded_for_known_peer() {
         let known = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&known);
+        let label = name::peer_name(&known);
 
         record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
 
@@ -886,7 +886,7 @@ mod tests {
         let known = random_peer_id();
         let relay = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&relay);
+        let label = name::peer_name(&relay);
 
         record_ping_metrics(&ctx, &relay, &Ok(Duration::from_millis(20)));
         record_ping_metrics(&ctx, &relay, &Err(ping::Failure::Timeout));
@@ -905,7 +905,7 @@ mod tests {
     fn ping_success_cleared_when_last_connection_closes() {
         let known = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&known);
+        let label = name::peer_name(&known);
 
         record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
         assert_eq!(
@@ -926,7 +926,7 @@ mod tests {
         let known = random_peer_id();
         let relay = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&relay);
+        let label = name::peer_name(&relay);
 
         clear_ping_success(&ctx, &relay);
 
@@ -948,12 +948,12 @@ mod tests {
         assert_eq!(
             P2P_METRICS
                 .ping_success
-                .get(&peer_name(&peer))
+                .get(&name::peer_name(&peer))
                 .map(Gauge::get),
             Some(0)
         );
         assert!(
-            !P2P_METRICS.ping_success.contains(&peer_name(&local)),
+            !P2P_METRICS.ping_success.contains(&name::peer_name(&local)),
             "Charon's ping service skips self, so no self series"
         );
     }

@@ -3,7 +3,6 @@ use std::{num::NonZeroU32, path::PathBuf, time::Duration};
 use bon::Builder;
 use libp2p::relay;
 use pluto_p2p::config::P2PConfig;
-use pluto_tracing::TracingConfig;
 
 /// One hour in seconds.
 pub const ONE_HOUR_SECONDS: u64 = 60 * 60;
@@ -36,9 +35,6 @@ pub struct Config {
     pub debug_addr: Option<String>,
     /// The P2P configuration.
     pub p2p_config: P2PConfig,
-    /// The logging configuration.
-    #[builder(default)]
-    pub log_config: TracingConfig,
     /// Whether to automatically generate a P2P key.
     #[builder(default = false)]
     pub auto_p2p_key: bool,

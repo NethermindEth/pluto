@@ -24,7 +24,24 @@ pub enum Error<E: std::error::Error> {
 
     /// Failed to decode or validate a hex string.
     #[error("Failed to convert hex string: {0}")]
-    FailedToConvertHexString(hex::FromHexError),
+    FailedToConvertHexString(HexDecodeError),
+}
+
+/// Error type returned when decoding a hex string of an expected byte length.
+#[derive(Debug, thiserror::Error)]
+pub enum HexDecodeError {
+    /// The string is not valid hex.
+    #[error("invalid hex string: {0}")]
+    InvalidHex(#[from] hex::FromHexError),
+
+    /// The string decoded successfully, but to the wrong number of bytes.
+    #[error("invalid decoded length: expected {expected} bytes, got {actual}")]
+    InvalidLength {
+        /// Expected byte count.
+        expected: usize,
+        /// Actual byte count.
+        actual: usize,
+    },
 }
 
 /// Result type used by SSZ helper functions.

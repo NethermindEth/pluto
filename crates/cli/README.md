@@ -6,7 +6,7 @@ Pluto enables the operation of Ethereum validators in a fault tolerant manner by
 
 ## Commands (current)
 
-Most flags below also read a `CHARON_*` environment variable (for example `--beacon-node-endpoints` reads `CHARON_BEACON_NODE_ENDPOINTS`), mirroring charon's environment surface. Exceptions: none of the `alpha test` flags have env bindings, nor do `enr --verbose`, `version --verbose` and `relay --log-color`. A variable that is set but empty is treated as unset. Run `pluto <COMMAND> --help` for the authoritative list — flags with a binding show an `[env: ...]` line.
+Most flags below also read a `CHARON_*` environment variable (for example `--beacon-node-endpoints` reads `CHARON_BEACON_NODE_ENDPOINTS`), mirroring charon's environment surface. A variable that is set but empty is treated as unset. Run `pluto <COMMAND> --help` for the authoritative list — flags with a binding show an `[env: ...]` line.
 
 Some flags are accepted for charon compatibility but are not yet wired up. They are marked below as **[IGNORED]** (parsed, then dropped — `pluto run` logs a warning for most of them) or **[UNSUPPORTED]** (setting the flag makes the command exit at startup with an error).
 
@@ -59,7 +59,7 @@ Starts the long-running Pluto middleware process to perform distributed validato
   - `--testnet-genesis-timestamp <TIMESTAMP>`: Genesis timestamp of the custom test network.
   - `--testnet-capella-hard-fork <VERSION>`: Capella hard fork version of the custom test network.
   - The custom network is only registered when the testnet flags are fully specified; a partial set is silently ignored and pluto falls back to the built-in network registry.
-- Plus the [common P2P flags](#common-p2p-flags) and [common logging flags](#common-logging-flags) (including the Loki flags).
+- Plus the [common P2P flags](#common-p2p-flags) and [common logging flags](#common-logging-flags).
 
 ### `pluto relay`
 
@@ -69,13 +69,12 @@ Starts a libp2p circuit relay that charon clients can use to discover and connec
   - `--data-dir <PATH>`: The directory where pluto will store all its internal data. (default: `.charon`)
   - `--http-address <ADDR>`: Listening address (ip and port) for the relay http server serving runtime ENR. (default: `127.0.0.1:3640`)
   - `--auto-p2pkey`: Automatically generate and persist a p2p key if one does not exist. Always on: it defaults to true and cannot be switched off on the command line (`--auto-p2pkey=false` is rejected); set `CHARON_AUTO_P2PKEY=false` to require an existing key.
-  - `--p2p-relay-loglevel <LEVEL>`: Log level for the upstream `libp2p_relay` crate, letting its logs be quieted (`--p2p-relay-loglevel=error`) without lowering pluto's own verbosity. Takes the same values as `--log-level`; when unset the relay crate follows `--log-level`.
   - `--p2p-max-reservations <N>`: Updates max circuit reservations per peer (each valid for 1 hour). (default: `512`)
   - `--p2p-max-connections <N>`: Currently applied as the relay's total reservation limit; it does not cap inbound connections. (default: `16384`)
   - `--p2p-advertise-private-addresses`: Enable advertising of libp2p auto-detected private addresses.
   - `--monitoring-address <ADDR>`: Listening address (ip and port) for the monitoring API (prometheus).
   - `--debug-address <ADDR>`: **[IGNORED]** Parsed but no debug listener is started (no warning is emitted).
-- Plus the [common P2P flags](#common-p2p-flags) and [common logging flags](#common-logging-flags) (including the Loki flags). Note that `--p2p-relays` is accepted but unused by the relay itself.
+- Plus the [common P2P flags](#common-p2p-flags) and [common logging flags](#common-logging-flags). Note that `--p2p-relays` is accepted but unused by the relay itself.
 
 ### `pluto dkg`
 
@@ -94,7 +93,7 @@ Participate in a distributed key generation ceremony for a specific cluster defi
   - `--publish-address <URL>`: The URL to publish the cluster to. (default: `https://api.obol.tech/v1`)
   - `--publish-timeout <DURATION>`: Timeout for publishing a cluster; increase for clusters with more than 200 validators. (default: `30s`)
   - `--zipped`: Create a tar archive compressed with gzip of the target directory after creation.
-- Plus the [common P2P flags](#common-p2p-flags) and the [common logging flags](#common-logging-flags) (Loki flags are **not** available on `dkg`).
+- Plus the [common P2P flags](#common-p2p-flags) and the [common logging flags](#common-logging-flags).
 
 ### `pluto enr`
 
@@ -266,17 +265,19 @@ Shared by `run`, `relay`, `dkg` and `alpha test peers`.
 
 ### Common logging flags
 
-Shared by `run`, `relay` and `dkg`.
+Global: accepted by every command, and parsed identically before or after the subcommand (`pluto --log-level=debug run` and `pluto run --log-level=debug` are equivalent).
+
+All log output goes to stderr, leaving each command's stdout free for its own data.
+
+`RUST_LOG` is not consulted; `--log-level` (or its default) always decides the filter.
 
 - `--log-format <FORMAT>`: **[IGNORED]** Accepted but not yet applied — output is always console-formatted. (default: `console`)
-- `--log-level <LEVEL>`: Log level; `off`, `trace`, `debug`, `info`, `warn` or `error`. (default: `info`)
-- `--log-color <COLOR>`: Log color; `auto`, `force` or `disable`. (default: `auto`)
+- `--log-level <LEVEL>`: Log level; `off`, `trace`, `debug`, `info`, `warn` or `error`. Charon accepts only the last four; the two extra levels are what `tracing`'s `EnvFilter` understands. (default: `info`)
+- `--log-color <COLOR>`: Log color; `auto`, `force` or `disable`. `auto` means "unless `NO_COLOR` is set", not TTY detection. (default: `auto`)
 - `--log-output-path <PATH>`: **[IGNORED]** Accepted but not yet applied — no log file is written.
-
-`run` and `relay` additionally support Loki output:
-
 - `--loki-addresses <ADDRS>`: Enables sending of logfmt structured logs to a Loki log aggregation server, in addition to normal stderr logs. Only the first address is used; extra entries are ignored with a warning (charon fans out to every address).
 - `--loki-service <NAME>`: Service label sent with logs to Loki. (default: `pluto`)
+- `--p2p-relay-loglevel <LEVEL>`: Log level for the upstream `libp2p_relay` crate, letting its logs be quieted (`--p2p-relay-loglevel=error`) without lowering pluto's own verbosity. Takes the same values as `--log-level`; when unset the relay crate follows `--log-level`. Charon scopes this to `relay`.
 
 ## Example
 

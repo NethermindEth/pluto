@@ -9,7 +9,7 @@ use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiadd
 use pluto_eth2util::enr::Record;
 use tokio::sync::watch;
 
-use crate::name::peer_name;
+use crate::name;
 
 /// Peer error.
 #[derive(Debug, thiserror::Error)]
@@ -86,7 +86,7 @@ impl Peer {
             id: info.id,
             addresses: info.addrs.clone(),
             index: 0,
-            name: peer_name(&info.id),
+            name: name::peer_name(&info.id),
         }
     }
 
@@ -97,7 +97,7 @@ impl Peer {
         Ok(Peer {
             id,
             index,
-            name: peer_name(&id),
+            name: name::peer_name(&id),
             addresses: vec![],
         })
     }
@@ -168,7 +168,7 @@ impl MutablePeer {
 /// Only works for secp256k1 keys.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Result<K256PublicKey> {
     let libp2p_pk = peer_id_to_libp2p_pk(peer_id)?;
-    pluto_k1util::public_key_from_libp2p(&libp2p_pk).map_err(Into::into)
+    pluto_k1util::public_key_from_libp2p(libp2p_pk).map_err(Into::into)
 }
 
 /// Extracts the libp2p PublicKey from a PeerId.
@@ -197,7 +197,7 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
     for peer in peers {
         let pub_key = peer_id_to_libp2p_pk(&peer.id)?;
 
-        let got = pluto_k1util::public_key_from_libp2p(&pub_key)?;
+        let got = pluto_k1util::public_key_from_libp2p(pub_key)?;
 
         if got == want {
             return Ok(());

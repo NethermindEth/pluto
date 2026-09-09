@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
+    common::TracingArgs,
     create_cluster::CreateClusterArgs,
     create_dkg::CreateDkgArgs,
     create_enr::CreateEnrArgs,
@@ -29,6 +30,10 @@ pub struct Cli {
     /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Logging flags, shared by every subcommand.
+    #[command(flatten)]
+    pub tracing: TracingArgs,
 }
 
 /// Available commands.

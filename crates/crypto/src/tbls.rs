@@ -285,7 +285,13 @@ pub fn sign(private_key: &PrivateKey, data: &[u8]) -> Result<Signature, Error> {
     Ok(sig.to_bytes())
 }
 
-/// Verifies an aggregate signature
+/// Verifies an aggregate signature against the sum of `public_keys`.
+///
+/// Each key is validated individually — infinity and G1 subgroup checks —
+/// before the keys are summed: a point and its negation cancel to infinity, so
+/// checking only the sum lets invalid keys through. This is the IETF BLS
+/// `FastAggregateVerify` precondition that `KeyValidate` succeeded for every
+/// input key.
 pub fn verify_aggregate(
     public_keys: &[PublicKey],
     signature: Signature,
@@ -298,7 +304,7 @@ pub fn verify_aggregate(
     let pks: Vec<BlstPublicKey> = public_keys
         .iter()
         .map(|pk_bytes| {
-            BlstPublicKey::from_bytes(pk_bytes).map_err(|e| Error::InvalidPublicKey(e.into()))
+            BlstPublicKey::key_validate(pk_bytes).map_err(|e| Error::InvalidPublicKey(e.into()))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -319,7 +325,11 @@ pub fn verify_aggregate(
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng, rngs::StdRng};
+    use test_case::test_case;
+
     use super::*;
+    use crate::types::PUBLIC_KEY_LENGTH;
 
     #[test]
     fn generate_insecure_secret() {
@@ -834,5 +844,328 @@ mod tests {
 
         // Verify no 0-indexed key exists
         assert!(!shares.contains_key(&0), "Should not contain key 0");
+    }
+
+    /// Compressed `x = 4`: on the curve, outside the order-`r` subgroup G1.
+    /// `0x80` is the compression flag, sign bit clear.
+    const OFF_SUBGROUP_G1_POINT: PublicKey = {
+        let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
+        bytes[0] = 0x80;
+        bytes[PUBLIC_KEY_LENGTH - 1] = 4;
+        bytes
+    };
+
+    /// Same `x` with the sign bit set: the negation, so the pair sums to
+    /// infinity.
+    const NEGATED_OFF_SUBGROUP_G1_POINT: PublicKey = {
+        let mut bytes = OFF_SUBGROUP_G1_POINT;
+        bytes[0] = 0xa0;
+        bytes
+    };
+
+    /// Compressed G1 point at infinity: compression bit plus infinity bit.
+    const INFINITY_G1_POINT: PublicKey = {
+        let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
+        bytes[0] = 0xc0;
+        bytes
+    };
+
+    /// Position must not matter, so all three orderings are checked.
+    #[test]
+    fn verify_aggregate_rejects_off_subgroup_cancelling_keys() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let pk = secret_to_public_key(&sk).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        assert!(verify_aggregate(&[pk], sig, data).is_ok());
+
+        for keys in [
+            [pk, OFF_SUBGROUP_G1_POINT, NEGATED_OFF_SUBGROUP_G1_POINT],
+            [OFF_SUBGROUP_G1_POINT, NEGATED_OFF_SUBGROUP_G1_POINT, pk],
+            [OFF_SUBGROUP_G1_POINT, pk, NEGATED_OFF_SUBGROUP_G1_POINT],
+        ] {
+            assert!(
+                matches!(
+                    verify_aggregate(&keys, sig, data),
+                    Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
+                ),
+                "cancelling keys must be rejected, not summed away"
+            );
+        }
+    }
+
+    /// The degenerate case: infinity contributes nothing to the sum either.
+    #[test]
+    fn verify_aggregate_rejects_infinity_key() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let pk = secret_to_public_key(&sk).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        for keys in [[pk, INFINITY_G1_POINT], [INFINITY_G1_POINT, pk]] {
+            assert!(matches!(
+                verify_aggregate(&keys, sig, data),
+                Err(Error::InvalidPublicKey(BlsError::InvalidPublicKey))
+            ));
+        }
+    }
+
+    /// A lone off-subgroup key was rejected before this fix too, but as
+    /// `VerificationFailed` from the check on the summed key.
+    #[test]
+    fn verify_aggregate_reports_a_bad_key_as_a_key_error_not_a_verify_failure() {
+        let data = b"test message";
+        let sk = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let sig = sign(&sk, data).unwrap();
+
+        assert!(matches!(
+            verify_aggregate(&[OFF_SUBGROUP_G1_POINT], sig, data),
+            Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
+        ));
+
+        assert!(matches!(
+            verify_aggregate(&[[0xff; PUBLIC_KEY_LENGTH]], sig, data),
+            Err(Error::InvalidPublicKey(BlsError::BadEncoding))
+        ));
+    }
+
+    /// An RNG that yields one byte value forever, so these assertions do not
+    /// depend on a particular `rand` version's stream.
+    struct ConstantRng(u8);
+
+    impl RngCore for ConstantRng {
+        fn next_u32(&mut self) -> u32 {
+            u32::from_le_bytes([self.0; 4])
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            u64::from_le_bytes([self.0; 8])
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            dest.fill(self.0);
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    impl CryptoRng for ConstantRng {}
+
+    /// Below the scalar-field order (which begins `0x73`) and non-zero, so it
+    /// is accepted on the first draw.
+    const VALID_DRAW: PrivateKey = [0x01; 32];
+
+    /// Above the scalar-field order, so it is always rejected.
+    const INVALID_DRAW: u8 = 0xff;
+
+    #[test]
+    fn generate_insecure_secret_is_deterministic() {
+        let first = super::generate_insecure_secret(StdRng::from_seed([1u8; 32])).unwrap();
+        let again = super::generate_insecure_secret(StdRng::from_seed([1u8; 32])).unwrap();
+        let other = super::generate_insecure_secret(StdRng::from_seed([2u8; 32])).unwrap();
+
+        assert_eq!(first, again, "the same seed must give the same secret");
+        assert_ne!(first, other, "different seeds must give different secrets");
+    }
+
+    // Unlike `generate_secret_key`, this performs no key derivation: it hands
+    // back the draw verbatim. That is why it is documented as insecure.
+    #[test]
+    fn generate_insecure_secret_returns_raw_rng_draw() {
+        // Asserted, so this cannot quietly become a test of the retry loop.
+        assert!(
+            BlstSecretKey::from_bytes(&VALID_DRAW).is_ok(),
+            "the fixture draw must already be a valid scalar"
+        );
+
+        let secret = super::generate_insecure_secret(ConstantRng(VALID_DRAW[0])).unwrap();
+
+        assert_eq!(
+            secret, VALID_DRAW,
+            "the returned secret must be the RNG draw itself"
+        );
+    }
+
+    // The retry loop is bounded at 100 attempts, so an RNG that can never
+    // produce a valid scalar must terminate rather than spin.
+    #[test]
+    fn generate_insecure_secret_exhausts_retry_budget() {
+        let Err(error) = super::generate_insecure_secret(ConstantRng(INVALID_DRAW)) else {
+            panic!("an RNG that never yields a valid scalar must exhaust the retry budget")
+        };
+
+        assert!(
+            matches!(error, Error::InvalidSecretKey(BlsError::KeyGeneration)),
+            "expected InvalidSecretKey(KeyGeneration)"
+        );
+    }
+
+    // `generate_secret_key` runs EIP-2333 `key_gen` over the RNG output, so
+    // the returned key is *not* the draw.
+    #[test]
+    fn generate_secret_key_derives_from_rng_draw() {
+        let derived = generate_secret_key(ConstantRng(VALID_DRAW[0])).unwrap();
+
+        // `VALID_DRAW` is itself a usable scalar, so returning it verbatim
+        // would have looked correct.
+        assert_ne!(
+            derived, VALID_DRAW,
+            "the key must be derived from the IKM, not equal to it"
+        );
+        assert_eq!(
+            derived,
+            generate_secret_key(ConstantRng(VALID_DRAW[0])).unwrap(),
+            "derivation must be deterministic for fixed input key material"
+        );
+    }
+
+    // Three empty inputs, three different errors, all raised by this layer
+    // before it delegates. `tbls::math` reports `IndicesSharesMismatch` for the
+    // empty case — a different guard, a different variant.
+    #[test]
+    fn empty_inputs_reject_with_distinct_errors() {
+        assert!(matches!(
+            recover_secret(&HashMap::new()),
+            Err(Error::SharesAreEmpty)
+        ));
+        assert!(matches!(
+            threshold_aggregate(&HashMap::new()),
+            Err(Error::EmptySignatureArray)
+        ));
+        assert!(matches!(
+            verify_aggregate(&[], IDENTITY_SIGNATURE, b"data"),
+            Err(Error::EmptyPublicKeyArray)
+        ));
+    }
+
+    // Aggregating fewer than `threshold` partials returns `Ok` with a
+    // well-formed 96-byte signature; only verification reveals it signs
+    // nothing. (`math.rs` pins the secret-side twin.)
+    #[test]
+    fn threshold_aggregate_below_threshold_does_not_verify() {
+        const MSG: &[u8] = b"sub-threshold aggregate";
+
+        let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let public_key = secret_to_public_key(&secret).unwrap();
+        let shares = threshold_split(&secret, 5, 3).unwrap();
+
+        // Fixed explicitly: `HashMap` order is not stable, so "the first two"
+        // would be flaky.
+        let mut partials = HashMap::new();
+        for idx in [1u64, 2] {
+            let share = shares.get(&idx).expect("shares are 1-indexed over 1..=5");
+            partials.insert(idx, sign(share, MSG).unwrap());
+        }
+
+        let aggregated = threshold_aggregate(&partials)
+            .expect("sub-threshold aggregation succeeds — that is the hazard");
+
+        assert_eq!(
+            aggregated.len(),
+            SIGNATURE_LENGTH,
+            "the result is indistinguishable from a real signature by shape"
+        );
+        assert!(
+            matches!(
+                verify(&public_key, MSG, &aggregated),
+                Err(Error::VerificationFailed(_))
+            ),
+            "only verification reveals that 2 of 3 was not enough"
+        );
+    }
+
+    // A *key* error, never a verification failure: the two lead a caller to
+    // opposite conclusions — "my input is broken" vs "this signer is lying".
+    #[test_case([0u8; PUBLIC_KEY_LENGTH] ; "all zero")]
+    #[test_case([0xff; PUBLIC_KEY_LENGTH] ; "all ones")]
+    fn verify_rejects_malformed_public_key(public_key: PublicKey) {
+        let result = verify(&public_key, b"data", &IDENTITY_SIGNATURE);
+
+        assert!(
+            matches!(result, Err(Error::InvalidPublicKey(BlsError::BadEncoding))),
+            "expected InvalidPublicKey(BadEncoding)"
+        );
+    }
+
+    // Four functions parse signatures independently; only `aggregate` had
+    // coverage. Each remaining call site maps its own error, so a missing or
+    // mis-mapped `?` is otherwise invisible.
+    #[test]
+    fn all_entry_points_reject_malformed_signature() {
+        const MSG: &[u8] = b"malformed signature";
+        const BAD: Signature = [0u8; SIGNATURE_LENGTH];
+
+        let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let public_key = secret_to_public_key(&secret).unwrap();
+
+        let threshold = threshold_aggregate(&HashMap::from([(1u64, BAD)]));
+        assert!(
+            matches!(threshold, Err(Error::InvalidSignature(_))),
+            "threshold_aggregate: expected InvalidSignature"
+        );
+
+        let verified = verify(&public_key, MSG, &BAD);
+        assert!(
+            matches!(verified, Err(Error::InvalidSignature(_))),
+            "verify: expected InvalidSignature"
+        );
+
+        let verified_aggregate = verify_aggregate(&[public_key], BAD, MSG);
+        assert!(
+            matches!(verified_aggregate, Err(Error::InvalidSignature(_))),
+            "verify_aggregate: expected InvalidSignature"
+        );
+    }
+
+    // `aggregate(&[])` hands back the identity signature, which must fail
+    // rather than verify against anything.
+    #[test]
+    fn verify_rejects_identity_signature() {
+        let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let public_key = secret_to_public_key(&secret).unwrap();
+
+        let result = verify(&public_key, b"data", &IDENTITY_SIGNATURE);
+
+        assert!(
+            matches!(result, Err(Error::VerificationFailed(_))),
+            "the identity signature must not verify"
+        );
+    }
+
+    // Through `verify`, an off-subgroup key is indistinguishable from a bad
+    // signature: blst 0.3.17's `aggregate_verify` collapses every per-key
+    // failure into one flag and returns a flat `BLST_VERIFY_FAIL`.
+    // `verify_aggregate` calls `key_validate` first and reports
+    // `InvalidPublicKey`. Asserted together so the contrast cannot drift.
+    #[test]
+    fn verify_reports_off_subgroup_key_as_verify_failure() {
+        const MSG: &[u8] = b"off subgroup key";
+
+        // Genuine, so the outcome is attributable to the key alone.
+        let secret = generate_secret_key(rand::rngs::OsRng).unwrap();
+        let signature = sign(&secret, MSG).unwrap();
+
+        let result = verify(&OFF_SUBGROUP_G1_POINT, MSG, &signature);
+        assert!(
+            matches!(
+                result,
+                Err(Error::VerificationFailed(BlsError::VerifyFailed))
+            ),
+            "expected VerificationFailed(VerifyFailed)"
+        );
+
+        // The same 48 bytes, reported far more precisely one function over.
+        let aggregate_result = verify_aggregate(&[OFF_SUBGROUP_G1_POINT], signature, MSG);
+        assert!(
+            matches!(
+                aggregate_result,
+                Err(Error::InvalidPublicKey(BlsError::PointNotInGroup))
+            ),
+            "verify_aggregate must name the real cause"
+        );
     }
 }

@@ -3,7 +3,7 @@
 use std::{future::Future, path::PathBuf};
 
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
+    commands::common::{LICENSE, parse_relay_addrs},
     duration::Duration,
     error::{CliError, Result},
 };
@@ -55,9 +55,6 @@ pub struct DkgArgs {
 
     #[command(flatten)]
     pub p2p: DkgP2PArgs,
-
-    #[command(flatten)]
-    pub log: DkgLogArgs,
 
     #[arg(
         long = "publish-address",
@@ -123,8 +120,6 @@ impl TryFrom<DkgArgs> for pluto_dkg::dkg::Config {
     fn try_from(args: DkgArgs) -> Result<Self> {
         validate_p2p_args(&args.p2p)?;
 
-        let tracing_config =
-            build_console_tracing_config(args.log.level.clone(), &args.log.color, None);
         let p2p_config = {
             let relays = parse_relay_addrs(&args.p2p.relays)?;
 
@@ -143,7 +138,6 @@ impl TryFrom<DkgArgs> for pluto_dkg::dkg::Config {
             .no_verify(args.no_verify)
             .data_dir(args.data_dir)
             .p2p(p2p_config)
-            .log(tracing_config)
             .keymanager(
                 pluto_dkg::dkg::KeymanagerConfig::builder()
                     .address(args.keymanager_address)
@@ -217,41 +211,6 @@ pub struct DkgP2PArgs {
     pub disable_reuseport: bool,
 }
 
-/// Logging arguments for the `dkg` command.
-#[derive(clap::Args, Clone, Debug)]
-pub struct DkgLogArgs {
-    #[arg(
-        long = "log-format",
-        env = "CHARON_LOG_FORMAT",
-        default_value = "console",
-        help = "Log format; console, logfmt or json"
-    )]
-    pub format: String,
-
-    #[arg(
-        long = "log-level",
-        env = "CHARON_LOG_LEVEL",
-        default_value = "info",
-        help = "Log level; debug, info, warn or error"
-    )]
-    pub level: String,
-
-    #[arg(
-        long = "log-color",
-        env = "CHARON_LOG_COLOR",
-        default_value = "auto",
-        help = "Log color; auto, force, disable."
-    )]
-    pub color: ConsoleColor,
-
-    #[arg(
-        long = "log-output-path",
-        env = "CHARON_LOG_OUTPUT_PATH",
-        help = "Path in which to write on-disk logs."
-    )]
-    pub log_output_path: Option<PathBuf>,
-}
-
 /// Runs the `dkg` command from an already-built configuration.
 pub async fn run(config: pluto_dkg::dkg::Config, ct: CancellationToken) -> Result<()> {
     run_with_runner(config, ct, pluto_dkg::dkg::run).await
@@ -283,10 +242,13 @@ fn validate_p2p_args(args: &DkgP2PArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands};
+    use crate::{
+        cli::{Cli, Commands},
+        commands::common::{LogFormat, LogLevel},
+    };
     use clap::Parser;
     use pluto_p2p::config::RelayAddr;
-    use std::{sync::Arc, time::Duration as StdDuration};
+    use std::{path::Path, sync::Arc, time::Duration as StdDuration};
 
     #[test]
     fn dkg_is_registered_as_top_level_subcommand() {
@@ -301,6 +263,9 @@ mod tests {
     #[test]
     fn dkg_defaults_match_go() {
         let cli = Cli::try_parse_from(["pluto", "dkg"]).expect("dkg command should parse");
+
+        assert_eq!(cli.tracing.log_level, LogLevel::Info);
+        assert_eq!(cli.tracing.log_format, LogFormat::Console);
 
         let Commands::Dkg(args) = cli.command else {
             panic!("expected dkg command");
@@ -326,8 +291,6 @@ mod tests {
             args.p2p.relays,
             pluto_p2p::config::DEFAULT_RELAYS.map(String::from).to_vec(),
         );
-        assert_eq!(args.log.level, "info");
-        assert_eq!(args.log.format, "console");
     }
 
     #[test]
@@ -357,7 +320,6 @@ mod tests {
             ("keymanager-address", "CHARON_KEYMANAGER_ADDRESS"),
             ("keymanager-auth-token", "CHARON_KEYMANAGER_AUTH_TOKEN"),
             ("p2p-relays", "CHARON_P2P_RELAYS"),
-            ("log-level", "CHARON_LOG_LEVEL"),
             ("publish", "CHARON_PUBLISH"),
             ("publish-timeout", "CHARON_PUBLISH_TIMEOUT"),
             ("timeout", "CHARON_TIMEOUT"),
@@ -406,6 +368,23 @@ mod tests {
         ])
         .expect("dkg command should parse");
 
+        // Log flags are global, so they land on the root rather than on `dkg`.
+        assert_eq!(cli.tracing.log_level, LogLevel::Debug);
+        assert_eq!(cli.tracing.log_format, LogFormat::Json);
+        assert_eq!(
+            cli.tracing.log_output_path.as_deref(),
+            Some(Path::new("/tmp/pluto.log"))
+        );
+        let tracing_config = cli.tracing.tracing_config();
+        assert_eq!(tracing_config.override_env_filter.as_deref(), Some("debug"));
+        assert!(
+            tracing_config
+                .console
+                .as_ref()
+                .expect("console config")
+                .with_ansi
+        );
+
         let Commands::Dkg(args) = cli.command else {
             panic!("expected dkg command");
         };
@@ -430,9 +409,6 @@ mod tests {
         assert_eq!(config.p2p.tcp_addrs, vec!["0.0.0.0:9000".to_string()]);
         assert_eq!(config.p2p.udp_addrs, vec!["0.0.0.0:9000".to_string()]);
         assert!(config.p2p.disable_reuse_port);
-        assert_eq!(config.log.override_env_filter.as_deref(), Some("debug"));
-        let console = config.log.console.as_ref().expect("console config");
-        assert!(console.with_ansi);
         assert!(config.publish.enabled);
         assert_eq!(config.publish.address, "https://api.example/v1");
         assert_eq!(config.publish.timeout, StdDuration::from_secs(40));
@@ -453,6 +429,17 @@ mod tests {
             "--log-output-path=/tmp/pluto.log",
         ])
         .expect("dkg command should parse");
+
+        let tracing_config = cli.tracing.tracing_config();
+        assert_eq!(tracing_config.override_env_filter.as_deref(), Some("debug"));
+        assert!(
+            !tracing_config
+                .console
+                .as_ref()
+                .expect("console config")
+                .with_ansi
+        );
+
         let Commands::Dkg(args) = cli.command else {
             panic!("expected dkg command");
         };
@@ -466,9 +453,6 @@ mod tests {
             move |config, token| async move {
                 assert!(!token.is_cancelled());
                 assert_eq!(config.def_file, ".charon/cluster-definition.json");
-                assert_eq!(config.log.override_env_filter.as_deref(), Some("debug"));
-                let console = config.log.console.as_ref().expect("console config");
-                assert!(!console.with_ansi);
                 events.lock().expect("lock").push("runner");
                 Ok(())
             }

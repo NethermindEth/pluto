@@ -327,15 +327,13 @@ pub struct DistValidatorV1x8orLater {
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
-    // charon marshals `public_shares` with `omitempty`, so it is absent when
-    // empty.
+    // Omitted from JSON when empty.
     #[serde(default, rename = "public_shares")]
     #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
-    // charon marshals `partial_deposit_data` with `omitempty`, so it is absent
-    // when empty.
+    // Omitted from JSON when empty.
     #[serde(default)]
     pub partial_deposit_data: Vec<DepositData>,
 
@@ -370,9 +368,8 @@ impl From<DistValidatorV1x8orLater> for DistValidator {
 mod tests {
     use super::*;
 
-    /// charon marshals `public_shares` and `partial_deposit_data` with
-    /// `omitempty`, so both keys are absent when empty. Deserialization must
-    /// tolerate that rather than require the keys.
+    /// `public_shares` and `partial_deposit_data` are `omitempty`: both keys
+    /// are absent when empty, and deserialization must tolerate that.
     #[test]
     fn dist_validator_v1x8_accepts_absent_omitempty_fields() {
         let lock: serde_json::Value =
