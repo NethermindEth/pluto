@@ -65,9 +65,10 @@
 //! let node = Node::new_server(
 //!     P2PConfig::default(),
 //!     secret_key,
-//!     NodeType::TCP,
+//!     NodeType::QUIC,
 //!     false, // filter_private_addrs
 //!     P2PContext::default(),
+//!     None, // bandwidth
 //!     |builder, keypair| {
 //!         builder.with_inner(
 //!             relay::Behaviour::new(keypair.public().to_peer_id(), relay_config)
