@@ -50,12 +50,10 @@ use tracing::warn;
 use pluto_core::{
     deadline::{DeadlinerTask, NeverExpiringCalculator},
     gater::DutyGaterFn,
-    parsigdb::memory::{
-        InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
-    },
+    parsigdb::memory::{self, InternalSubscriberError, MemDB, MemDBError},
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey, SlotNumber},
 };
-use pluto_parsigex::{Handle, ReceivedSub, received_subscriber};
+use pluto_parsigex::{Handle, ReceivedSub};
 
 /// Numeric identifier for a DKG signature exchange round, encoded as
 /// `Duty.slot`.
@@ -181,7 +179,7 @@ impl Exchanger {
 
         {
             let handle_clone = handle.clone();
-            let sub = internal_subscriber(move |duty, set| {
+            let sub = memory::internal_subscriber(move |duty, set| {
                 let handle = handle_clone.clone();
                 async move {
                     let sig_type = duty.slot.inner();
@@ -200,7 +198,7 @@ impl Exchanger {
         {
             let duty_gater = duty_gater_fn.clone();
             let sig_data_clone = sig_data.clone();
-            let sub = threshold_subscriber(move |duty, set| {
+            let sub = memory::threshold_subscriber(move |duty, set| {
                 let duty_gater = duty_gater.clone();
                 let sig_data = sig_data_clone.clone();
                 async move {
@@ -215,7 +213,7 @@ impl Exchanger {
 
         {
             let sigdb_clone = Arc::clone(&sigdb);
-            let sub: ReceivedSub = received_subscriber(move |duty, set| {
+            let sub: ReceivedSub = pluto_parsigex::received_subscriber(move |duty, set| {
                 let sigdb = sigdb_clone.clone();
                 async move {
                     if let Err(e) = sigdb.lock().await.store_external(&duty, &set).await {
