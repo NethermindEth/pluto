@@ -272,7 +272,7 @@ mod nanos {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Config format version, see [`VERSION`].
+    /// Config format version, see `VERSION`.
     pub version: String,
     /// Current workflow step.
     pub step: Step,
