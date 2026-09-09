@@ -50,11 +50,15 @@ Environment:
 
 - Recommended dev setup: `nix develop` (see `pluto/CONTRIBUTING.md`).
 - Rust toolchain is pinned in `pluto/rust-toolchain.toml`.
+- The exact nightly used for `rustfmt` is pinned in `pluto/rustfmt-toolchain`
+  (CI, git hooks and the Nix dev shell all read it). Inside `nix develop`,
+  `cargo +nightly fmt` is wrapped to that pinned nightly; with rustup, use the
+  dated toolchain, e.g. `cargo +"$(cat rustfmt-toolchain)" fmt`.
 
 Commands (run from `pluto/`):
 
 ```bash
-cargo +nightly fmt --all --check
+cargo +nightly fmt --all --check   # nightly pinned via rustfmt-toolchain
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo deny check --hide-inclusion-graph
