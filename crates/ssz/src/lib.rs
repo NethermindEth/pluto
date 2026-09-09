@@ -9,7 +9,7 @@ pub mod serde_utils;
 mod types;
 
 /// Generic SSZ error types.
-pub use error::{Error, Result};
+pub use error::{Error, HexDecodeError, Result};
 /// SSZ hashing walker and merkleization runtime.
 pub use hasher::{HashFn, HashWalker, Hasher, HasherError, calculate_limit};
 /// Generic SSZ helper utilities.
@@ -33,7 +33,4 @@ pub enum SszBinaryError {
         /// Actual byte count.
         actual: usize,
     },
-    /// Invalid byte value for a boolean field.
-    #[error("invalid bool byte: {0}")]
-    InvalidBool(u8),
 }

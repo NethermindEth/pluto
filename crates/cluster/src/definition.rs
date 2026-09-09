@@ -127,13 +127,13 @@ impl Serialize for Definition {
     {
         match self.version.as_str() {
             V1_0 | V1_1 => DefinitionV1x0or1::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_2 | V1_3 => DefinitionV1x2or3::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_4 => DefinitionV1x4::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e}")))?
                 .serialize(serializer),
             V1_5 | V1_6 | V1_7 => DefinitionV1x5to7::from(self.clone()).serialize(serializer),
             V1_8 => DefinitionV1x8::from(self.clone()).serialize(serializer),
@@ -167,21 +167,21 @@ impl<'de> Deserialize<'de> for Definition {
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_2 | V1_3 => {
                 let definition: DefinitionV1x2or3 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_4 => {
                 let definition: DefinitionV1x4 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e}")))
             }
             V1_5 | V1_6 | V1_7 => {
                 let definition: DefinitionV1x5to7 =
@@ -268,7 +268,7 @@ pub enum DefinitionError {
 
     /// Failed to convert hex string
     #[error("Failed to convert hex string")]
-    FailedToConvertHexString(#[from] hex::FromHexError),
+    FailedToConvertHexString(#[from] pluto_ssz::HexDecodeError),
 
     /// Invalid target gas limit
     #[error("Invalid target gas limit: {0}")]
@@ -1781,13 +1781,9 @@ mod tests {
             result.is_err(),
             "u64::MAX num_validators must be rejected, not allocated"
         );
-        // The deserialize dispatch renders the TryFrom error via Debug
-        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on
-        // the variant name and the enforced max, both of which appear
-        // in the Debug repr.
         let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains("NumValidatorsTooLarge") && msg.contains("65536"),
+            msg.contains("exceeds maximum") && msg.contains("65536"),
             "unexpected error message: {msg}"
         );
     }
@@ -2109,7 +2105,7 @@ mod tests {
 
             let err = serde_json::from_value::<Definition>(value).unwrap_err();
             assert!(
-                err.to_string().contains("NonZeroOperatorNonce"),
+                err.to_string().contains("non-zero operator nonce"),
                 "unexpected error: {err}"
             );
         }

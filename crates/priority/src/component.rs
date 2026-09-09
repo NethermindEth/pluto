@@ -74,7 +74,7 @@ pub struct ScoredPriority {
 ///
 /// Returns the unknown-peer or invalid-signature error rather than a boolean,
 /// so callers reject messages from unrecognised peers or with bad signatures.
-pub type MsgVerifier = Box<dyn Fn(&PriorityMsg) -> Result<()> + Send + Sync + 'static>;
+pub type MsgVerifier = Arc<dyn Fn(&PriorityMsg) -> Result<()> + Send + Sync + 'static>;
 
 /// Returns a copy of the message signed by `privkey`.
 ///
@@ -122,7 +122,7 @@ pub(crate) fn new_msg_verifier(peers: &[PeerId]) -> Result<MsgVerifier> {
         keys.insert(peer.to_string(), pk);
     }
 
-    Ok(Box::new(move |msg: &PriorityMsg| {
+    Ok(Arc::new(move |msg: &PriorityMsg| {
         if msg.duty.is_none() {
             return Err(Error::InvalidMsgProtoFields);
         }

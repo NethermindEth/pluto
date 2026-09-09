@@ -118,7 +118,7 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
+    .unwrap_or_else(|_| panic!("POST {submit_path} should be hit"))
 }
 
 /// Counts POSTs the mock has received for `submit_path`.
@@ -216,7 +216,6 @@ fn wire_inputs_with(
         graffiti_builder: pluto_core::fetcher::GraffitiBuilder::default(),
         electra_slot: 0,
         fetch_only_comm_idx0: false,
-        seen_pubkeys: None,
         slot_tick: None,
         // Single-node wiring test: one peer at share index 1, default features
         // (so only proposers carry an on-chain inclusion step).
@@ -224,7 +223,7 @@ fn wire_inputs_with(
             name: "test".to_string(),
             share_idx: 1,
         }],
-        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        feature_set: Box::leak(Box::new(pluto_featureset::FeatureSet::default())),
         infosync: None,
     }
 }
@@ -250,7 +249,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
         name: "node-0".to_string(),
         public_key: key.public_key(),
     };
-    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
+    let feature_set: &'static pluto_featureset::FeatureSet =
+        Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
     let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
@@ -262,7 +262,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
             broadcaster: Arc::new(|_ct, _msg| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: true,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
@@ -758,6 +758,45 @@ async fn wiring_rejects_bad_partial_signature() {
     assert_eq!(
         posts, 0,
         "(c-reject) SigAgg must reject the invalid group signature and not broadcast"
+    );
+
+    ct.cancel();
+}
+
+/// (d) `wire_core_workflow` seeds the shared validator cache with the cluster
+/// pubkeys. The scheduler resolves the current slot on start, so its validators
+/// request must carry those pubkeys in `ids`; an unseeded cache sends an empty
+/// `ids` and resolves zero validators.
+#[tokio::test]
+async fn wiring_seeds_validator_cache() {
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+    let pubkey = PubKey::new([9u8; PK_LEN]);
+    let eth2_cl = mock.client().clone();
+    let consensus = build_consensus(&ct);
+
+    let _wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
+
+    const VALIDATORS: &str = "/eth/v1/beacon/states/head/validators";
+    wait_for_post(mock.server(), VALIDATORS).await;
+    let bodies: Vec<_> = mock
+        .server()
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == VALIDATORS)
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(
+        bodies.iter().all(|body| body.contains(&pubkey.to_string())),
+        "(d) validators requests should carry the cluster pubkeys, got: {bodies:?}"
     );
 
     ct.cancel();

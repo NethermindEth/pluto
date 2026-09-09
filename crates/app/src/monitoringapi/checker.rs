@@ -1,14 +1,9 @@
 //! Background readiness checker for `/readyz`.
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pluto_cluster::helpers;
-use pluto_core::types::PubKey;
 use pluto_eth2api::EthBeaconNodeApiClient;
 use pluto_p2p::p2p_context::P2PContext;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
@@ -46,16 +41,11 @@ struct ChainConfig {
 /// Starts the background readiness checker and returns the shared readiness
 /// state served by `/readyz`.
 ///
-/// `seen_pubkeys` is a shared, deduped set of DV root pubkeys the validator
-/// client has referenced through the validator API; the checker drains it each
-/// slot, so it stays bounded by the validator count regardless of request
-/// volume. `validator_api_calls` should receive one item for each validator API
-/// call. The checker consumes both until cancellation.
+/// `validator_api_calls` should receive one item for each validator API call.
+/// The checker consumes it until cancellation.
 pub fn start_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
-    pubkeys: Vec<PubKey>,
-    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
 ) -> ReadyState {
@@ -69,8 +59,6 @@ pub fn start_ready_checker(
     let _task = tokio::spawn(run_ready_checker(
         p2p_context,
         beacon_node,
-        pubkeys,
-        seen_pubkeys,
         validator_api_calls,
         ct,
         readiness.clone(),
@@ -157,8 +145,6 @@ async fn fetch_node_version(
 async fn run_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
-    pubkeys: Vec<PubKey>,
-    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     mut validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
     readiness: ReadyState,
@@ -174,7 +160,7 @@ async fn run_ready_checker(
         }
     };
 
-    let mut checker = ReadyChecker::new(pubkeys, current_epoch(&config, Utc::now()));
+    let mut checker = ReadyChecker::new(current_epoch(&config, Utc::now()));
     // Drop missed ticks rather than firing a catch-up burst if a round stalls,
     // so the connectivity hysteresis stays on real wall-clock periods.
     let mut slot_interval = tokio::time::interval(config.slot_duration);
@@ -202,13 +188,6 @@ async fn run_ready_checker(
                         None
                     }
                 };
-                // Fold in the pubkeys the VC referenced since the last tick.
-                // The set is deduped and drained every slot, so it stays
-                // bounded by the validator count regardless of request volume.
-                let observed = std::mem::take(&mut *seen_pubkeys.lock().expect("seen pubkeys mutex"));
-                for pubkey in observed {
-                    checker.observe_pubkey(pubkey);
-                }
                 let evaluated_epoch = current_epoch(&config, Utc::now());
                 let status = checker.evaluate_round(
                     quorum_peers_connected(&p2p_context),
@@ -346,32 +325,22 @@ struct BeaconNodeSyncStatus {
 }
 
 struct ReadyChecker {
-    pubkeys: Vec<PubKey>,
     current_epoch: u128,
     beacon_node_peer_count: Option<u64>,
     not_connected_rounds: u64,
     current_validator_api_calls: u64,
     previous_validator_api_calls: u64,
-    current_pubkeys: HashSet<PubKey>,
-    previous_pubkeys: HashSet<PubKey>,
 }
 
 impl ReadyChecker {
-    fn new(pubkeys: Vec<PubKey>, current_epoch: u128) -> Self {
+    fn new(current_epoch: u128) -> Self {
         Self {
-            previous_pubkeys: pubkeys.iter().copied().collect(),
-            pubkeys,
             current_epoch,
             beacon_node_peer_count: None,
             not_connected_rounds: MIN_NOT_CONNECTED_ROUNDS,
             current_validator_api_calls: 0,
             previous_validator_api_calls: 1,
-            current_pubkeys: HashSet::new(),
         }
-    }
-
-    fn observe_pubkey(&mut self, pubkey: PubKey) {
-        self.current_pubkeys.insert(pubkey);
     }
 
     fn observe_validator_api_call(&mut self) {
@@ -392,7 +361,6 @@ impl ReadyChecker {
 
         if evaluated_epoch != self.current_epoch {
             self.current_epoch = evaluated_epoch;
-            self.previous_pubkeys = std::mem::take(&mut self.current_pubkeys);
             self.previous_validator_api_calls = self.current_validator_api_calls;
             self.current_validator_api_calls = 0;
         }
@@ -411,10 +379,6 @@ impl ReadyChecker {
             Err(ReadinessError::InsufficientPeers)
         } else if self.previous_validator_api_calls == 0 {
             Err(ReadinessError::ValidatorClientNotConnected)
-        } else if self.previous_pubkeys.len() < self.pubkeys.len()
-            && self.current_pubkeys.len() < self.pubkeys.len()
-        {
-            Err(ReadinessError::ValidatorClientMissingValidators)
         } else {
             Ok(())
         }
@@ -450,10 +414,6 @@ mod tests {
         // Multibyte input truncates on a char boundary without panicking.
         let mb = "é".repeat(MAX_METRIC_LABEL_LEN);
         assert!(truncate_label(&mb).len() <= MAX_METRIC_LABEL_LEN);
-    }
-
-    fn pubkey(byte: u8) -> PubKey {
-        PubKey::from([byte; 48])
     }
 
     fn connected_context(peer_ids: &[PeerId], connected_peers: &[PeerId]) -> P2PContext {
@@ -492,8 +452,7 @@ mod tests {
 
     #[test]
     fn ready_checker_matches_go_error_precedence() {
-        let pubkeys = vec![pubkey(1), pubkey(2), pubkey(3)];
-        let mut checker = ReadyChecker::new(pubkeys, 0);
+        let mut checker = ReadyChecker::new(0);
         checker.beacon_node_peer_count = Some(0);
 
         let result = checker.evaluate_round(
@@ -510,8 +469,7 @@ mod tests {
 
     #[test]
     fn ready_checker_requires_quorum_for_six_rounds() {
-        let pubkeys = vec![pubkey(1)];
-        let mut checker = ReadyChecker::new(pubkeys, 0);
+        let mut checker = ReadyChecker::new(0);
 
         assert_eq!(
             checker.evaluate_round(false, 0, synced()),
@@ -523,26 +481,18 @@ mod tests {
 
     #[test]
     fn ready_checker_tracks_validator_api_by_epoch() {
-        let pubkeys = vec![pubkey(1), pubkey(2), pubkey(3)];
-        let mut checker = ReadyChecker::new(pubkeys.clone(), 0);
+        let mut checker = ReadyChecker::new(0);
 
+        // A single validator API call in the epoch is enough: the retired
+        // "vc missing validators" check no longer requires every validator to
+        // be seen (Charon `v1.10.0` parity).
         checker.observe_validator_api_call();
-        checker.observe_pubkey(pubkeys[0]);
-        assert_eq!(
-            checker.evaluate_round(true, 1, synced()),
-            Err(ReadinessError::ValidatorClientMissingValidators)
-        );
-
-        for pubkey in pubkeys {
-            checker.observe_pubkey(pubkey);
-        }
         assert_eq!(checker.evaluate_round(true, 1, synced()), Ok(()));
     }
 
     #[test]
     fn ready_checker_detects_missing_validator_api_calls_on_epoch_change() {
-        let pubkeys = vec![pubkey(1)];
-        let mut checker = ReadyChecker::new(pubkeys, 0);
+        let mut checker = ReadyChecker::new(0);
 
         assert_eq!(
             checker.evaluate_round(true, 1, synced()),

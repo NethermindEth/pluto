@@ -598,8 +598,7 @@ fn build_consensus(
         DemoDeadline { timeout },
     );
     let local_node = fixture.local_index;
-    let feature_set = Arc::new(FeatureSet::new());
-    let timer_feature_set = feature_set.clone();
+    let feature_set: &'static FeatureSet = Box::leak(Box::new(FeatureSet::new()));
     let component = Arc::new(qbft::Consensus::new(qbft::Config {
         peers: fixture.consensus_peers.clone(),
         local_peer_idx: i64::try_from(fixture.local_index)?,
@@ -617,10 +616,7 @@ fn build_consensus(
         }),
         compare_attestations: false,
         timer_func: Box::new(move |duty| {
-            Box::new(IncreasingRoundTimer::with_duty(
-                duty,
-                timer_feature_set.clone(),
-            )) as Box<dyn RoundTimer>
+            Box::new(IncreasingRoundTimer::with_duty(duty, feature_set)) as Box<dyn RoundTimer>
         }),
         feature_set,
     })?);

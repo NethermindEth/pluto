@@ -168,7 +168,7 @@ impl MutablePeer {
 /// Only works for secp256k1 keys.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Result<K256PublicKey> {
     let libp2p_pk = peer_id_to_libp2p_pk(peer_id)?;
-    pluto_k1util::public_key_from_libp2p(&libp2p_pk).map_err(Into::into)
+    pluto_k1util::public_key_from_libp2p(libp2p_pk).map_err(Into::into)
 }
 
 /// Extracts the libp2p PublicKey from a PeerId.
@@ -197,7 +197,7 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
     for peer in peers {
         let pub_key = peer_id_to_libp2p_pk(&peer.id)?;
 
-        let got = pluto_k1util::public_key_from_libp2p(&pub_key)?;
+        let got = pluto_k1util::public_key_from_libp2p(pub_key)?;
 
         if got == want {
             return Ok(());
