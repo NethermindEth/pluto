@@ -4,7 +4,7 @@ use alloy::primitives::U256;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
-use pluto_crypto::types::sig_to_eth2;
+use pluto_crypto::types;
 pub use pluto_eth2api::versioned::{ProposalBlock, VersionedProposal};
 use pluto_eth2api::{
     spec::{altair, phase0, serde_legacy_builder_version, serde_legacy_data_version},
@@ -212,7 +212,7 @@ impl SignedData for VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        let eth2_sig = sig_to_eth2(signature);
+        let eth2_sig = types::sig_to_eth2(signature);
         proposal.block.set_signature(eth2_sig);
 
         Ok(out)
@@ -316,7 +316,7 @@ impl SignedData for Attestation {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -400,7 +400,7 @@ impl SignedData for VersionedAttestation {
             .attestation
             .as_mut()
             .ok_or(SignedDataError::MissingAttestation(version))?
-            .set_signature(sig_to_eth2(signature));
+            .set_signature(types::sig_to_eth2(signature));
 
         Ok(out)
     }
@@ -523,7 +523,7 @@ impl SignedData for SignedVoluntaryExit {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -606,7 +606,7 @@ impl SignedData for VersionedSignedValidatorRegistration {
                 let Some(v1) = out.0.v1.as_mut() else {
                     return Err(SignedDataError::MissingV1Registration);
                 };
-                v1.signature = sig_to_eth2(signature);
+                v1.signature = types::sig_to_eth2(signature);
             }
             versioned::BuilderVersion::Unknown => {
                 return Err(SignedDataError::UnknownVersion);
@@ -695,7 +695,7 @@ impl SignedData for SignedRandao {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -745,7 +745,7 @@ impl SignedData for BeaconCommitteeSelection {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -788,7 +788,7 @@ impl SignedData for SyncCommitteeSelection {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -831,7 +831,7 @@ impl SignedData for SignedAggregateAndProof {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -917,7 +917,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
         }
         out.0
             .aggregate_and_proof
-            .set_signature(sig_to_eth2(signature));
+            .set_signature(types::sig_to_eth2(signature));
 
         Ok(out)
     }
@@ -1011,7 +1011,7 @@ impl SignedData for SignedSyncMessage {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -1054,7 +1054,7 @@ impl SignedData for SyncContributionAndProof {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
@@ -1097,7 +1097,7 @@ impl SignedData for SignedSyncContributionAndProof {
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 

@@ -217,9 +217,10 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
 /// The hex-encoded file contents and the decoded scalar are intermediate
 /// buffers holding the raw secret, so both are wrapped in [`Zeroizing`] and
 /// wiped once the key has been parsed.
-pub fn load(file: &Path) -> Result<SecretKey> {
-    let contents =
-        Zeroizing::new(std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?);
+pub fn load(file: impl AsRef<Path>) -> Result<SecretKey> {
+    let contents = Zeroizing::new(
+        std::fs::read_to_string(file.as_ref()).map_err(K1UtilError::FailedToReadFile)?,
+    );
 
     let decoded = Zeroizing::new(hex::decode(contents.trim())?);
 
@@ -238,7 +239,8 @@ pub fn load(file: &Path) -> Result<SecretKey> {
 /// The serialized scalar and its hex encoding are intermediate buffers holding
 /// the raw secret, so both are wrapped in [`Zeroizing`] and wiped once the file
 /// has been written.
-pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
+pub fn save(key: &SecretKey, file: impl AsRef<Path>) -> Result<()> {
+    let file = file.as_ref();
     let raw = Zeroizing::new(key.to_bytes());
     let encoded = Zeroizing::new(hex::encode(raw.as_slice()));
 
