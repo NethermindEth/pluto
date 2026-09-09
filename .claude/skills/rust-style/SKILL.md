@@ -127,9 +127,41 @@ Rules:
   - Prefer copying doc comments from Go and adapting to Rust conventions (avoid “Type is a …”).
   - Avoid leaving TODOs in merged code. If a short-lived internal note is necessary, use `// TODO:` and remove before PR merge.
 
+## Imports
+
+Import **modules, types, traits, enums, and constants** — but **not free (standalone) functions**. Call free functions qualified through their parent module so the call site shows where the function comes from.
+
+```rust
+// Bad — free function imported bare
+use crate::name::peer_name;
+let label = peer_name(&id);
+
+// Good — import the module, call qualified
+use crate::name;
+let label = name::peer_name(&id);
+```
+
+For a function re-exported at a crate root, qualify through the crate name (already in scope) rather than adding a bare `use`:
+
+```rust
+// Bad
+use pluto_k1util::load;
+let key = load(path)?;
+
+// Good
+let key = pluto_k1util::load(path)?;
+```
+
+Rules:
+
+- Types, structs, enums, and constants **should** be imported bare (`use foo::Bar;`, then `Bar`).
+- Traits **must** be imported bare — they need to be in scope for method resolution.
+- Only free functions are qualified through their module. When a `use` mixes types and a free function from the same module, add `self` and drop the function: `use foo::bar::{self, SomeType};`, then call `bar::the_fn()`.
+- This mirrors how helpers such as `peer_name`, `hash_proto`, and `to_0x_hex` are called across the workspace (`module::func()`), keeping call sites self-documenting.
+
 ## Generalized Parameter Types
 
-Prefer generic parameters over concrete types when a function only needs the behavior of a trait. This mirrors the standard library's own conventions and makes functions callable with a wider range of inputs without extra allocations.
+Prefer generic parameters over concrete types when a function only needs the behavior of a trait. This mirrors the standard library's own conventions and makes functions callable with a wider range of inputs without extra allocations. Apply this especially to **public APIs**, and keep it consistent across sibling functions in the same module — a module should not mix `&str` and `impl AsRef<str>` for the same kind of argument. Full uniformity is not the goal: private helpers and hot internal paths may keep concrete types.
 
 | Instead of | Prefer | Accepts |
 | --- | --- | --- |
@@ -138,6 +170,7 @@ Prefer generic parameters over concrete types when a function only needs the beh
 | `&[u8]` | `impl AsRef<[u8]>` | `&[u8]`, `Vec<u8>`, arrays, … |
 | `&Vec<T>` | `impl AsRef<[T]>` | `Vec<T>`, slices, arrays, … |
 | `String` (owned, read-only) | `impl Into<String>` | `&str`, `String`, … |
+| `&[T]` / iterator | `impl IntoIterator<Item = T>` | `Vec<T>`, arrays, iterators, … |
 
 Examples:
 

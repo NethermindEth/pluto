@@ -9,16 +9,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use chrono::Utc;
 use k256::{PublicKey, SecretKey};
 use libp2p::PeerId;
-use pluto_consensus::qbft::msg::hash_proto;
+use pluto_consensus::qbft::msg;
 use pluto_core::{
     corepb::v1::priority::{PriorityMsg, PriorityTopicProposal, PriorityTopicResult},
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::Duty,
 };
-use pluto_p2p::{
-    p2p_context::P2PContext,
-    peer::{peer_id_from_key, peer_id_to_public_key},
-};
+use pluto_p2p::{p2p_context::P2PContext, peer};
 use prost::Message;
 use prost_types::{Any, Value, value::Kind};
 use tokio_util::sync::CancellationToken;
@@ -84,7 +81,7 @@ pub fn sign_msg(msg: &PriorityMsg, privkey: &SecretKey) -> Result<PriorityMsg> {
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let sig = pluto_k1util::sign(privkey, &hash).map_err(Error::Sign)?;
 
     clone.signature = sig.to_vec().into();
@@ -104,7 +101,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let recovered = pluto_k1util::recover(&hash, &msg.signature).map_err(Error::Recover)?;
 
     Ok(&recovered == pubkey)
@@ -118,7 +115,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
 pub(crate) fn new_msg_verifier(peers: &[PeerId]) -> Result<MsgVerifier> {
     let mut keys: HashMap<String, PublicKey> = HashMap::with_capacity(peers.len());
     for peer in peers {
-        let pk = peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
+        let pk = peer::peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
         keys.insert(peer.to_string(), pk);
     }
 
@@ -278,7 +275,7 @@ pub fn new_component(
 
     // Derive the local peer id from the signing key so the message `peer_id`
     // and its signature always agree (peers verify the two against each other).
-    let local_id = peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
+    let local_id = peer::peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
 
     let verifier = new_msg_verifier(&peers)?;
     let calculator: Arc<dyn DeadlineCalculator> = Arc::new(calculator);

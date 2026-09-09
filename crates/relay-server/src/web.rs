@@ -24,7 +24,7 @@ use crate::{
     config::EXTERNAL_HOST_RESOLVE_INTERVAL,
     error::{RelayP2PError, Result},
 };
-use pluto_p2p::{config::P2PConfig, manet::Manet, name::peer_name};
+use pluto_p2p::{config::P2PConfig, manet::Manet, name};
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]
@@ -132,7 +132,7 @@ pub async fn enr_server(
 
     info!(
         "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
-        peer_name = peer_name(&state.peer_id),
+        peer_name = name::peer_name(&state.peer_id),
         tcp_addrs = state.p2p_config.tcp_addrs.join(", "),
         udp_addrs = state.p2p_config.udp_addrs.join(", "),
     );
