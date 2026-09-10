@@ -324,8 +324,7 @@ async fn wiring_exercises_fetcher_back_edges() {
     // Store the RANDAO into the *same* wired AggSigDB; the back-edge must
     // unblock.
     let randao: phase0::BLSSignature = [7u8; 96];
-    let randao_set: SignedDataSet =
-        HashMap::from([(pubkey, Box::new(randao) as Box<dyn SignedData>)]);
+    let randao_set: SignedDataSet = HashMap::from([(pubkey, SignedData::from(randao))]);
     tokio::time::timeout(
         GUARD,
         aggsigdb.store(Duty::new_randao_duty(SlotNumber::new(SLOT)), randao_set),

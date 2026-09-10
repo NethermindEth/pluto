@@ -588,11 +588,11 @@ fn string_error(s: &str) -> StepError {
 mod tests {
     use std::sync::Arc;
 
-    use pluto_crypto::types::{SIGNATURE_LENGTH, Signature};
+    use pluto_crypto::types::SIGNATURE_LENGTH;
 
     use super::*;
     use crate::{
-        signeddata::SignedDataError,
+        signeddata::MockSignedData,
         types::{ParSignedData, SignedData, SlotNumber},
     };
 
@@ -663,43 +663,12 @@ mod tests {
         Arc::new(WrappedEth2(EthBeaconNodeApiClientError::UnexpectedResponse))
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct TestSignedData {
-        id: HashRoot,
-        sig: [u8; SIGNATURE_LENGTH],
-    }
-
-    impl TestSignedData {
-        fn new(id_byte: u8) -> Self {
-            Self {
-                id: [id_byte; 32],
-                sig: [0u8; SIGNATURE_LENGTH],
-            }
-        }
-    }
-
-    impl SignedData for TestSignedData {
-        fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(self.sig)
-        }
-
-        fn set_signature(&self, sig: Signature) -> Result<Self, SignedDataError>
-        where
-            Self: Sized,
-        {
-            Ok(Self { id: self.id, sig })
-        }
-
-        fn set_signature_boxed(
-            &self,
-            sig: Signature,
-        ) -> Result<Box<dyn SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(sig)?))
-        }
-
-        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-            Ok(self.id)
-        }
+    /// Builds mock signed data whose message root is derived from `id_byte`,
+    /// so distinct values group under distinct roots.
+    fn test_signed_data(id_byte: u8) -> SignedData {
+        MockSignedData::new([0u8; SIGNATURE_LENGTH])
+            .with_message_root([id_byte; 32])
+            .into()
     }
 
     #[test]
@@ -1370,7 +1339,7 @@ mod tests {
         let mut next_idx: u64 = 0;
 
         // pk_a, root=A, 4 sigs.
-        let data_a = TestSignedData::new(0xAA);
+        let data_a = test_signed_data(0xAA);
         for _ in 0..4 {
             events.push(Event {
                 duty: att.clone(),
@@ -1383,7 +1352,7 @@ mod tests {
         }
 
         // pk_a, root=B, 2 sigs.
-        let data_b = TestSignedData::new(0xBB);
+        let data_b = test_signed_data(0xBB);
         for _ in 0..2 {
             events.push(Event {
                 duty: att.clone(),
@@ -1396,7 +1365,7 @@ mod tests {
         }
 
         // pk_b, root=C, 6 sigs.
-        let data_c = TestSignedData::new(0xCC);
+        let data_c = test_signed_data(0xCC);
         for _ in 0..6 {
             events.push(Event {
                 duty: att.clone(),
@@ -1434,7 +1403,7 @@ mod tests {
         // entry, regardless of differing signature content.
         let att = Duty::new_attester_duty(SlotNumber::new(0));
         let pk = pubkey(1);
-        let data = TestSignedData::new(0xAA);
+        let data = test_signed_data(0xAA);
 
         let events = vec![
             Event {

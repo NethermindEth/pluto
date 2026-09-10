@@ -1,28 +1,27 @@
 //! Eth2 signed-data verification.
 //!
-//! Extends `SignedData` types that carry beacon-chain signatures with the
+//! Extends [`SignedData`] variants that carry beacon-chain signatures with the
 //! metadata needed to verify them: the signing `DomainName` and the signing
 //! `Epoch`. `verify_eth2_signed_data` ties the two together with the
 //! upstream beacon-node domain lookup and BLS verification.
 
-use std::any::Any;
-
-use async_trait::async_trait;
 use pluto_crypto::types::PublicKey;
 use pluto_eth2api::{client::EthBeaconNodeApiClient, spec::phase0::Epoch};
 use pluto_eth2util::{
     helpers::{self, HelperError},
     signing::{self, DomainName, SigningError},
 };
+use pluto_ssz::HashRoot;
 
 use crate::{
     signeddata::{
         Attestation, BeaconCommitteeSelection, SignedAggregateAndProof, SignedDataError,
         SignedRandao, SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
-        SyncCommitteeSelection, VersionedAttestation, VersionedSignedAggregateAndProof,
-        VersionedSignedProposal, VersionedSignedValidatorRegistration,
+        SyncCommitteeSelection, SyncContributionAndProof, VersionedAttestation,
+        VersionedSignedAggregateAndProof, VersionedSignedProposal,
+        VersionedSignedValidatorRegistration,
     },
-    types::SignedData,
+    types::{Signature, SignedData},
 };
 
 /// Error returned while resolving the signing epoch for, or verifying, an
@@ -42,24 +41,205 @@ pub enum Eth2SignedDataError {
     Helper(#[from] HelperError),
 }
 
-/// Signed duty data that carries an eth2 beacon-chain signature.
+/// A [`SignedData`] payload that carries an eth2 beacon-chain signature —
+/// the enum equivalent of Go's `core.Eth2SignedData` interface.
 ///
-/// The signing root is the payload's [`SignedData::message_root`] wrapped with
-/// the domain identified by [`Self::domain_name`] at the epoch returned by
+/// Obtained from [`SignedData::as_eth2_signed_data`], the port of Go's
+/// `data.(core.Eth2SignedData)` type assertion, so the variants below are
+/// exactly the payloads with a beacon-chain signing domain.
+///
+/// The signing root is the payload's [`Self::message_root`] wrapped with the
+/// domain identified by [`Self::domain_name`] at the epoch returned by
 /// [`Self::epoch`].
-#[async_trait]
-pub trait Eth2SignedData: SignedData {
+#[derive(Debug, Clone, Copy)]
+pub enum Eth2SignedData<'a> {
+    /// Signed beacon block proposal.
+    VersionedSignedProposal(&'a VersionedSignedProposal),
+    /// Non-versioned (phase0) attestation.
+    Attestation(&'a Attestation),
+    /// Versioned attestation.
+    VersionedAttestation(&'a VersionedAttestation),
+    /// Signed voluntary exit.
+    SignedVoluntaryExit(&'a SignedVoluntaryExit),
+    /// Signed validator registration.
+    VersionedSignedValidatorRegistration(&'a VersionedSignedValidatorRegistration),
+    /// Signed randao reveal.
+    SignedRandao(&'a SignedRandao),
+    /// Beacon committee selection proof.
+    BeaconCommitteeSelection(&'a BeaconCommitteeSelection),
+    /// Non-versioned (phase0) signed aggregate-and-proof.
+    SignedAggregateAndProof(&'a SignedAggregateAndProof),
+    /// Versioned signed aggregate-and-proof.
+    VersionedSignedAggregateAndProof(&'a VersionedSignedAggregateAndProof),
+    /// Signed sync committee message.
+    SignedSyncMessage(&'a SignedSyncMessage),
+    /// Signed sync contribution-and-proof.
+    SignedSyncContributionAndProof(&'a SignedSyncContributionAndProof),
+    /// Sync committee selection proof.
+    SyncCommitteeSelection(&'a SyncCommitteeSelection),
+    /// Sync contribution-and-proof (signed over its selection proof).
+    SyncContributionAndProof(&'a SyncContributionAndProof),
+}
+
+impl Eth2SignedData<'_> {
     /// Returns the eth2 signing domain for this data.
-    fn domain_name(&self) -> DomainName;
+    pub fn domain_name(&self) -> DomainName {
+        match self {
+            Self::VersionedSignedProposal(_) => DomainName::BeaconProposer,
+            Self::Attestation(_) | Self::VersionedAttestation(_) => DomainName::BeaconAttester,
+            Self::SignedVoluntaryExit(_) => DomainName::VoluntaryExit,
+            Self::VersionedSignedValidatorRegistration(_) => DomainName::ApplicationBuilder,
+            Self::SignedRandao(_) => DomainName::Randao,
+            Self::BeaconCommitteeSelection(_) => DomainName::SelectionProof,
+            Self::SignedAggregateAndProof(_) | Self::VersionedSignedAggregateAndProof(_) => {
+                DomainName::AggregateAndProof
+            }
+            Self::SignedSyncMessage(_) => DomainName::SyncCommittee,
+            Self::SignedSyncContributionAndProof(_) => DomainName::ContributionAndProof,
+            Self::SyncCommitteeSelection(_) | Self::SyncContributionAndProof(_) => {
+                DomainName::SyncCommitteeSelectionProof
+            }
+        }
+    }
 
     /// Returns the epoch at which the signing domain is resolved.
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError>;
+    pub async fn epoch(
+        &self,
+        client: &EthBeaconNodeApiClient,
+    ) -> Result<Epoch, Eth2SignedDataError> {
+        match self {
+            Self::VersionedSignedProposal(data) => {
+                if data.0.version == pluto_eth2api::versioned::DataVersion::Unknown {
+                    return Err(SignedDataError::UnknownVersion.into());
+                }
+
+                Ok(helpers::epoch_from_slot(client, data.0.block.slot()).await?)
+            }
+            Self::Attestation(data) => Ok(data.0.data.target.epoch),
+            Self::VersionedAttestation(data) => {
+                let version = data.0.version;
+                if version == pluto_eth2api::versioned::DataVersion::Unknown {
+                    return Err(SignedDataError::UnknownVersion.into());
+                }
+
+                let inner = data
+                    .0
+                    .attestation
+                    .as_ref()
+                    .ok_or(SignedDataError::MissingAttestation(version))?
+                    .data();
+
+                Ok(inner.target.epoch)
+            }
+            Self::SignedVoluntaryExit(data) => Ok(data.0.message.epoch),
+            // Always use epoch 0 for DomainApplicationBuilder.
+            Self::VersionedSignedValidatorRegistration(_) => Ok(0),
+            Self::SignedRandao(data) => Ok(data.0.epoch),
+            Self::BeaconCommitteeSelection(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.slot).await?)
+            }
+            Self::SignedAggregateAndProof(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.message.aggregate.data.slot).await?)
+            }
+            Self::VersionedSignedAggregateAndProof(data) => {
+                let slot = data.0.slot().ok_or(SignedDataError::UnknownVersion)?;
+
+                Ok(helpers::epoch_from_slot(client, slot).await?)
+            }
+            Self::SignedSyncMessage(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.slot).await?)
+            }
+            Self::SignedSyncContributionAndProof(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.message.contribution.slot).await?)
+            }
+            Self::SyncCommitteeSelection(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.slot).await?)
+            }
+            Self::SyncContributionAndProof(data) => {
+                Ok(helpers::epoch_from_slot(client, data.0.contribution.slot).await?)
+            }
+        }
+    }
+
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
+        match self {
+            Self::VersionedSignedProposal(data) => data.signature(),
+            Self::Attestation(data) => data.signature(),
+            Self::VersionedAttestation(data) => data.signature(),
+            Self::SignedVoluntaryExit(data) => data.signature(),
+            Self::VersionedSignedValidatorRegistration(data) => data.signature(),
+            Self::SignedRandao(data) => data.signature(),
+            Self::BeaconCommitteeSelection(data) => data.signature(),
+            Self::SignedAggregateAndProof(data) => data.signature(),
+            Self::VersionedSignedAggregateAndProof(data) => data.signature(),
+            Self::SignedSyncMessage(data) => data.signature(),
+            Self::SignedSyncContributionAndProof(data) => data.signature(),
+            Self::SyncCommitteeSelection(data) => data.signature(),
+            Self::SyncContributionAndProof(data) => data.signature(),
+        }
+    }
+
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+        match self {
+            Self::VersionedSignedProposal(data) => data.message_root(),
+            Self::Attestation(data) => data.message_root(),
+            Self::VersionedAttestation(data) => data.message_root(),
+            Self::SignedVoluntaryExit(data) => data.message_root(),
+            Self::VersionedSignedValidatorRegistration(data) => data.message_root(),
+            Self::SignedRandao(data) => data.message_root(),
+            Self::BeaconCommitteeSelection(data) => data.message_root(),
+            Self::SignedAggregateAndProof(data) => data.message_root(),
+            Self::VersionedSignedAggregateAndProof(data) => data.message_root(),
+            Self::SignedSyncMessage(data) => data.message_root(),
+            Self::SignedSyncContributionAndProof(data) => data.message_root(),
+            Self::SyncCommitteeSelection(data) => data.message_root(),
+            Self::SyncContributionAndProof(data) => data.message_root(),
+        }
+    }
+}
+
+impl SignedData {
+    /// Views this payload as an [`Eth2SignedData`], mirroring Go's
+    /// `data.(core.Eth2SignedData)` type assertion. Returns `None` for
+    /// variants without a beacon-chain signing domain (e.g. a raw
+    /// [`Signature`]).
+    pub fn as_eth2_signed_data(&self) -> Option<Eth2SignedData<'_>> {
+        Some(match self {
+            Self::Signature(_) => return None,
+            Self::VersionedSignedProposal(data) => Eth2SignedData::VersionedSignedProposal(data),
+            Self::Attestation(data) => Eth2SignedData::Attestation(data),
+            Self::VersionedAttestation(data) => Eth2SignedData::VersionedAttestation(data),
+            Self::SignedVoluntaryExit(data) => Eth2SignedData::SignedVoluntaryExit(data),
+            Self::VersionedSignedValidatorRegistration(data) => {
+                Eth2SignedData::VersionedSignedValidatorRegistration(data)
+            }
+            Self::SignedRandao(data) => Eth2SignedData::SignedRandao(data),
+            Self::BeaconCommitteeSelection(data) => Eth2SignedData::BeaconCommitteeSelection(data),
+            Self::SyncCommitteeSelection(data) => Eth2SignedData::SyncCommitteeSelection(data),
+            Self::SignedAggregateAndProof(data) => Eth2SignedData::SignedAggregateAndProof(data),
+            Self::VersionedSignedAggregateAndProof(data) => {
+                Eth2SignedData::VersionedSignedAggregateAndProof(data)
+            }
+            Self::SignedSyncMessage(data) => Eth2SignedData::SignedSyncMessage(data),
+            Self::SignedSyncContributionAndProof(data) => {
+                Eth2SignedData::SignedSyncContributionAndProof(data)
+            }
+            // Go's `SyncContributionAndProof` also carries `DomainName`/
+            // `Epoch` (`charon/core/signeddata.go`), so its type assertion
+            // succeeds there too.
+            Self::SyncContributionAndProof(data) => Eth2SignedData::SyncContributionAndProof(data),
+            #[cfg(test)]
+            Self::Mock(_) => return None,
+        })
+    }
 }
 
 /// Verifies the eth2 signature associated with the given [`Eth2SignedData`].
 pub async fn verify_eth2_signed_data(
     client: &EthBeaconNodeApiClient,
-    data: &dyn Eth2SignedData,
+    data: Eth2SignedData<'_>,
     pubkey: &PublicKey,
 ) -> Result<(), Eth2SignedDataError> {
     let sig_root = data.message_root()?;
@@ -77,205 +257,6 @@ pub async fn verify_eth2_signed_data(
     .await?;
 
     Ok(())
-}
-
-/// Attempts to view a [`SignedData`] as an [`Eth2SignedData`], mirroring Go's
-/// `data.(core.Eth2SignedData)` type assertion. Returns `None` for signed-data
-/// variants without a beacon-chain signing domain (e.g. raw [`Signature`]).
-///
-/// [`Signature`]: crate::types::Signature
-pub fn as_eth2_signed_data(data: &dyn SignedData) -> Option<&dyn Eth2SignedData> {
-    let any = data as &dyn Any;
-
-    if let Some(v) = any.downcast_ref::<VersionedSignedProposal>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<Attestation>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<VersionedAttestation>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SignedVoluntaryExit>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<VersionedSignedValidatorRegistration>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SignedRandao>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<BeaconCommitteeSelection>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SignedAggregateAndProof>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<VersionedSignedAggregateAndProof>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SignedSyncMessage>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SignedSyncContributionAndProof>() {
-        return Some(v);
-    }
-    if let Some(v) = any.downcast_ref::<SyncCommitteeSelection>() {
-        return Some(v);
-    }
-
-    None
-}
-
-#[async_trait]
-impl Eth2SignedData for VersionedSignedProposal {
-    fn domain_name(&self) -> DomainName {
-        DomainName::BeaconProposer
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        if self.0.version == pluto_eth2api::versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownVersion.into());
-        }
-
-        Ok(helpers::epoch_from_slot(client, self.0.block.slot()).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for Attestation {
-    fn domain_name(&self) -> DomainName {
-        DomainName::BeaconAttester
-    }
-
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(self.0.data.target.epoch)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for VersionedAttestation {
-    fn domain_name(&self) -> DomainName {
-        DomainName::BeaconAttester
-    }
-
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        let version = self.0.version;
-        if version == pluto_eth2api::versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownVersion.into());
-        }
-
-        let data = self
-            .0
-            .attestation
-            .as_ref()
-            .ok_or(SignedDataError::MissingAttestation(version))?
-            .data();
-
-        Ok(data.target.epoch)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SignedVoluntaryExit {
-    fn domain_name(&self) -> DomainName {
-        DomainName::VoluntaryExit
-    }
-
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(self.0.message.epoch)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for VersionedSignedValidatorRegistration {
-    fn domain_name(&self) -> DomainName {
-        DomainName::ApplicationBuilder
-    }
-
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        // Always use epoch 0 for DomainApplicationBuilder.
-        Ok(0)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SignedRandao {
-    fn domain_name(&self) -> DomainName {
-        DomainName::Randao
-    }
-
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(self.0.epoch)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for BeaconCommitteeSelection {
-    fn domain_name(&self) -> DomainName {
-        DomainName::SelectionProof
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SignedAggregateAndProof {
-    fn domain_name(&self) -> DomainName {
-        DomainName::AggregateAndProof
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.message.aggregate.data.slot).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for VersionedSignedAggregateAndProof {
-    fn domain_name(&self) -> DomainName {
-        DomainName::AggregateAndProof
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        let slot = self.0.slot().ok_or(SignedDataError::UnknownVersion)?;
-
-        Ok(helpers::epoch_from_slot(client, slot).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SignedSyncMessage {
-    fn domain_name(&self) -> DomainName {
-        DomainName::SyncCommittee
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SignedSyncContributionAndProof {
-    fn domain_name(&self) -> DomainName {
-        DomainName::ContributionAndProof
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.message.contribution.slot).await?)
-    }
-}
-
-#[async_trait]
-impl Eth2SignedData for SyncCommitteeSelection {
-    fn domain_name(&self) -> DomainName {
-        DomainName::SyncCommitteeSelectionProof
-    }
-
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
-    }
 }
 
 #[cfg(test)]
@@ -331,27 +312,30 @@ mod tests {
     /// Mirrors Go's `TestVerifyEth2SignedData`: resolve the epoch and message
     /// root, BLS-sign the signing-domain data root, inject the signature, and
     /// assert verification succeeds.
-    async fn assert_verifies<T>(client: &EthBeaconNodeApiClient, data: T)
-    where
-        T: Eth2SignedData + Clone,
-    {
-        let epoch = data.epoch(client).await.unwrap();
-        let root = data.message_root().unwrap();
+    async fn assert_verifies(client: &EthBeaconNodeApiClient, data: impl Into<SignedData>) {
+        let data: SignedData = data.into();
+        let eth2 = data.as_eth2_signed_data().expect("eth2 signed data");
+        let epoch = eth2.epoch(client).await.unwrap();
+        let root = eth2.message_root().unwrap();
 
         let mut rng = rand::thread_rng();
         let secret = tbls::generate_secret_key(&mut rng).unwrap();
         let pubkey = tbls::secret_to_public_key(&secret).unwrap();
 
-        let sig_data = signing::get_data_root(client, data.domain_name(), epoch, root)
+        let sig_data = signing::get_data_root(client, eth2.domain_name(), epoch, root)
             .await
             .unwrap();
         let sig: Signature = tbls::sign(&secret, &sig_data).unwrap();
 
         let signed = data.set_signature(sig).unwrap();
 
-        verify_eth2_signed_data(client, &signed, &pubkey)
-            .await
-            .unwrap();
+        verify_eth2_signed_data(
+            client,
+            signed.as_eth2_signed_data().expect("eth2 signed data"),
+            &pubkey,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -457,25 +441,28 @@ mod tests {
     async fn verify_rejects_wrong_pubkey() {
         let mock = BeaconMock::builder().build().await.unwrap();
         let client = mock.client();
-        let data: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
+        let data: SignedData =
+            load::<SignedRandao>("TestJSONSerialisation_SignedRandao.json.golden").into();
+        let eth2 = data.as_eth2_signed_data().unwrap();
 
-        let epoch = data.epoch(client).await.unwrap();
-        let root = data.message_root().unwrap();
+        let epoch = eth2.epoch(client).await.unwrap();
+        let root = eth2.message_root().unwrap();
 
         let mut rng = rand::thread_rng();
         let secret = tbls::generate_secret_key(&mut rng).unwrap();
         let wrong_secret = tbls::generate_secret_key(&mut rng).unwrap();
         let wrong_pubkey = tbls::secret_to_public_key(&wrong_secret).unwrap();
 
-        let sig_data = signing::get_data_root(client, data.domain_name(), epoch, root)
+        let sig_data = signing::get_data_root(client, eth2.domain_name(), epoch, root)
             .await
             .unwrap();
         let sig: Signature = tbls::sign(&secret, &sig_data).unwrap();
         let signed = data.set_signature(sig).unwrap();
 
-        let err = verify_eth2_signed_data(client, &signed, &wrong_pubkey)
-            .await
-            .unwrap_err();
+        let err =
+            verify_eth2_signed_data(client, signed.as_eth2_signed_data().unwrap(), &wrong_pubkey)
+                .await
+                .unwrap_err();
 
         assert!(matches!(err, Eth2SignedDataError::Signing(_)));
     }
@@ -484,12 +471,13 @@ mod tests {
     async fn verify_rejects_zero_signature() {
         let mock = BeaconMock::builder().build().await.unwrap();
         let client = mock.client();
-        let data: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
+        let data: SignedData =
+            load::<SignedRandao>("TestJSONSerialisation_SignedRandao.json.golden").into();
 
         let pubkey = [0x11; 48];
         let signed = data.set_signature([0; SIGNATURE_LENGTH]).unwrap();
 
-        let err = verify_eth2_signed_data(client, &signed, &pubkey)
+        let err = verify_eth2_signed_data(client, signed.as_eth2_signed_data().unwrap(), &pubkey)
             .await
             .unwrap_err();
 
@@ -503,9 +491,14 @@ mod tests {
     fn registration_always_uses_epoch_zero() {
         // VersionedSignedValidatorRegistration uses DomainApplicationBuilder,
         // which is fixed at epoch 0 regardless of the beacon client.
-        let data: VersionedSignedValidatorRegistration =
-            load("VersionedSignedValidatorRegistration.v1.json");
-        assert_eq!(data.domain_name(), DomainName::ApplicationBuilder);
+        let data: SignedData = load::<VersionedSignedValidatorRegistration>(
+            "VersionedSignedValidatorRegistration.v1.json",
+        )
+        .into();
+        assert_eq!(
+            data.as_eth2_signed_data().unwrap().domain_name(),
+            DomainName::ApplicationBuilder
+        );
     }
 
     #[test]
@@ -513,11 +506,11 @@ mod tests {
         let randao: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
 
         // A typed payload is viewable as Eth2SignedData...
-        let boxed: Box<dyn SignedData> = Box::new(randao);
-        assert!(as_eth2_signed_data(boxed.as_ref()).is_some());
+        let data = SignedData::from(randao);
+        assert!(data.as_eth2_signed_data().is_some());
 
         // ...while a raw signature is not.
-        let sig: Box<dyn SignedData> = Box::new([0u8; SIGNATURE_LENGTH] as Signature);
-        assert!(as_eth2_signed_data(sig.as_ref()).is_none());
+        let sig = SignedData::from([0u8; SIGNATURE_LENGTH] as Signature);
+        assert!(sig.as_eth2_signed_data().is_none());
     }
 }
