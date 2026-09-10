@@ -189,7 +189,7 @@ impl StepRunner<'_> {
         }
 
         if self.print_yml {
-            print_docker_compose(self.dir).await?;
+            print_docker_compose(self.dir)?;
         }
 
         Ok(())

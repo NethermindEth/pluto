@@ -19,7 +19,6 @@ mod alert;
 mod auto;
 mod config;
 mod define;
-mod duration;
 mod error;
 mod fsutil;
 mod lock;

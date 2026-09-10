@@ -23,7 +23,6 @@ use tracing::{error, info};
 
 use crate::{
     define::{BROADCAST_RULE, ERROR_RATE_RULE, WARN_RATE_RULE},
-    duration::go_duration_string,
     error::{CommandError, ComposeError, Result},
 };
 
@@ -197,7 +196,7 @@ async fn collect(token: CancellationToken, poller: impl AlertPoller, tx: mpsc::S
     };
 
     info!(
-        warmup = %go_duration_string(ALERT_WARMUP),
+        warmup = ?ALERT_WARMUP,
         "Prometheus ready, collecting alerts"
     );
 

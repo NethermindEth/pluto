@@ -48,8 +48,7 @@ async fn run_scenario(name: &str) {
     conf.log_file = env_non_empty("SMOKE_LOG_DIR")
         .map(|log_dir| PathBuf::from(log_dir).join(format!("{name}.log")));
 
-    // Display, not Debug: the failure line then reads as the Go harness prints
-    // it.
+    // Display, not Debug, so the failure line carries the error message.
     if let Err(err) = auto(conf).await {
         panic!("smoke scenario {name} failed: {err}");
     }

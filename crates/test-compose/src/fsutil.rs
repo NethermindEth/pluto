@@ -1,5 +1,4 @@
-//! File and path helpers with Go `os`/`path` semantics where the generated
-//! output depends on them.
+//! File and environment helpers.
 
 use std::{env, fs, io, path::Path};
 
@@ -43,101 +42,9 @@ pub(crate) fn write_file(
     }
 }
 
-/// Lexically cleans a slash-separated path: collapses repeated separators,
-/// drops `.` elements, resolves `..` against preceding elements (or the root)
-/// and returns `.` for an empty result.
-pub(crate) fn go_path_clean(path: &str) -> String {
-    if path.is_empty() {
-        return ".".to_string();
-    }
-
-    let rooted = path.starts_with('/');
-    let mut out: Vec<&str> = Vec::new();
-
-    for elem in path.split('/') {
-        match elem {
-            "" | "." => {}
-            ".." => match out.last() {
-                Some(&last) if last != ".." => {
-                    out.pop();
-                }
-                _ if rooted => {}
-                _ => out.push(".."),
-            },
-            other => out.push(other),
-        }
-    }
-
-    let body = out.join("/");
-    if rooted {
-        format!("/{body}")
-    } else if body.is_empty() {
-        ".".to_string()
-    } else {
-        body
-    }
-}
-
-/// Joins two path elements the way Go's `path.Join` does: empty elements are
-/// ignored and the result is cleaned.
-pub(crate) fn go_path_join(a: &str, b: &str) -> String {
-    match (a.is_empty(), b.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => go_path_clean(b),
-        (false, true) => go_path_clean(a),
-        (false, false) => go_path_clean(&format!("{a}/{b}")),
-    }
-}
-
-/// Returns the absolute, cleaned form of `path` (Go's `filepath.Abs`).
-pub(crate) fn go_abs(path: impl AsRef<Path>) -> io::Result<String> {
-    let abs = std::path::absolute(path.as_ref())?;
-    Ok(go_path_clean(&abs.to_string_lossy()))
-}
-
-/// Returns `target` expressed relative to `base` using only lexical
-/// processing. Both must be cleaned absolute paths as produced by [`go_abs`].
-/// Returns `None` when `base` contains `..` elements that cannot be
-/// resolved, in which case no relative path exists.
-pub(crate) fn go_rel(base: &str, target: &str) -> Option<String> {
-    if base == target {
-        return Some(".".to_string());
-    }
-
-    let base_elems: Vec<&str> = base.split('/').filter(|e| !e.is_empty()).collect();
-    let target_elems: Vec<&str> = target.split('/').filter(|e| !e.is_empty()).collect();
-
-    let common = base_elems
-        .iter()
-        .zip(target_elems.iter())
-        .take_while(|(b, t)| b == t)
-        .count();
-
-    let base_rest: Vec<&str> = base_elems.iter().skip(common).copied().collect();
-    if base_rest.contains(&"..") {
-        return None;
-    }
-
-    let mut parts: Vec<&str> = vec![".."; base_rest.len()];
-    parts.extend(target_elems.iter().skip(common).copied());
-
-    Some(parts.join("/"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn path_clean() {
-        assert_eq!(go_path_clean("a//b/./c/"), "a/b/c");
-        assert_eq!(go_path_clean("a/b/../c"), "a/c");
-    }
-
-    #[test]
-    fn rel() {
-        assert_eq!(go_rel("/a/b", "/c"), Some("../../c".to_string()));
-    }
 
     #[test]
     fn write_file_sets_mode_on_creation() {

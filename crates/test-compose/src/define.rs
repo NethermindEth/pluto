@@ -1,6 +1,11 @@
 //! Cluster definition step and local image builds.
 
-use std::{collections::BTreeSet, fs, io, path::Path, process::Command};
+use std::{
+    collections::BTreeSet,
+    fs, io,
+    path::{self, Component, Path, PathBuf},
+    process::Command,
+};
 
 use k256::{SecretKey, elliptic_curve::rand_core::OsRng};
 use pluto_eth2util::{enr::Record, network::GOERLI};
@@ -10,7 +15,7 @@ use crate::{
     Result,
     config::{CHARON_IMAGE, CMD_CREATE_DKG, Config, KeyGen, NodeImpl, Step, write_config},
     error::{CommandError, ComposeError},
-    fsutil::{env_non_empty, go_abs, go_path_join, go_rel, write_file},
+    fsutil::{env_non_empty, write_file},
     static_files::STATIC_FILES,
     template::{Kv, TmplData, TmplNode, write_docker_compose},
 };
@@ -46,7 +51,7 @@ pub const ALERT_RULE_NAMES: [&str; 6] = [
 /// Generator for node p2p private keys.
 pub type KeyGenFn = fn() -> SecretKey;
 
-/// Knobs for [`define`] that are process-wide toggles in the Go harness.
+/// Knobs for [`define`] that tests override.
 #[derive(Debug, Clone, Copy)]
 pub struct DefineOptions {
     /// Pull the `latest` charon image and build `pluto:local` when the config
@@ -110,7 +115,7 @@ pub fn define(dir: impl AsRef<Path>, mut conf: Config, opts: &DefineOptions) -> 
     }
 
     if !conf.split_keys_dir.is_empty() {
-        validate_split_keys_dir(&dir_str, &conf.split_keys_dir)?;
+        rel_split_keys_dir(dir, &conf.split_keys_dir)?;
     }
 
     let data = if conf.key_gen == KeyGen::Dkg {
@@ -125,10 +130,10 @@ pub fn define(dir: impl AsRef<Path>, mut conf: Config, opts: &DefineOptions) -> 
 
             // Best effort creation of folder, rather fail when saving p2pkey
             // file next.
-            let _ = mkdir_all(node_file(&dir_str, i, ""), 0o755);
+            let node_dir = dir.join(format!("node{i}"));
+            let _ = mkdir_all(&node_dir, 0o755);
 
-            let key_file = node_file(&dir_str, i, "charon-enr-private-key");
-            pluto_k1util::save(&key, Path::new(&key_file))?;
+            pluto_k1util::save(&key, &node_dir.join("charon-enr-private-key"))?;
 
             enrs.push(Record::from_key(&key)?.to_string());
         }
@@ -199,26 +204,24 @@ pub fn define(dir: impl AsRef<Path>, mut conf: Config, opts: &DefineOptions) -> 
     Ok(data)
 }
 
-/// Fails unless the split keys dir is a child of the compose dir.
-fn validate_split_keys_dir(dir: &str, split_keys_dir: &str) -> Result<()> {
-    let rel = rel_split_keys_dir(dir, split_keys_dir)?;
-    if rel.starts_with("..") {
-        return Err(ComposeError::SplitKeysDirNotChild { relative: rel });
+/// Returns the non-empty `split_keys_dir` relative to the compose dir `dir`,
+/// both resolved against the working directory. Fails unless it lies inside
+/// `dir`; `..` components are rejected rather than resolved.
+pub(crate) fn rel_split_keys_dir(dir: &Path, split_keys_dir: &str) -> Result<PathBuf> {
+    let not_child = || ComposeError::SplitKeysDirNotChild {
+        split_keys_dir: split_keys_dir.to_string(),
+        dir: dir.display().to_string(),
+    };
+
+    let base = path::absolute(dir).map_err(ComposeError::io("abs dir"))?;
+    let target = path::absolute(split_keys_dir).map_err(ComposeError::io("abs dir"))?;
+    let rel = target.strip_prefix(&base).map_err(|_| not_child())?;
+
+    if rel.components().any(|c| c == Component::ParentDir) {
+        return Err(not_child());
     }
 
-    Ok(())
-}
-
-/// Returns `split_keys_dir` relative to `dir`, or empty when unset.
-pub(crate) fn rel_split_keys_dir(dir: &str, split_keys_dir: &str) -> Result<String> {
-    if split_keys_dir.is_empty() {
-        return Ok(String::new());
-    }
-
-    let base = go_abs(dir).map_err(ComposeError::io("abs dir"))?;
-    let target = go_abs(split_keys_dir).map_err(ComposeError::io("abs dir"))?;
-
-    go_rel(&base, &target).ok_or(ComposeError::RelativeSplitKeysDir { base, target })
+    Ok(rel.to_path_buf())
 }
 
 /// Pulls the latest charon docker image.
@@ -447,12 +450,6 @@ fn rule_block(name: &str, expr: &str, description: &str) -> String {
     )
 }
 
-/// Returns the path of `file` in node `i`'s folder; the folder itself when
-/// `file` is empty.
-pub(crate) fn node_file(dir: &str, i: usize, file: &str) -> String {
-    go_path_join(&go_path_join(dir, &format!("node{i}")), file)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +580,35 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let err = write_config(dir.path(), &conf).expect_err("must reject unknown rule");
         assert!(err.to_string().contains("unknown alert rule name"), "{err}");
+    }
+
+    /// The split keys dir must lie inside the compose dir: a nested dir is
+    /// accepted (as its relative path), a sibling and a `..` escape are not.
+    #[test]
+    fn rel_split_keys_dir_requires_a_child() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("compose");
+        let dir = dir.as_path();
+
+        let keys = dir.join("keys").display().to_string();
+        assert_eq!(
+            rel_split_keys_dir(dir, &keys).expect("child"),
+            Path::new("keys")
+        );
+
+        let sibling = root.path().join("keys").display().to_string();
+        let err = rel_split_keys_dir(dir, &sibling).expect_err("sibling");
+        assert!(
+            matches!(err, ComposeError::SplitKeysDirNotChild { .. }),
+            "{err:?}"
+        );
+
+        let escape = dir.join("../keys").display().to_string();
+        let err = rel_split_keys_dir(dir, &escape).expect_err("escape");
+        assert!(
+            matches!(err, ComposeError::SplitKeysDirNotChild { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

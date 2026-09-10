@@ -4,7 +4,7 @@
 //! Every command is resolved through `PATH` and run in the compose directory.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -79,17 +79,18 @@ pub enum UpOutcome {
     Cancelled,
 }
 
-/// Streams `docker-compose.yml` to stdout by running `cat` in `dir`.
-pub async fn print_docker_compose(dir: impl AsRef<Path>) -> Result<()> {
+/// Prints `docker-compose.yml` from `dir` to stdout.
+pub fn print_docker_compose(dir: impl AsRef<Path>) -> Result<()> {
     info!("Printing docker-compose.yml");
 
-    let status = Command::new("cat")
-        .arg("docker-compose.yml")
-        .current_dir(dir.as_ref())
-        .status()
-        .await;
+    let yml = fs::read(dir.as_ref().join("docker-compose.yml"))
+        .map_err(ComposeError::io("read docker-compose.yml"))?;
 
-    CommandError::check(status).map_err(ComposeError::exec("exec cat docker-compose.yml"))
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(&yml)
+        .and_then(|()| stdout.flush())
+        .map_err(ComposeError::io("print docker-compose.yml"))
 }
 
 /// Hands the compose artefacts back to the current user. Containers run as
@@ -240,16 +241,20 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn print_docker_compose_reports_cat_failure() {
+    #[test]
+    fn print_docker_compose_reports_missing_file() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let err = print_docker_compose(dir.path())
-            .await
-            .expect_err("cat of a missing file fails");
-        assert_eq!(
-            err.to_string(),
-            "exec cat docker-compose.yml: exit status: 1"
+        let err = print_docker_compose(dir.path()).expect_err("missing compose file fails");
+        assert!(
+            matches!(
+                &err,
+                ComposeError::Io {
+                    context: "read docker-compose.yml",
+                    ..
+                }
+            ),
+            "{err:?}"
         );
     }
 }

@@ -8,9 +8,7 @@ use crate::{
     Result,
     config::{CMD_CREATE_CLUSTER, CMD_DKG, Config, KeyGen, Step, VcType, write_config},
     define::{ZERO_ADDRESS, rel_split_keys_dir},
-    duration::go_duration_string,
     error::ComposeError,
-    fsutil::go_path_join,
     template::{Kv, TmplData, TmplNode, write_docker_compose},
 };
 
@@ -37,10 +35,12 @@ pub fn lock(dir: impl AsRef<Path>, mut conf: Config) -> Result<TmplData> {
 
     let data = match conf.key_gen {
         KeyGen::Create => {
-            let mut split_keys_dir = rel_split_keys_dir(&dir_str, &conf.split_keys_dir)?;
-            if !split_keys_dir.is_empty() {
-                split_keys_dir = go_path_join("/compose", &split_keys_dir);
-            }
+            let split_keys_dir = if conf.split_keys_dir.is_empty() {
+                String::new()
+            } else {
+                let rel = rel_split_keys_dir(dir, &conf.split_keys_dir)?;
+                Path::new("/compose").join(rel).display().to_string()
+            };
 
             // Only single node to call charon create cluster generate keys
             let kvs = vec![
@@ -174,10 +174,7 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, mode: NodeMode) -> Vec<
             "simnet-validator-mock",
             quoted_bool(vc_type == VcType::Mock),
         ),
-        Kv::new(
-            "simnet-slot-duration",
-            go_duration_string(conf.slot_duration),
-        ),
+        Kv::new("simnet-slot-duration", format!("{:?}", conf.slot_duration)),
         Kv::new(
             "simnet-validator-keys-dir",
             format!("/compose/node{index}/validator_keys"),

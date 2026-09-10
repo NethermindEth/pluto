@@ -73,11 +73,10 @@ pub enum ComposeError {
     #[error(transparent)]
     Enr(#[from] RecordError),
 
-    #[error("split-keys-dir must be a child of compose dir: relative={relative}")]
-    SplitKeysDirNotChild { relative: String },
-
-    #[error("relative split keys dir: Rel: can't make {target} relative to {base}")]
-    RelativeSplitKeysDir { base: String, target: String },
+    #[error(
+        "split-keys-dir must be inside the compose dir: split_keys_dir={split_keys_dir} dir={dir}"
+    )]
+    SplitKeysDirNotChild { split_keys_dir: String, dir: String },
 
     #[error(
         "cannot build local {node_impl} binary; {var} env var, the path to the {node_impl} repo, is not set"
