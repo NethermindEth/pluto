@@ -171,6 +171,35 @@ pub enum Event {
     },
 }
 
+/// Creates the outbound broadcast channel shared by a [`Handle`] and the
+/// [`Behaviour`] that drains it.
+///
+/// Splitting the channel from [`Behaviour::new`] breaks the
+/// broadcaster/behaviour construction cycle: `Consensus` needs a broadcaster,
+/// the broadcaster is backed by the [`Handle`], and the behaviour needs the
+/// `Consensus`. Creating the channel first lets a caller build the broadcaster
+/// (via [`Handle::broadcaster`]) before either component exists; messages
+/// broadcast before the behaviour is running queue in the channel instead of
+/// hitting an unset late-bound slot.
+pub fn broadcast_channel() -> (Handle, BroadcastQueue) {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+
+    (
+        Handle {
+            cmd_tx,
+            next_request_id: Arc::new(AtomicU64::new(0)),
+        },
+        BroadcastQueue { cmd_rx },
+    )
+}
+
+/// Receiving half of the outbound broadcast channel returned by
+/// [`broadcast_channel`], consumed by [`Behaviour::new`].
+#[derive(Debug)]
+pub struct BroadcastQueue {
+    cmd_rx: mpsc::UnboundedReceiver<BroadcastCommand>,
+}
+
 /// User-facing handle for QBFT outbound broadcasts.
 #[derive(Clone, Debug)]
 pub struct Handle {
@@ -472,29 +501,20 @@ pub struct Behaviour {
 }
 
 impl Behaviour {
-    /// Creates a behaviour and its outbound broadcast handle.
-    pub fn new(config: Config) -> Result<(Self, Handle), Error> {
+    /// Creates a behaviour draining the given [`broadcast_channel`] queue.
+    pub fn new(config: Config, queue: BroadcastQueue) -> Result<Self, Error> {
         if !config.p2p_context.is_known_peer(&config.local_peer_id) {
             return Err(Error::LocalPeerMissing {
                 peer_id: config.local_peer_id,
             });
         }
 
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let handle = Handle {
-            cmd_tx,
-            next_request_id: Arc::new(AtomicU64::new(0)),
-        };
-
-        Ok((
-            Self {
-                config,
-                cmd_rx,
-                pending_events: VecDeque::new(),
-                pending_by_peer: HashMap::new(),
-            },
-            handle,
-        ))
+        Ok(Self {
+            config,
+            cmd_rx: queue.cmd_rx,
+            pending_events: VecDeque::new(),
+            pending_by_peer: HashMap::new(),
+        })
     }
 
     /// Returns a real QBFT handler only for configured cluster peers.
@@ -760,7 +780,6 @@ mod tests {
     use std::{
         collections::{BTreeMap, HashSet},
         error::Error as StdError,
-        sync::OnceLock,
         task::{Context, Poll, Waker},
     };
 
@@ -915,12 +934,16 @@ mod tests {
         let peer_ids = peer_ids(&keys)?;
         let local_peer_id = peer_ids[1];
         let p2p_context = connected_context(&peer_ids)?;
-        let (mut behaviour, handle) = Behaviour::new(Config {
-            consensus: Arc::new(consensus(1, true)),
-            p2p_context,
-            local_peer_id,
-            cancellation: CancellationToken::new(),
-        })?;
+        let (handle, queue) = broadcast_channel();
+        let mut behaviour = Behaviour::new(
+            Config {
+                consensus: Arc::new(consensus(1, true)),
+                p2p_context,
+                local_peer_id,
+                cancellation: CancellationToken::new(),
+            },
+            queue,
+        )?;
 
         handle.broadcast(signed_consensus_msg(&duty(), 1)?).await?;
 
@@ -972,12 +995,16 @@ mod tests {
         let peer_ids = peer_ids(&keys)?[..2].to_vec();
         let local_peer_id = peer_ids[0];
         let target = peer_ids[1];
-        let (mut behaviour, handle) = Behaviour::new(Config {
-            consensus: Arc::new(consensus(0, true)),
-            p2p_context: P2PContext::new(peer_ids.iter().copied()),
-            local_peer_id,
-            cancellation: CancellationToken::new(),
-        })?;
+        let (handle, queue) = broadcast_channel();
+        let mut behaviour = Behaviour::new(
+            Config {
+                consensus: Arc::new(consensus(0, true)),
+                p2p_context: P2PContext::new(peer_ids.iter().copied()),
+                local_peer_id,
+                cancellation: CancellationToken::new(),
+            },
+            queue,
+        )?;
         handle.broadcast(signed_consensus_msg(&duty(), 0)?).await?;
         let _ = drain_behaviour_events(&mut behaviour);
 
@@ -1005,12 +1032,16 @@ mod tests {
         let peer_ids = peer_ids(&keys)?[..2].to_vec();
         let local_peer_id = peer_ids[0];
         let target = peer_ids[1];
-        let (mut behaviour, handle) = Behaviour::new(Config {
-            consensus: Arc::new(consensus(0, true)),
-            p2p_context: P2PContext::new(peer_ids.iter().copied()),
-            local_peer_id,
-            cancellation: CancellationToken::new(),
-        })?;
+        let (handle, queue) = broadcast_channel();
+        let mut behaviour = Behaviour::new(
+            Config {
+                consensus: Arc::new(consensus(0, true)),
+                p2p_context: P2PContext::new(peer_ids.iter().copied()),
+                local_peer_id,
+                cancellation: CancellationToken::new(),
+            },
+            queue,
+        )?;
         handle.broadcast(signed_consensus_msg(&duty(), 0)?).await?;
         let _ = drain_behaviour_events(&mut behaviour);
 
@@ -1189,12 +1220,16 @@ mod tests {
             let p2p_context = P2PContext::new(peer_ids.iter().copied());
             let consensus = Arc::new(consensus_for_cluster(index, peer_ids.len(), true)?);
             let mut recv_rx = Some(consensus.get_instance_io(duty()).take_recv_rx()?);
-            let (behaviour, handle) = Behaviour::new(Config {
-                consensus: Arc::clone(&consensus),
-                p2p_context: p2p_context.clone(),
-                local_peer_id: peer_ids[index],
-                cancellation: CancellationToken::new(),
-            })?;
+            let (handle, queue) = broadcast_channel();
+            let behaviour = Behaviour::new(
+                Config {
+                    consensus: Arc::clone(&consensus),
+                    p2p_context: p2p_context.clone(),
+                    local_peer_id: peer_ids[index],
+                    cancellation: CancellationToken::new(),
+                },
+                queue,
+            )?;
             let node = Node::new_server(
                 P2PConfig::default(),
                 key,
@@ -1224,20 +1259,12 @@ mod tests {
         let mut nodes = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
             let p2p_context = P2PContext::new(peer_ids.iter().copied());
-            let handle_slot = Arc::new(OnceLock::<Handle>::new());
-            let broadcaster = {
-                let handle_slot = Arc::clone(&handle_slot);
-                Arc::new(move |_ct, msg| {
-                    let handle = handle_slot
-                        .get()
-                        .expect("test p2p handle initialized")
-                        .clone();
-                    Box::pin(async move { handle.broadcast(msg).await })
-                        as futures::future::BoxFuture<'static, BroadcastResult>
-                })
-            };
+            // The broadcast channel exists before either component, so the
+            // broadcaster is ready for `Consensus::new` while the behaviour
+            // that drains it is still to be built.
+            let (handle, queue) = broadcast_channel();
             let mut config = config_for_cluster(index, peer_ids.len(), true)?;
-            config.broadcaster = broadcaster;
+            config.broadcaster = handle.broadcaster();
             let consensus = Arc::new(Consensus::new(config)?);
             let decided_tx = decided_tx.clone();
             consensus.subscribe(move |duty, value| {
@@ -1245,15 +1272,15 @@ mod tests {
                 Ok(())
             });
 
-            let (behaviour, handle) = Behaviour::new(Config {
-                consensus: Arc::clone(&consensus),
-                p2p_context: p2p_context.clone(),
-                local_peer_id: peer_ids[index],
-                cancellation: CancellationToken::new(),
-            })?;
-            handle_slot
-                .set(handle.clone())
-                .map_err(|_| std::io::Error::other("test p2p handle set twice"))?;
+            let behaviour = Behaviour::new(
+                Config {
+                    consensus: Arc::clone(&consensus),
+                    p2p_context: p2p_context.clone(),
+                    local_peer_id: peer_ids[index],
+                    cancellation: CancellationToken::new(),
+                },
+                queue,
+            )?;
             let node = Node::new_server(
                 P2PConfig::default(),
                 key,
