@@ -91,7 +91,7 @@ func getVC(typ VCType, nodeIdx int, numVals int, insecure, builderAPI bool) (Tmp
 		},
 		VCTeku: {
 			Label: string(VCTeku),
-			Image: "consensys/teku:latest",
+			Image: "consensys/teku:26.8.0",
 			Command: `|
       validator-client
       --network=auto
