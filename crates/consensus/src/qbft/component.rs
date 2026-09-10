@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use k256::{PublicKey, SecretKey};
 use prost::{Message, Name};
@@ -599,6 +600,7 @@ impl Consensus {
     }
 }
 
+#[async_trait]
 impl crate::wrapper::Consensus for Consensus {
     fn protocol_id(&self) -> String {
         self.protocol_id().to_string()
@@ -608,29 +610,21 @@ impl crate::wrapper::Consensus for Consensus {
         drop(Consensus::start(self, ct));
     }
 
-    fn participate(
-        &self,
-        ct: CancellationToken,
-        duty: Duty,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::participate(self, duty, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    async fn participate(&self, ct: CancellationToken, duty: Duty) -> crate::wrapper::Result<()> {
+        Consensus::participate(self, duty, &ct)
+            .await
+            .map_err(Into::into)
     }
 
-    fn propose(
+    async fn propose(
         &self,
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::propose(self, duty, value, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    ) -> crate::wrapper::Result<()> {
+        Consensus::propose(self, duty, value, &ct)
+            .await
+            .map_err(Into::into)
     }
 
     fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {

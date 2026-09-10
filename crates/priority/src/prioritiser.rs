@@ -535,6 +535,7 @@ fn start_consensus(
 mod tests {
     use std::sync::Mutex as StdMutex;
 
+    use async_trait::async_trait;
     use chrono::{Duration as ChronoDuration, Utc};
     use pluto_core::{
         corepb::v1::priority::{PriorityResult, PriorityTopicProposal},
@@ -572,7 +573,7 @@ mod tests {
         proposed: Arc<StdMutex<Vec<(Duty, PriorityResult)>>>,
     }
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl Consensus for MockConsensus {
         async fn propose_priority(
             &self,

@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use futures::{FutureExt as _, StreamExt as _, future::select_all};
 use libp2p::{
     Multiaddr, PeerId, Swarm,
@@ -61,7 +62,7 @@ struct TestConsensus {
     proposed: Mutex<HashMap<u64, PriorityResult>>,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl Consensus for TestConsensus {
     async fn propose_priority(
         &self,
