@@ -133,7 +133,7 @@ pub fn define(dir: impl AsRef<Path>, mut conf: Config, opts: &DefineOptions) -> 
             let node_dir = dir.join(format!("node{i}"));
             let _ = mkdir_all(&node_dir, 0o755);
 
-            pluto_k1util::save(&key, &node_dir.join("charon-enr-private-key"))?;
+            pluto_k1util::save(&key, node_dir.join("charon-enr-private-key").as_path())?;
 
             enrs.push(Record::from_key(&key)?.to_string());
         }
