@@ -399,8 +399,20 @@ mod tests {
         assert_eq!(enr.ip(), Some(Ipv4Addr::new(222, 222, 222, 222)));
         // The external IP is advertised on the ports libp2p bound, not on the
         // port 0 that was configured — which would be undialable.
-        assert_eq!(enr.tcp(), Some(relay.p2p_port(pluto_p2p::utils::tcp_port)));
-        assert_eq!(enr.udp(), Some(relay.p2p_port(pluto_p2p::utils::udp_port)));
+        assert_eq!(
+            enr.tcp(),
+            Some(relay.p2p_port(|addr| pluto_p2p::utils::addr_port(
+                addr,
+                pluto_p2p::utils::TransportProtocol::Tcp
+            )))
+        );
+        assert_eq!(
+            enr.udp(),
+            Some(relay.p2p_port(|addr| pluto_p2p::utils::addr_port(
+                addr,
+                pluto_p2p::utils::TransportProtocol::Quic
+            )))
+        );
     }
 
     #[tokio::test]
@@ -701,7 +713,7 @@ mod tests {
         }
 
         /// Port of the relay's libp2p listen address selected by `port_of`,
-        /// e.g. [`pluto_p2p::utils::tcp_port`].
+        /// e.g. [`pluto_p2p::utils::addr_port`].
         fn p2p_port(&self, port_of: impl Fn(&libp2p::Multiaddr) -> Option<u16>) -> u16 {
             self.p2p_addrs
                 .iter()
