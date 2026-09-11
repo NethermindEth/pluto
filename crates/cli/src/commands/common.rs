@@ -172,21 +172,25 @@ impl TracingArgs {
             ConsoleColor::Disable => false,
         };
 
-        let mut builder = pluto_tracing::TracingConfig::builder()
-            .with_default_console()
-            .console_with_ansi(ansi)
-            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level));
-
         // Only the first address is used; see `warn_unused`.
-        if let Some(loki_url) = self.loki_addresses.first() {
-            builder = builder.loki(pluto_tracing::LokiConfig {
+        let loki = self
+            .loki_addresses
+            .first()
+            .map(|loki_url| pluto_tracing::LokiConfig {
                 loki_url: loki_url.clone(),
                 labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
                 extra_fields: HashMap::new(),
             });
-        }
 
-        builder.build()
+        pluto_tracing::TracingConfig::builder()
+            .console(
+                pluto_tracing::ConsoleConfig::builder()
+                    .with_ansi(ansi)
+                    .build(),
+            )
+            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level))
+            .maybe_loki(loki)
+            .build()
     }
 
     /// Reports flag values that were accepted but not applied.

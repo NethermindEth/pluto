@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fmt};
 
+use bon::Builder;
+
 /// Configuration for the tracing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Builder)]
 pub struct TracingConfig {
     /// Loki configuration. Enables loki logging if provided. If not - no loki
     /// logging is enabled.
@@ -13,6 +15,7 @@ pub struct TracingConfig {
 
     /// Overrides the environment filter. If not - the environment filter is
     /// used.
+    #[builder(into)]
     pub override_env_filter: Option<String>,
 }
 
@@ -55,142 +58,36 @@ fn redact_url_userinfo(raw: &str) -> String {
 }
 
 /// Configuration for the console logging.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
 pub struct ConsoleConfig {
     /// Whether to include the target module in logs.
+    #[builder(default = true)]
     pub with_target: bool,
 
     /// Whether to include the log level in logs.
+    #[builder(default = true)]
     pub with_level: bool,
 
     /// Whether to include thread IDs in logs.
+    #[builder(default = false)]
     pub with_thread_ids: bool,
 
     /// Whether to include the source file name in logs.
+    #[builder(default = false)]
     pub with_file: bool,
 
     /// Whether to include line numbers in logs.
+    #[builder(default = false)]
     pub with_line_number: bool,
 
     /// Whether to use ANSI colors in logs.
+    #[builder(default = true)]
     pub with_ansi: bool,
 }
 
 impl Default for ConsoleConfig {
     fn default() -> Self {
-        Self {
-            with_target: true,
-            with_level: true,
-            with_thread_ids: false,
-            with_file: false,
-            with_line_number: false,
-            with_ansi: true,
-        }
-    }
-}
-
-/// Builder for [`TracingConfig`].
-#[derive(Debug, Clone, Default)]
-pub struct TracingConfigBuilder {
-    tracing_config: TracingConfig,
-}
-
-impl TracingConfigBuilder {
-    /// Creates a new builder with default values.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the Loki configuration.
-    pub fn loki(mut self, config: LokiConfig) -> Self {
-        self.tracing_config.loki = Some(config);
-        self
-    }
-
-    /// Sets the console configuration.
-    pub fn console(mut self, config: ConsoleConfig) -> Self {
-        self.tracing_config.console = Some(config);
-        self
-    }
-
-    /// Enables console logging with default configuration.
-    pub fn with_default_console(mut self) -> Self {
-        self.tracing_config.console = Some(ConsoleConfig::default());
-        self
-    }
-
-    /// Enables console logging and configures whether to include the target
-    /// module.
-    pub fn console_with_target(mut self, with_target: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_target = with_target;
-        self
-    }
-
-    /// Enables console logging and configures whether to include the log level.
-    pub fn console_with_level(mut self, with_level: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_level = with_level;
-        self
-    }
-
-    /// Enables console logging and configures whether to include thread IDs.
-    pub fn console_with_thread_ids(mut self, with_thread_ids: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_thread_ids = with_thread_ids;
-        self
-    }
-
-    /// Enables console logging and configures whether to include the source
-    /// file name.
-    pub fn console_with_file(mut self, with_file: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_file = with_file;
-        self
-    }
-
-    /// Enables console logging and configures whether to include line numbers.
-    pub fn console_with_line_number(mut self, with_line_number: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_line_number = with_line_number;
-        self
-    }
-
-    /// Enables console logging and configures whether to use ANSI colors.
-    pub fn console_with_ansi(mut self, with_ansi: bool) -> Self {
-        self.tracing_config
-            .console
-            .get_or_insert_with(ConsoleConfig::default)
-            .with_ansi = with_ansi;
-        self
-    }
-
-    /// Sets the environment filter override.
-    pub fn override_env_filter(mut self, filter: impl Into<String>) -> Self {
-        self.tracing_config.override_env_filter = Some(filter.into());
-        self
-    }
-
-    /// Builds the [`TracingConfig`].
-    pub fn build(self) -> TracingConfig {
-        self.tracing_config
-    }
-}
-
-impl TracingConfig {
-    /// Creates a new builder for [`TracingConfig`].
-    pub fn builder() -> TracingConfigBuilder {
-        TracingConfigBuilder::new()
+        Self::builder().build()
     }
 }
 
@@ -227,5 +124,31 @@ mod tests {
         let cfg = loki_with_url("not a url");
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("not a url"));
+    }
+
+    /// Pins every [`ConsoleConfig`] default field value.
+    #[test]
+    fn console_config_defaults_are_pinned() {
+        let cfg = ConsoleConfig::default();
+        assert!(cfg.with_target);
+        assert!(cfg.with_level);
+        assert!(!cfg.with_thread_ids);
+        assert!(!cfg.with_file);
+        assert!(!cfg.with_line_number);
+        assert!(cfg.with_ansi);
+    }
+
+    /// [`TracingConfig::builder`] with nothing set must equal
+    /// [`TracingConfig::default`] (all three fields absent).
+    #[test]
+    fn tracing_config_builder_matches_default() {
+        let built = TracingConfig::builder().build();
+        let default = TracingConfig::default();
+        assert!(built.loki.is_none());
+        assert!(built.console.is_none());
+        assert!(built.override_env_filter.is_none());
+        assert!(default.loki.is_none());
+        assert!(default.console.is_none());
+        assert!(default.override_env_filter.is_none());
     }
 }
