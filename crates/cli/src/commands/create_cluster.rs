@@ -2862,7 +2862,7 @@ mod tests {
     /// `CHARON_*` env var. Charon binds env for all commands generically
     /// (viper `SetEnvPrefix`+`AutomaticEnv`), so tooling that configures a
     /// cluster purely through the environment — the compose harness in
-    /// `test-infra/compose` — works against charon and pluto alike.
+    /// `crates/test-compose` — works against charon and pluto alike.
     #[test]
     fn create_cluster_flags_use_charon_env_prefix() {
         use clap::CommandFactory as _;

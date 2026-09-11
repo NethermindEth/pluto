@@ -9,7 +9,6 @@ services:
   node0:
     <<: *node-base
     container_name: node0
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node0/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -33,20 +32,15 @@ services:
       CHARON_OTLP_SERVICE_NAME: node0
       CHARON_LOKI_ADDRESSES: http://loki:3100/loki/api/v1/push
       CHARON_LOKI_SERVICE: node0
-    
     ports:
       - "3600:3600"
-      
       - "3610:3610"
-      
       - "3620:3620"
-      
       - "3630:3630"
-      
+
   node1:
     <<: *node-base
     container_name: node1
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node1/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -70,21 +64,15 @@ services:
       CHARON_OTLP_SERVICE_NAME: node1
       CHARON_LOKI_ADDRESSES: http://loki:3100/loki/api/v1/push
       CHARON_LOKI_SERVICE: node1
-    
     ports:
       - "13600:3600"
-      
       - "13610:3610"
-      
       - "13620:3620"
-      
       - "13630:3630"
-      
+
   node2:
     <<: *node-base
     container_name: node2
-    image: pluto:local
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node2/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -108,21 +96,15 @@ services:
       CHARON_OTLP_SERVICE_NAME: node2
       CHARON_LOKI_ADDRESSES: http://loki:3100/loki/api/v1/push
       CHARON_LOKI_SERVICE: node2
-    
     ports:
       - "23600:3600"
-      
       - "23610:3610"
-      
       - "23620:3620"
-      
       - "23630:3630"
-      
+
   node3:
     <<: *node-base
     container_name: node3
-    image: pluto:local
-    
     environment:
       CHARON_PRIVATE_KEY_FILE: /compose/node3/charon-enr-private-key
       CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
@@ -146,16 +128,12 @@ services:
       CHARON_OTLP_SERVICE_NAME: node3
       CHARON_LOKI_ADDRESSES: http://loki:3100/loki/api/v1/push
       CHARON_LOKI_SERVICE: node3
-    
     ports:
       - "33600:3600"
-      
       - "33610:3610"
-      
       - "33620:3620"
-      
       - "33630:3630"
-      
+
   relay:
     <<: *node-base
     container_name: relay
@@ -171,7 +149,7 @@ services:
       CHARON_P2P_UDP_ADDRESS: 0.0.0.0:3630
       CHARON_P2P_ADVERTISE_PRIVATE_ADDRESSES: "true"
       CHARON_LOKI_ADDRESS: http://loki:3100/loki/api/v1/push
-  
+
   vc0-lighthouse:
     container_name: vc0-lighthouse
     build: lighthouse
@@ -181,7 +159,7 @@ services:
       NODE: node0
     volumes:
       - .:/compose
-  
+
   vc1-lighthouse:
     container_name: vc1-lighthouse
     build: lighthouse
@@ -191,7 +169,7 @@ services:
       NODE: node1
     volumes:
       - .:/compose
-  
+
   vc3-lighthouse:
     container_name: vc3-lighthouse
     build: lighthouse
@@ -201,7 +179,7 @@ services:
       NODE: node3
     volumes:
       - .:/compose
-  
+
   curl:
     container_name: curl
     # Can be used to curl services; e.g. docker compose exec curl curl http://prometheus:9090/api/v1/rules\?type\=alert
@@ -218,9 +196,7 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./prometheus/rules.yml:/etc/prometheus/rules.yml
-  
 
-  
   grafana:
     container_name: grafana
     image: grafana/grafana:${GRAFANA_VERSION:-10.4.2}
@@ -253,7 +229,6 @@ services:
     command: -config.file=/opt/loki/loki.yml
     volumes:
       - ./loki:/opt/loki
-  
 
 networks:
   compose:

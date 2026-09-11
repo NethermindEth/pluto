@@ -1,0 +1,158 @@
+//! Golden-file tests: each case renders through the public step entry points
+//! and compares the resulting `docker-compose.yml`, template data and
+//! `config.json` byte for byte with `testdata/`.
+
+use std::{fs, path::Path};
+
+use k256::SecretKey;
+use test_case::test_case;
+
+use crate::{
+    config::{Config, KeyGen, NodeImpl, Step, marshal_indent, write_config},
+    define::{DefineOptions, define},
+    error::Result,
+    lock::lock,
+    run::run,
+    template::TmplData,
+};
+
+const TESTDATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata");
+
+/// Deterministic define options: one fixed insecure key for every node, no
+/// image pulls or builds.
+fn test_define_options() -> DefineOptions {
+    DefineOptions {
+        pull_images: false,
+        key_gen: || SecretKey::from_slice(&[1u8; 32]).expect("valid secret key"),
+    }
+}
+
+fn define_step(dir: &Path, conf: Config) -> Result<TmplData> {
+    define(dir, conf, &test_define_options())
+}
+
+fn lock_step(dir: &Path, conf: Config) -> Result<TmplData> {
+    lock(dir, conf)
+}
+
+fn run_step(dir: &Path, conf: Config) -> Result<TmplData> {
+    run(dir, conf)
+}
+
+fn golden(name: &str) -> Vec<u8> {
+    let path = Path::new(TESTDATA_DIR).join(name);
+    fs::read(&path).unwrap_or_else(|err| panic!("read golden {path:?}: {err}"))
+}
+
+fn assert_golden(name: &str, got: &[u8]) {
+    let want = golden(name);
+    if got != want.as_slice() {
+        panic!(
+            "{name} differs from golden\n--- want ---\n{}\n--- got ---\n{}",
+            String::from_utf8_lossy(&want),
+            String::from_utf8_lossy(got),
+        );
+    }
+}
+
+#[test_case("define_dkg", |c| c.key_gen = KeyGen::Dkg, define_step ; "define_dkg")]
+#[test_case("define_create", |c| c.key_gen = KeyGen::Create, define_step ; "define_create")]
+#[test_case("lock_dkg", |c| { c.step = Step::Defined; c.key_gen = KeyGen::Dkg; }, lock_step ; "lock_dkg")]
+#[test_case("lock_create", |c| { c.step = Step::Defined; c.key_gen = KeyGen::Create; }, lock_step ; "lock_create")]
+#[test_case("run", |c| { c.num_validators = 2; c.step = Step::Locked; }, run_step ; "run")]
+#[test_case("lock_dkg_mixed_impls", |c| {
+    c.step = Step::Defined;
+    c.key_gen = KeyGen::Dkg;
+    c.node_impls = vec![NodeImpl::Charon, NodeImpl::Pluto];
+}, lock_step ; "lock_dkg_mixed_impls")]
+#[test_case("run_mixed_impls", |c| {
+    c.num_validators = 2;
+    c.step = Step::Locked;
+    c.node_impls = vec![NodeImpl::Charon, NodeImpl::Charon, NodeImpl::Pluto, NodeImpl::Pluto];
+}, run_step ; "run_mixed_impls")]
+#[test_case("lock_create_pluto_keygen", |c| {
+    c.step = Step::Defined;
+    c.key_gen = KeyGen::Create;
+    c.key_gen_impl = Some(NodeImpl::Pluto);
+}, lock_step ; "lock_create_pluto_keygen")]
+fn docker_compose(
+    name: &str,
+    conf_fn: fn(&mut Config),
+    run_fn: fn(&Path, Config) -> Result<TmplData>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dir_str = dir.path().to_str().expect("utf-8 temp dir");
+
+    let mut conf = Config::new_default();
+    conf_fn(&mut conf);
+
+    let mut data = run_fn(dir.path(), conf).expect("run step");
+
+    // yml
+    let yml =
+        fs::read_to_string(dir.path().join("docker-compose.yml")).expect("read docker-compose.yml");
+    let yml = yml.replace(dir_str, "testdir");
+    assert_golden(
+        &format!("TestDockerCompose_{name}_yml.golden"),
+        yml.as_bytes(),
+    );
+
+    // template
+    data.compose_dir = "testdir".to_string();
+    let json = marshal_indent(&data).expect("marshal template data");
+    assert_golden(&format!("TestDockerCompose_{name}_template.golden"), &json);
+}
+
+#[test]
+fn new_default_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    write_config(dir.path(), &Config::new_default()).expect("write config");
+
+    let conf = fs::read(dir.path().join("config.json")).expect("read config.json");
+    assert_golden("TestNewDefaultConfig.golden", &conf);
+}
+
+#[test]
+fn every_golden_is_covered() {
+    let mut names: Vec<String> = fs::read_dir(TESTDATA_DIR)
+        .expect("read testdata")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".golden"))
+        .collect();
+    names.sort();
+
+    let cases = [
+        "define_dkg",
+        "define_create",
+        "lock_dkg",
+        "lock_create",
+        "run",
+        "lock_dkg_mixed_impls",
+        "run_mixed_impls",
+        "lock_create_pluto_keygen",
+    ];
+    let mut covered: Vec<String> = cases
+        .iter()
+        .flat_map(|case| {
+            [
+                format!("TestDockerCompose_{case}_yml.golden"),
+                format!("TestDockerCompose_{case}_template.golden"),
+            ]
+        })
+        .collect();
+    covered.push("TestNewDefaultConfig.golden".to_string());
+    covered.sort();
+
+    assert_eq!(
+        names, covered,
+        "testdata/ holds goldens no test here compares against"
+    );
+    assert_eq!(names.len(), 17);
+}
