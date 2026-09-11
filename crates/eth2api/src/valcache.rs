@@ -1,8 +1,8 @@
 use crate::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
-    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ValidatorId, ValidatorsFilter,
+    ValidatorsResponse,
     spec::phase0::{BLSPubKey as PubKey, ValidatorIndex},
+    v1,
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
@@ -21,7 +21,7 @@ pub enum ValidatorCacheError {
 /// Active validators as [`PubKey`] indexed by their validator index.
 ///
 /// Internally an `Arc<HashMap<..>>` so cloning is a refcount bump, not a deep
-/// map copy — callers receive cheap clones from [`ValidatorCache`].
+/// map copy: callers receive cheap clones from [`ValidatorCache`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ActiveValidators(Arc<HashMap<ValidatorIndex, PubKey>>);
 
@@ -38,12 +38,10 @@ impl std::ops::Deref for ActiveValidators {
 /// Internally an `Arc<HashMap<..>>` so cloning is a refcount bump, not a deep
 /// map copy.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct CompleteValidators(
-    Arc<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>,
-);
+pub struct CompleteValidators(Arc<HashMap<ValidatorIndex, v1::Validator>>);
 
 impl std::ops::Deref for CompleteValidators {
-    type Target = HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>;
+    type Target = HashMap<ValidatorIndex, v1::Validator>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -72,7 +70,7 @@ impl ActiveValidators {
 /// A provider of cached validator information for the current epoch,
 /// including both active validators and complete validator data.
 ///
-/// Async so implementations may populate the underlying cache on demand —
+/// Async so implementations may populate the underlying cache on demand;
 /// callers must not assume the call is non-blocking. Consumed via
 /// `Arc<dyn CachedValidatorsProvider>` (e.g. by the validator API), so the
 /// trait is object-safe and `Send + Sync`.
@@ -130,6 +128,29 @@ impl ValidatorCache {
         cached.complete = None;
     }
 
+    /// Selects the cached validators by public key.
+    fn filter(&self) -> ValidatorsFilter {
+        ValidatorsFilter {
+            ids: self
+                .0
+                .pubkeys
+                .iter()
+                .copied()
+                .map(ValidatorId::PubKey)
+                .collect(),
+            statuses: Vec::new(),
+        }
+    }
+
+    async fn fetch(&self, state_id: &str) -> Result<ValidatorsResponse> {
+        let filter = self.filter();
+        Ok(self
+            .0
+            .eth2_cl
+            .post_state_validators(state_id, &filter)
+            .await?)
+    }
+
     /// Returns the cached active validators and complete validators response,
     /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
@@ -145,26 +166,8 @@ impl ValidatorCache {
         // Cache miss: fetch without holding any lock so the round-trip does
         // not block concurrent readers. A cold-start burst may issue more than
         // one fetch; the re-check below keeps a single stored value.
-        let request = PostStateValidatorsRequest {
-            path: PostStateValidatorsRequestPath {
-                state_id: "head".into(),
-            },
-            body: ValidatorRequestBody {
-                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
-                ..Default::default()
-            },
-        };
-
-        let response =
-            crate::instrument("validators", self.0.eth2_cl.post_state_validators(request))
-                .await
-                .map_err(EthBeaconNodeApiClientError::RequestError)
-                .and_then(|response| match response {
-                    PostStateValidatorsResponse::Ok(response) => Ok(response),
-                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                })?;
-
-        let (active_validators, complete_validators) = validators_from_response(response)?;
+        let (active_validators, complete_validators) =
+            validators_from_response(self.fetch("head").await?);
 
         let mut cached = self.0.cached.write().await;
         if let (Some(active), Some(complete)) = (&cached.active, &cached.complete) {
@@ -187,45 +190,17 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
-        // Held across the fetch so concurrent slot refreshes serialize, as
-        // before. The immutable client/pubkeys are read off the lock.
+        // Held across the fetch so concurrent slot refreshes serialize. The
+        // immutable client/pubkeys are read off the lock.
         let mut cached = self.0.cached.write().await;
 
-        let mut request = PostStateValidatorsRequest {
-            path: PostStateValidatorsRequestPath {
-                state_id: slot.to_string(),
-            },
-            body: ValidatorRequestBody {
-                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
-                ..Default::default()
-            },
+        let (response, refreshed_by_slot) = match self.fetch(&slot.to_string()).await {
+            Ok(response) => (response, true),
+            // Failed to fetch by slot, fall back to head state.
+            Err(_) => (self.fetch("head").await?, false),
         };
 
-        let (response, refreshed_by_slot) = match crate::instrument(
-            "validators",
-            self.0.eth2_cl.post_state_validators(request.clone()),
-        )
-        .await
-        {
-            Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
-            _ => {
-                // Failed to fetch by slot, fall back to head state
-                request.path.state_id = "head".into();
-
-                let response =
-                    crate::instrument("validators", self.0.eth2_cl.post_state_validators(request))
-                        .await
-                        .map_err(EthBeaconNodeApiClientError::RequestError)
-                        .and_then(|response| match response {
-                            PostStateValidatorsResponse::Ok(response) => Ok(response),
-                            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                        })?;
-
-                (response, false)
-            }
-        };
-
-        let (active_validators, complete_validators) = validators_from_response(response)?;
+        let (active_validators, complete_validators) = validators_from_response(response);
 
         cached.active = Some(active_validators.clone());
         cached.complete = Some(complete_validators.clone());
@@ -235,58 +210,30 @@ impl ValidatorCache {
 }
 
 fn validators_from_response(
-    response: GetStateValidatorsResponseResponse,
-) -> Result<(ActiveValidators, CompleteValidators)> {
-    let all_validators = response
+    response: ValidatorsResponse,
+) -> (ActiveValidators, CompleteValidators) {
+    let all_validators: HashMap<ValidatorIndex, v1::Validator> = response
         .data
         .into_iter()
-        .map(|datum| {
-            let index = datum
-                .index
-                .parse()
-                .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
-
-            Ok((index, datum))
-        })
-        .collect::<Result<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>>()?;
+        .map(|validator| (validator.index, validator))
+        .collect();
 
     let active_validators = all_validators
-        .iter()
-        .filter(|(_, v)| v.status.is_active())
-        .map(|(&index, v)| {
-            let pubkey = parse_pubkey(&v.validator.pubkey)?;
+        .values()
+        .filter(|validator| validator.status.is_active())
+        .map(|validator| (validator.index, validator.validator.pubkey))
+        .collect();
 
-            Ok((index, pubkey))
-        })
-        .collect::<Result<HashMap<ValidatorIndex, PubKey>>>()?;
-
-    Ok((
+    (
         ActiveValidators(Arc::new(active_validators)),
         CompleteValidators(Arc::new(all_validators)),
-    ))
-}
-
-fn format_pubkey(pubkey: &PubKey) -> String {
-    format!("0x{}", hex::encode(pubkey))
-}
-
-fn parse_pubkey(pubkey: &str) -> Result<PubKey> {
-    let bytes = hex::decode(pubkey.strip_prefix("0x").unwrap_or(pubkey))
-        .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
-
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType.into())
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        BlindedBlock400Response, GetStateValidatorsResponseResponseDatum,
-        ValidatorResponseValidator, ValidatorStatus,
-    };
+    use crate::{ErrorBody, spec::phase0, v1::ValidatorStatus};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -298,33 +245,27 @@ mod tests {
         // not)
         let pubkeys = (0..10u8).map(test_pubkey).collect::<Vec<PubKey>>();
         let datums = [
-            test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
-            test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued), /* not active */
-            test_validator_datum(2, &pubkeys[2], ValidatorStatus::ActiveOngoing), /* active */
-            test_validator_datum(3, &pubkeys[3], ValidatorStatus::ActiveExiting), /* active */
-            test_validator_datum(4, &pubkeys[4], ValidatorStatus::ActiveSlashed), /* active */
-            test_validator_datum(5, &pubkeys[5], ValidatorStatus::ExitedUnslashed), /* not active */
-            test_validator_datum(6, &pubkeys[6], ValidatorStatus::ExitedSlashed), // not active
-            test_validator_datum(7, &pubkeys[7], ValidatorStatus::WithdrawalPossible), /* not active */
-            test_validator_datum(8, &pubkeys[8], ValidatorStatus::WithdrawalDone), /* not active */
-            test_validator_datum(9, &pubkeys[9], ValidatorStatus::ActiveOngoing),  /* active */
+            test_validator(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
+            test_validator(1, &pubkeys[1], ValidatorStatus::PendingQueued),      /* not active */
+            test_validator(2, &pubkeys[2], ValidatorStatus::ActiveOngoing),      /* active */
+            test_validator(3, &pubkeys[3], ValidatorStatus::ActiveExiting),      /* active */
+            test_validator(4, &pubkeys[4], ValidatorStatus::ActiveSlashed),      /* active */
+            test_validator(5, &pubkeys[5], ValidatorStatus::ExitedUnslashed),    /* not active */
+            test_validator(6, &pubkeys[6], ValidatorStatus::ExitedSlashed),      // not active
+            test_validator(7, &pubkeys[7], ValidatorStatus::WithdrawalPossible), /* not active */
+            test_validator(8, &pubkeys[8], ValidatorStatus::WithdrawalDone),     /* not active */
+            test_validator(9, &pubkeys[9], ValidatorStatus::ActiveOngoing),      /* active */
         ];
 
         let expected_complete = datums
             .iter()
-            .map(|datum| {
-                let index = datum.index.parse().unwrap();
-                (index, datum.clone())
-            })
-            .collect::<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>();
+            .map(|datum| (datum.index, datum.clone()))
+            .collect::<HashMap<ValidatorIndex, v1::Validator>>();
 
         let expected_active = expected_complete
-            .iter()
-            .filter(|(_, datum)| datum.status.is_active())
-            .map(|(&index, datum)| {
-                let pubkey = parse_pubkey(&datum.validator.pubkey).unwrap();
-                (index, pubkey)
-            })
+            .values()
+            .filter(|datum| datum.status.is_active())
+            .map(|datum| (datum.index, datum.validator.pubkey))
             .collect::<HashMap<ValidatorIndex, PubKey>>();
 
         // Create a mock server that tracks request count
@@ -363,13 +304,23 @@ mod tests {
             cache.get_by_head().await.expect("`get_by_head` succeeds");
         assert_eq!(*actual_active, expected_active);
         assert_eq!(*actual_complete, expected_complete);
+
+        // The request selects the cached validators by public key.
+        let received = mock.received_requests().await.expect("recording");
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "ids": pubkeys.iter().map(|pubkey| pluto_ssz::to_0x_hex(pubkey)).collect::<Vec<_>>(),
+            })
+        );
     }
 
     #[tokio::test]
     async fn get_by_head_concurrent_miss_is_consistent() {
         // Concurrent cache misses each return correct, identical data. Because
         // the write lock is deliberately released across the beacon-node fetch
-        // (so a warm cache never blocks readers — see `get_by_head`), a burst
+        // (so a warm cache never blocks readers, see `get_by_head`), a burst
         // of *cold* misses may each issue a fetch; the re-check after
         // re-acquiring the write lock only guarantees a single stored value,
         // not a single request. Once the cache is warm, further reads take the
@@ -380,9 +331,9 @@ mod tests {
         const CONCURRENCY: u64 = 8;
         let pubkeys = (0..3u8).map(test_pubkey).collect::<Vec<PubKey>>();
         let datums = vec![
-            test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
-            test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
-            test_validator_datum(2, &pubkeys[2], ValidatorStatus::ActiveOngoing),
+            test_validator(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+            test_validator(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+            test_validator(2, &pubkeys[2], ValidatorStatus::ActiveOngoing),
         ];
 
         let mock = MockServer::start().await;
@@ -391,7 +342,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_delay(std::time::Duration::from_millis(50))
-                    .set_body_json(GetStateValidatorsResponseResponse {
+                    .set_body_json(ValidatorsResponse {
                         execution_optimistic: false,
                         finalized: true,
                         data: datums,
@@ -462,8 +413,8 @@ mod tests {
         post_state_validators_success(
             "1",
             vec![
-                test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
-                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+                test_validator(0, &pubkeys[0], ValidatorStatus::PendingQueued),
+                test_validator(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
         .mount(&mock)
@@ -472,8 +423,8 @@ mod tests {
         post_state_validators_success(
             "2",
             vec![
-                test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
-                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+                test_validator(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                test_validator(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
         .mount(&mock)
@@ -482,8 +433,8 @@ mod tests {
         post_state_validators_success(
             "11",
             vec![
-                test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
-                test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued),
+                test_validator(0, &pubkeys[0], ValidatorStatus::PendingQueued),
+                test_validator(1, &pubkeys[1], ValidatorStatus::PendingQueued),
             ],
         )
         .mount(&mock)
@@ -543,8 +494,8 @@ mod tests {
         post_state_validators_success(
             "head",
             vec![
-                test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
-                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+                test_validator(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                test_validator(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
         .mount(&mock)
@@ -569,46 +520,41 @@ mod tests {
         bytes
     }
 
-    fn test_validator_datum(
-        index: u64,
-        pubkey: &PubKey,
-        status: ValidatorStatus,
-    ) -> GetStateValidatorsResponseResponseDatum {
+    fn test_validator(index: u64, pubkey: &PubKey, status: ValidatorStatus) -> v1::Validator {
         // NOTE: these values are placeholders intended for testing only
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+        v1::Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: format_pubkey(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: "0".to_string(),
-                exit_epoch: "18446744073709551615".to_string(),
-                withdrawable_epoch: "18446744073709551615".to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
     fn post_state_validators_success(
         state_id: impl AsRef<str>,
-        validators: Vec<GetStateValidatorsResponseResponseDatum>,
+        validators: Vec<v1::Validator>,
     ) -> Mock {
         Mock::given(method("POST"))
             .and(path(format!(
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data: validators,
-                },
-            ))
+                }),
+            )
     }
 
     fn post_state_validators_not_found(state_id: impl AsRef<str>) -> Mock {
@@ -617,13 +563,11 @@ mod tests {
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
-                    code: 404.0,
-                    message: "State not found".to_string(),
-                    stacktraces: None,
-                }),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(ErrorBody {
+                code: Some(404),
+                message: "State not found".to_string(),
+                ..ErrorBody::default()
+            }))
     }
 
     fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {

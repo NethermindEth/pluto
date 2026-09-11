@@ -48,9 +48,7 @@ impl ApiError {
         self
     }
 
-    /// Attaches a boxed source error for debug logging. Use this when the
-    /// upstream error is not `std::error::Error` itself (e.g. `anyhow::Error`,
-    /// which only implements `AsRef<dyn Error>` and converts via `.into()`).
+    /// Attaches an already boxed source error for debug logging.
     #[must_use]
     pub fn with_boxed_source(
         mut self,

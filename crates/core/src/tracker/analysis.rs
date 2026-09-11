@@ -660,7 +660,17 @@ mod tests {
     }
 
     fn eth2_err() -> StepError {
-        Arc::new(WrappedEth2(EthBeaconNodeApiClientError::UnexpectedResponse))
+        Arc::new(WrappedEth2(EthBeaconNodeApiClientError::from(
+            pluto_eth2api::HttpError {
+                status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                method: reqwest::Method::GET,
+                endpoint: "/eth/v1/beacon/states/head/validators".into(),
+                body: pluto_eth2api::ErrorBody {
+                    message: "beacon node unavailable".into(),
+                    ..pluto_eth2api::ErrorBody::default()
+                },
+            },
+        )))
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

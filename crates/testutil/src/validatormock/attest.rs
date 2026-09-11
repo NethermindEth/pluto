@@ -5,41 +5,28 @@
 //! three-stage state machine from Go.
 //!
 //! Go uses `chan struct{}` channels closed once for each stage; Rust mirrors
-//! that with `Arc<tokio::sync::OnceCell<()>>` — `OnceCell::set(())` closes the
+//! that with `Arc<tokio::sync::OnceCell<()>>`: `OnceCell::set(())` closes the
 //! channel, and `.wait().await` is the channel receive. Mutable state lives
 //! behind `Arc<tokio::sync::Mutex<_>>` so the scheduler can hold a `&self`
 //! handle.
 //!
-//! ## Wire-format note
-//!
-//! The two submit endpoints bypass the generated typed client and send raw
-//! JSON, because their wire shape differs from Pluto's internal spec types:
-//!
-//! - `POST /eth/v2/beacon/pool/attestations` sends the Electra+
-//!   `SingleAttestation` wire format, not the internal `VersionedAttestation`.
-//! - `POST /eth/v2/validator/aggregate_and_proofs` sends a bare
-//!   `[SignedAggregateAndProof]` array (fork selected by the
-//!   `Eth-Consensus-Version` header), not a `SubmitAggregateAttestationsOpts`
-//!   envelope.
-//!
-//! Both match go-eth2-client's transport and what a real Electra+ beacon node
-//! accepts, and are exercised against Pluto's own validator-API router; the
-//! goldens capture the exact bytes. All other beacon-node interactions use the
-//! generated client. On non-success responses `submit_json` surfaces the HTTP
-//! status and response body, so a shape mismatch shows up directly in the error
-//! message rather than as a silent reqwest failure.
+//! The mock originates Fulu-fork payloads (like Charon's vmock, which hardcodes
+//! `DataVersionFulu`): attestations are submitted as versioned Fulu
+//! attestations, which the client converts to the `SingleAttestation` wire
+//! shape, and aggregates as Fulu `SignedAggregateAndProof`s. The goldens
+//! capture the exact bytes.
 
 use std::{collections::HashMap, sync::Arc};
 
 use pluto_eth2api::{
-    ConsensusVersion, ETH_CONSENSUS_VERSION, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
-    GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
-    GetAttesterDutiesRequest, GetAttesterDutiesResponse, ProduceAttestationDataRequest,
-    ProduceAttestationDataResponse, SubmitBeaconCommitteeSelectionsRequest,
-    SubmitBeaconCommitteeSelectionsResponse,
+    EthBeaconNodeApiClient,
     spec::{
         electra,
-        phase0::{AttestationData, BLSPubKey, BLSSignature, Root, Slot, ValidatorIndex},
+        phase0::{AttestationData, BLSPubKey, Root, Slot, ValidatorIndex},
+    },
+    versioned::{
+        AttestationPayload, DataVersion, SignedAggregateAndProofPayload, VersionedAttestation,
+        VersionedSignedAggregateAndProof,
     },
 };
 use pluto_eth2util::{
@@ -47,9 +34,11 @@ use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{DomainName, get_data_root},
 };
-use serde::Serialize;
+use pluto_ssz::{BitList, BitVector};
 use tokio::sync::Mutex;
 use tree_hash::TreeHash;
+
+pub use pluto_eth2api::v1::{AttesterDuty, BeaconCommitteeSelection};
 
 use super::{
     close_once::CloseOnce,
@@ -61,40 +50,8 @@ use super::{
 /// Committee index type alias, mirroring Go's `eth2p0.CommitteeIndex` (uint64).
 type CommitteeIndex = u64;
 
-/// Single-slot attester duty as returned by
-/// `/eth/v1/validator/duties/attester`.
-///
-/// Mirrors `*eth2v1.AttesterDuty` after parsing the string-encoded JSON fields
-/// into typed integers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttesterDuty {
-    /// Validator public key.
-    pub pubkey: BLSPubKey,
-    /// Validator's beacon-chain index.
-    pub validator_index: ValidatorIndex,
-    /// Committee index for this slot.
-    pub committee_index: CommitteeIndex,
-    /// Number of validators in the committee.
-    pub committee_length: u64,
-    /// Number of committees active at this slot.
-    pub committees_at_slot: u64,
-    /// Position of this validator inside the committee.
-    pub validator_committee_index: u64,
-    /// Slot at which the validator must attest.
-    pub slot: Slot,
-}
-
-/// Selected aggregator entry returned by
-/// `/eth/v1/validator/beacon_committee_selections`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BeaconCommitteeSelection {
-    /// Validator index.
-    pub validator_index: ValidatorIndex,
-    /// Slot the validator is attesting at.
-    pub slot: Slot,
-    /// Aggregated selection proof signature.
-    pub selection_proof: BLSSignature,
-}
+/// Fork the mock's payloads are tagged with.
+const PAYLOAD_VERSION: DataVersion = DataVersion::Fulu;
 
 /// Drives a single slot through `Prepare → Attest → Aggregate`.
 ///
@@ -103,7 +60,7 @@ pub struct BeaconCommitteeSelection {
 /// `OnceCell`s (one per stage) acting as Go's `chan struct{}` ready signals.
 #[derive(Debug, Clone)]
 pub struct SlotAttester {
-    eth2_cl: Arc<EthBeaconNodeApiClient>,
+    eth2_cl: EthBeaconNodeApiClient,
     slot: Slot,
     #[expect(
         dead_code,
@@ -132,7 +89,7 @@ impl SlotAttester {
     /// and safe to share between the scheduler tasks.
     #[must_use]
     pub fn new(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: EthBeaconNodeApiClient,
         slot: Slot,
         sign_func: SignFunc,
         pubkeys: Vec<BLSPubKey>,
@@ -160,7 +117,7 @@ impl SlotAttester {
     ///
     /// Mirrors Go's `Prepare`. Calling twice on the same instance panics-like
     /// (the `set` calls on the close-once cells will return `Err`), which we
-    /// silently swallow — matching the Go semantics of `close(ch)` on an
+    /// silently swallow, matching the Go semantics of `close(ch)` on an
     /// already-closed channel only triggering an explicit panic; here we
     /// prefer idempotence.
     pub async fn prepare(&self) -> Result<()> {
@@ -169,14 +126,8 @@ impl SlotAttester {
         let duties = prepare_attesters(&self.eth2_cl, &vals, self.slot).await?;
         self.set_prepare_duties(vals, duties.clone()).await;
 
-        let selections = prepare_aggregators(
-            &self.eth2_cl,
-            &self.sign_func,
-            &self.state,
-            &duties,
-            self.slot,
-        )
-        .await?;
+        let selections =
+            prepare_aggregators(&self.eth2_cl, &self.sign_func, &duties, self.slot).await?;
         self.set_prepare_selections(selections).await;
 
         Ok(())
@@ -257,62 +208,15 @@ async fn prepare_attesters(
     }
 
     let epoch = epoch_from_slot(eth2_cl, slot).await?;
+    let indices: Vec<ValidatorIndex> = vals.indices().collect();
 
-    let indices: Vec<String> = vals.indices().map(|i| i.to_string()).collect();
+    let response = eth2_cl.get_attester_duties(epoch, &indices).await?;
 
-    let request = GetAttesterDutiesRequest::builder()
-        .epoch(epoch.to_string())
-        .body(indices)
-        .build()
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-    let response = eth2_cl
-        .get_attester_duties(request)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-    let data = match response {
-        GetAttesterDutiesResponse::Ok(ok) => ok.data,
-        _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-    };
-
-    let mut duties = Vec::new();
-    for datum in &data {
-        let duty = parse_duty(datum)?;
-        if duty.slot != slot {
-            continue;
-        }
-        duties.push(duty);
-    }
-
-    Ok(duties)
-}
-
-fn parse_duty(
-    datum: &pluto_eth2api::GetAttesterDutiesResponseResponseDatum,
-) -> Result<AttesterDuty> {
-    let pubkey = parse_pubkey(&datum.pubkey)?;
-    let validator_index =
-        parse_u64(&datum.validator_index).ok_or_else(|| malformed("validator_index"))?;
-    let committee_index =
-        parse_u64(&datum.committee_index).ok_or_else(|| malformed("committee_index"))?;
-    let committee_length =
-        parse_u64(&datum.committee_length).ok_or_else(|| malformed("committee_length"))?;
-    let committees_at_slot =
-        parse_u64(&datum.committees_at_slot).ok_or_else(|| malformed("committees_at_slot"))?;
-    let validator_committee_index = parse_u64(&datum.validator_committee_index)
-        .ok_or_else(|| malformed("validator_committee_index"))?;
-    let slot = parse_u64(&datum.slot).ok_or_else(|| malformed("slot"))?;
-
-    Ok(AttesterDuty {
-        pubkey,
-        validator_index,
-        committee_index,
-        committee_length,
-        committees_at_slot,
-        validator_committee_index,
-        slot,
-    })
+    Ok(response
+        .data
+        .into_iter()
+        .filter(|duty| duty.slot == slot)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +226,6 @@ fn parse_duty(
 async fn prepare_aggregators(
     eth2_cl: &EthBeaconNodeApiClient,
     sign_func: &SignFunc,
-    _state: &Arc<Mutex<MutableState>>,
     duties: &[AttesterDuty],
     slot: Slot,
 ) -> Result<Vec<BeaconCommitteeSelection>> {
@@ -341,50 +244,28 @@ async fn prepare_aggregators(
         let slot_sig = sign_func.sign(&duty.pubkey, &sig_data)?;
         comm_lengths.insert(duty.validator_index, duty.committee_length);
 
-        partials.push(
-            pluto_eth2api::BeaconCommitteeSelectionRequestRequestBodyItem {
-                selection_proof: format!("0x{}", hex::encode(slot_sig)),
-                slot: duty.slot.to_string(),
-                validator_index: duty.validator_index.to_string(),
-            },
-        );
+        partials.push(BeaconCommitteeSelection {
+            selection_proof: slot_sig,
+            slot: duty.slot,
+            validator_index: duty.validator_index,
+        });
     }
 
-    let request = SubmitBeaconCommitteeSelectionsRequest::builder()
-        .body(partials)
-        .build()
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-    let response = eth2_cl
-        .submit_beacon_committee_selections(request)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-    let aggregate_selections = match response {
-        SubmitBeaconCommitteeSelectionsResponse::Ok(ok) => ok.data,
-        _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-    };
+    let aggregate_selections = eth2_cl
+        .submit_beacon_committee_selections(&partials)
+        .await?;
 
     let mut selections = Vec::new();
-    for item in aggregate_selections {
-        let validator_index =
-            parse_u64(&item.validator_index).ok_or_else(|| malformed("validator_index"))?;
-        let slot = parse_u64(&item.slot).ok_or_else(|| malformed("slot"))?;
-        let selection_proof = parse_signature(&item.selection_proof)?;
-
+    for selection in aggregate_selections {
         let comm_len = *comm_lengths
-            .get(&validator_index)
-            .ok_or(Error::MissingValidatorIndex(validator_index))?;
+            .get(&selection.validator_index)
+            .ok_or(Error::MissingValidatorIndex(selection.validator_index))?;
 
-        if !is_att_aggregator(eth2_cl, comm_len, selection_proof).await? {
+        if !is_att_aggregator(eth2_cl, comm_len, selection.selection_proof).await? {
             continue;
         }
 
-        selections.push(BeaconCommitteeSelection {
-            validator_index,
-            slot,
-            selection_proof,
-        });
+        selections.push(selection);
     }
 
     Ok(selections)
@@ -417,7 +298,7 @@ async fn attest(
             .push(duty);
     }
 
-    let mut atts: Vec<electra::SingleAttestation> = Vec::new();
+    let mut atts: Vec<VersionedAttestation> = Vec::new();
     let mut datas: Vec<AttestationData> = Vec::new();
 
     for comm_idx in &comm_order {
@@ -425,27 +306,7 @@ async fn attest(
             .get(comm_idx)
             .ok_or_else(|| malformed("duty group missing"))?;
 
-        let request = ProduceAttestationDataRequest::builder()
-            .slot(slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let response = eth2_cl
-            .produce_attestation_data(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let data: AttestationData = match response {
-            ProduceAttestationDataResponse::Ok(ok) => {
-                // `Data` uses loose string fields; round-trip through JSON to
-                // get the strongly typed `AttestationData` (with numeric slot,
-                // index, hex roots, etc.).
-                let value = serde_json::to_value(&ok.data).map_err(|e| malformed(e.to_string()))?;
-                serde_json::from_value(value).map_err(|e| malformed(e.to_string()))?
-            }
-            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-        };
+        let data = eth2_cl.produce_attestation_data(slot, *comm_idx).await?;
         datas.push(data.clone());
 
         let root = data.tree_hash_root().0;
@@ -455,23 +316,30 @@ async fn attest(
         for duty in duty_list {
             let sig = sign_func.sign(&duty.pubkey, &sig_data)?;
 
-            // Electra+ beacon nodes accept the wire-format `SingleAttestation`
-            // on `POST /eth/v2/beacon/pool/attestations` — go-eth2-client (and
-            // hence Charon) converts the internal versioned attestation to this
-            // before POSTing (`ToSingleAttestation`): committee index from the
-            // assigned committee, attester index from the validator, carrying
-            // the data + signature (aggregation bits are dropped
-            // for a single).
-            atts.push(electra::SingleAttestation {
-                committee_index: duty.committee_index,
-                attester_index: duty.validator_index,
-                data: data.clone(),
-                signature: sig,
+            // The client converts each versioned attestation to the Electra+
+            // `SingleAttestation` wire shape (go-eth2-client's
+            // `ToSingleAttestation`): committee index from the committee bits,
+            // attester index from the validator index.
+            let committee_length = usize::try_from(duty.committee_length)
+                .map_err(|_| malformed("committee length overflows usize"))?;
+            let position = usize::try_from(duty.validator_committee_index)
+                .map_err(|_| malformed("validator committee index overflows usize"))?;
+            let committee = usize::try_from(duty.committee_index)
+                .map_err(|_| malformed("committee index overflows usize"))?;
+            atts.push(VersionedAttestation {
+                version: PAYLOAD_VERSION,
+                validator_index: Some(duty.validator_index),
+                attestation: Some(AttestationPayload::Fulu(electra::Attestation {
+                    aggregation_bits: BitList::with_bits(committee_length, &[position]),
+                    data: data.clone(),
+                    signature: sig,
+                    committee_bits: BitVector::with_bits(&[committee]),
+                })),
             });
         }
     }
 
-    submit_attestations(eth2_cl, &atts).await?;
+    eth2_cl.submit_pool_attestations_v2(&atts).await?;
 
     Ok(datas)
 }
@@ -500,7 +368,7 @@ async fn aggregate(
         .map(|duty| (duty.validator_index, duty.committee_index))
         .collect();
 
-    let mut aggs: Vec<electra::SignedAggregateAndProof> = Vec::new();
+    let mut aggs: Vec<VersionedSignedAggregateAndProof> = Vec::new();
     let mut atts_by_comm: HashMap<CommitteeIndex, electra::Attestation> = HashMap::new();
 
     for selection in selections {
@@ -532,17 +400,18 @@ async fn aggregate(
 
         let proof_sig = sign_func.sign(pubkey, &sig_data)?;
 
-        // Electra+ beacon nodes take a bare `[SignedAggregateAndProof]` array
-        // on `/eth/v2/validator/aggregate_and_proofs` (go-eth2-client
-        // unwraps the opts before POST); the versioned envelope is not
-        // the wire shape.
-        aggs.push(electra::SignedAggregateAndProof {
-            message: proof_message,
-            signature: proof_sig,
+        aggs.push(VersionedSignedAggregateAndProof {
+            version: PAYLOAD_VERSION,
+            aggregate_and_proof: SignedAggregateAndProofPayload::Fulu(
+                electra::SignedAggregateAndProof {
+                    message: proof_message,
+                    signature: proof_sig,
+                },
+            ),
         });
     }
 
-    submit_aggregate_attestations(eth2_cl, &aggs).await?;
+    eth2_cl.publish_aggregate_and_proofs_v2(&aggs).await?;
 
     Ok(true)
 }
@@ -558,29 +427,16 @@ async fn get_aggregate_attestation(
         }
 
         let root: Root = data.tree_hash_root().0;
-        let request = GetAggregatedAttestationV2Request::builder()
-            .attestation_data_root(format!("0x{}", hex::encode(root)))
-            .slot(data.slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+        let aggregate = eth2_cl
+            .get_aggregated_attestation_v2(data.slot, comm_idx, root)
+            .await?;
 
-        let response = eth2_cl
-            .get_aggregated_attestation_v2(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let data = match response {
-            GetAggregatedAttestationV2Response::Ok(ok) => ok.data,
-            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
+        return match aggregate.attestation {
+            Some(AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) => Ok(att),
+            other => Err(malformed(format!(
+                "expected an electra aggregate attestation, got {other:?}"
+            ))),
         };
-        // Beaconmock serves the Fulu-shaped Object variant; decode via JSON
-        // round-trip into the typed `electra::Attestation` since the generated
-        // Object variant has loosely typed string fields.
-        let value = serde_json::to_value(&data).map_err(|e| malformed(e.to_string()))?;
-        let att: electra::Attestation =
-            serde_json::from_value(value).map_err(|e| malformed(e.to_string()))?;
-        return Ok(att);
     }
 
     Err(Error::Malformed(
@@ -588,128 +444,12 @@ async fn get_aggregate_attestation(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Raw POST helpers
-// ---------------------------------------------------------------------------
-//
-// These submit the Electra+ `SingleAttestation` array and the bare
-// `SignedAggregateAndProof` array wire shapes directly, bypassing the generated
-// typed client (see the module-level docstring for why). Errors surface the
-// HTTP status AND response body (via [`Error::SubmitStatus`]) so beacon-node
-// validation failures are visible — matching the diagnostic richness of Go's
-// typed `SubmitAttestations` error.
-
-/// Maximum number of bytes of an HTTP error response body to keep in the
-/// surfaced error. Keeps log lines readable without dropping the useful prefix
-/// of beacon-node validation messages (typically a few hundred bytes).
-const ERROR_BODY_TRUNCATE: usize = 1024;
-
-async fn submit_attestations(
-    eth2_cl: &EthBeaconNodeApiClient,
-    atts: &[electra::SingleAttestation],
-) -> Result<()> {
-    const ENDPOINT: &str = "/eth/v2/beacon/pool/attestations";
-    submit_json(eth2_cl, ENDPOINT, atts).await
-}
-
-async fn submit_aggregate_attestations(
-    eth2_cl: &EthBeaconNodeApiClient,
-    aggs: &[electra::SignedAggregateAndProof],
-) -> Result<()> {
-    const ENDPOINT: &str = "/eth/v2/validator/aggregate_and_proofs";
-    // Bare array on the wire (fork from the `Eth-Consensus-Version` header),
-    // matching the validator-API router and a real beacon node.
-    submit_json(eth2_cl, ENDPOINT, aggs).await
-}
-
-async fn submit_json<T: Serialize + ?Sized>(
-    eth2_cl: &EthBeaconNodeApiClient,
-    endpoint: &'static str,
-    body: &T,
-) -> Result<()> {
-    let mut url = eth2_cl.base_url.clone();
-    {
-        let mut segments = url.path_segments_mut().map_err(|()| {
-            Error::Malformed(format!("base url has no path segments for {endpoint}"))
-        })?;
-        // `endpoint` always starts with '/'; skip the empty leading element.
-        for segment in endpoint.split('/').filter(|s| !s.is_empty()) {
-            segments.push(segment);
-        }
-    }
-
-    let response = eth2_cl
-        .client
-        .post(url)
-        // The v2 pool/aggregate submit endpoints require the consensus-version
-        // header; the validator API rejects the request without it (400
-        // "missing consensus version header"). The mock originates Fulu-fork
-        // payloads (like Charon's vmock, which hardcodes DataVersionFulu), so
-        // send that fork.
-        .header(ETH_CONSENSUS_VERSION, ConsensusVersion::Fulu.to_string())
-        .json(body)
-        .send()
-        .await
-        .map_err(|source| Error::Submit { endpoint, source })?;
-
-    let status = response.status();
-    if status.is_success() {
-        return Ok(());
-    }
-
-    // Read the body before discarding the response so the beacon-node's error
-    // payload (typically `{"code":400,"message":"..."}`) reaches the caller.
-    let body = response.text().await.unwrap_or_default();
-    let truncated = if body.len() > ERROR_BODY_TRUNCATE {
-        // `floor_char_boundary` is unstable; walk back to a UTF-8 boundary
-        // manually so non-ASCII payloads don't panic the slice.
-        let mut cut = ERROR_BODY_TRUNCATE;
-        while cut > 0 && !body.is_char_boundary(cut) {
-            cut = cut.saturating_sub(1);
-        }
-        format!("{}…", &body[..cut])
-    } else {
-        body
-    };
-    Err(Error::SubmitStatus {
-        endpoint,
-        status,
-        body: truncated,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn parse_pubkey(s: &str) -> Result<BLSPubKey> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| malformed(format!("pubkey length {} != 48", bytes.len())))
-}
-
-fn parse_signature(s: &str) -> Result<BLSSignature> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| malformed(format!("signature length {} != 96", bytes.len())))
-}
-
-fn parse_u64(s: &str) -> Option<u64> {
-    s.parse::<u64>().ok()
-}
-
 fn malformed(s: impl Into<String>) -> Error {
     Error::Malformed(s.into())
 }
 
 // ---------------------------------------------------------------------------
-// Tests — mirror Go's TestAttest for DutyFactor 0 and 1.
+// Tests: mirror Go's TestAttest for DutyFactor 0 and 1.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -764,7 +504,7 @@ mod tests {
         mount_post_state_validators(mock.server(), &valset).await;
 
         // `BeaconCommitteeSelections` is a DV-only endpoint not mounted by the
-        // default beaconmock — Go's `beaconmock.New` runs the validator mock
+        // default beaconmock: Go's `beaconmock.New` runs the validator mock
         // against a DV middleware that echoes selections. We replicate the
         // echo: the response body is `{"data": <request body>}`.
         mount_echo_selections(mock.server()).await;
@@ -793,12 +533,8 @@ mod tests {
             .expect("fetch slots config");
 
         let sign_func: SignFunc = Arc::new(PubkeyEchoSigner);
-        let attester = SlotAttester::new(
-            Arc::new(mock.client().clone()),
-            slots_per_epoch,
-            sign_func,
-            pubkeys,
-        );
+        let attester =
+            SlotAttester::new(mock.client().clone(), slots_per_epoch, sign_func, pubkeys);
 
         attester.prepare().await.expect("prepare");
         attester.attest().await.expect("attest");
@@ -899,25 +635,13 @@ mod tests {
             matchers::{method, path},
         };
 
-        let data: Vec<Value> = valset
-            .validators()
-            .into_iter()
-            .map(|v| {
-                serde_json::json!({
-                    "index": v.index.to_string(),
-                    "balance": v.balance.to_string(),
-                    "status": v.status,
-                    "validator": v.validator,
-                })
-            })
-            .collect();
         let body = serde_json::json!({
-            "data": data,
+            "data": valset.validators(),
             "execution_optimistic": false,
             "finalized": false,
         });
 
-        // Priority 2 — above defaults (255) but below capture (1).
+        // Priority 2: above defaults (255) but below capture (1).
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))

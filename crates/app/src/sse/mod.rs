@@ -18,7 +18,7 @@ use futures::StreamExt;
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
-use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventstreamRequestQueryTopic};
+use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventTopic};
 
 use crate::sse::{
     metrics::SSE_METRICS,
@@ -38,11 +38,11 @@ const CHANNEL_BUFFER_SIZE: usize = 1024;
 const DEFAULT_RETRY: Duration = Duration::from_secs(1);
 
 /// Topics the listener subscribes to.
-const TOPICS: [EventstreamRequestQueryTopic; 4] = [
-    EventstreamRequestQueryTopic::Head,
-    EventstreamRequestQueryTopic::ChainReorg,
-    EventstreamRequestQueryTopic::BlockGossip,
-    EventstreamRequestQueryTopic::Block,
+const TOPICS: [EventTopic; 4] = [
+    EventTopic::Head,
+    EventTopic::ChainReorg,
+    EventTopic::BlockGossip,
+    EventTopic::Block,
 ];
 
 /// Errors that can occur while setting up or running the SSE listener.
@@ -103,7 +103,7 @@ impl SseListenerBuilder {
             .await
             .ok_or(SseListenerError::Terminated)??;
 
-        let addr = client.base_url.to_string();
+        let addr = client.base_url().to_string();
 
         let actor = SseListenerActor {
             addr: addr.clone(),

@@ -1,36 +1,26 @@
 //! # Eth2Api
 //!
-//! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
-//! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
+//! Client for an Ethereum beacon node. Its external API follows the official
+//! [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
+//! Every failure is an [`EthBeaconNodeApiClientError`] variant.
 
-#[allow(missing_docs)]
-#[allow(clippy::all)]
-#[rustfmt::skip]
+/// HTTP client for a single beacon node.
 pub mod client;
 
-#[allow(missing_docs)]
-#[allow(clippy::all)]
-#[rustfmt::skip]
+/// Client-level Beacon API types: request options, response envelopes and
+/// error bodies.
 pub mod types;
 
 pub use client::*;
 pub use types::*;
 
-/// Additional data types and functions to reduce the boilerplate when
-/// interacting with `eth2api`.
-pub mod extensions;
+/// Error type of the client.
+pub mod error;
 
-pub use extensions::*;
-
-/// Beacon node client wrapper.
-pub mod beacon_node;
-
-pub use beacon_node::BeaconNodeClient;
+pub use error::{EthBeaconNodeApiClientError, PayloadError};
 
 /// Prometheus metrics for beacon node requests.
-pub mod metrics;
-
-pub use metrics::instrument;
+mod metrics;
 
 /// Ethereum 2.0 consensus layer specification types.
 pub mod spec;
@@ -44,14 +34,5 @@ pub mod versioned;
 /// Cache of Validators retrieved from the Beacon node.
 pub mod valcache;
 
-/// Beacon API helpers used by validator duty flows.
-pub mod validator_duty;
-
-pub use validator_duty::*;
-
 #[cfg(test)]
 pub(crate) mod test_fixtures;
-
-#[cfg(test)]
-#[cfg(feature = "integration")]
-mod integration;

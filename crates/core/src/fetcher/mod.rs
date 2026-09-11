@@ -9,15 +9,12 @@ pub use graffiti::{GraffitiBuilder, GraffitiError};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
-    GetAggregatedAttestationV2Response, GetAggregatedAttestationV2ResponseResponseData,
-    ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
-    ProduceBlockV3Response, ProduceSyncCommitteeContributionRequest,
-    ProduceSyncCommitteeContributionResponse,
-    spec::{ConversionError, altair, bellatrix::ExecutionAddress, phase0},
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, ProduceBlockOpts,
+    spec::{altair, bellatrix::ExecutionAddress, phase0},
     versioned,
 };
 use pluto_eth2util::eth2exp::{self, Eth2ExpError};
+use reqwest::StatusCode;
 use tree_hash::TreeHash;
 
 use crate::{
@@ -87,21 +84,13 @@ pub enum FetcherError {
     #[error("invalid sync committee message")]
     InvalidSyncCommitteeMessage,
 
-    /// The beacon node returned a nil attestation data response.
-    #[error("attestation data cannot be nil")]
-    NilAttestationData,
-
-    /// The beacon node could not find an aggregate attestation for the root.
+    /// The beacon node has no aggregate attestation for the root.
     #[error("aggregate attestation not found by root (retryable)")]
     AggregateAttestationNotFound,
 
-    /// The beacon node could not find a sync committee contribution.
+    /// The beacon node has no sync committee contribution for the root.
     #[error("sync committee contribution not found by root (retryable)")]
     SyncContributionNotFound,
-
-    /// The beacon node returned an unexpected (non-success) response.
-    #[error("unexpected beacon node response")]
-    UnexpectedResponse,
 
     /// AggSigDB / DutyDB callback (or a subscriber) returned an error.
     #[error("{0}")]
@@ -114,14 +103,6 @@ pub enum FetcherError {
     /// Error from aggregator selection.
     #[error(transparent)]
     Eth2Exp(#[from] Eth2ExpError),
-
-    /// JSON (de)serialization error while decoding a beacon node response.
-    #[error("decode beacon node response: {0}")]
-    Json(#[from] serde_json::Error),
-
-    /// Failed to convert a loosely-typed beacon node value into a spec type.
-    #[error("convert beacon node response: {0}")]
-    Conversion(#[from] ConversionError),
 
     /// Failed to decode a beacon node response into a signed-data type.
     #[error("decode proposal: {0}")]
@@ -229,7 +210,7 @@ impl Fetcher {
                 return Err(FetcherError::InvalidAttesterDefinition);
             };
 
-            let mut comm_idx = att_def.duty.committee_index;
+            let mut comm_idx = att_def.committee_index;
 
             // Attestation data for Electra is not bound by committee index;
             // committee index is still persisted in the request but should be
@@ -251,7 +232,7 @@ impl Fetcher {
                 *pubkey,
                 UnsignedDutyData::Attestation(AttestationData {
                     data: eth2_att_data,
-                    duty: att_def.duty.clone(),
+                    duty: att_def.clone(),
                 }),
             );
         }
@@ -287,7 +268,7 @@ impl Fetcher {
 
             let is_aggregator = eth2exp::is_att_aggregator(
                 &self.eth2_cl,
-                att_def.duty.committee_length,
+                att_def.committee_length,
                 selection.0.selection_proof,
             )
             .await?;
@@ -298,7 +279,7 @@ impl Fetcher {
 
             tracker.add_resolved(pubkey.to_string());
 
-            let comm_idx = att_def.duty.committee_index;
+            let comm_idx = att_def.committee_index;
 
             if let Some(agg_att) = agg_att_by_comm_idx.get(&comm_idx) {
                 resp.insert(
@@ -351,24 +332,15 @@ impl Fetcher {
 
             let graffiti = self.graffiti_builder.get_graffiti(pubkey);
 
-            let request = ProduceBlockV3Request::builder()
-                .slot(slot.to_string())
-                .randao_reveal(format!("0x{}", hex::encode(randao)))
-                .graffiti(format!("0x{}", hex::encode(graffiti)))
-                .builder_boost_factor(builder_boost_factor.to_string())
-                .build()
-                .map_err(EthBeaconNodeApiClientError::RequestError)?;
+            let opts = ProduceBlockOpts {
+                slot,
+                randao_reveal: randao,
+                graffiti: Some(graffiti),
+                skip_randao_verification: false,
+                builder_boost_factor: Some(builder_boost_factor),
+            };
 
-            let response =
-                match pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(request))
-                    .await
-                    .map_err(EthBeaconNodeApiClientError::RequestError)?
-                {
-                    ProduceBlockV3Response::Ok(resp) => resp,
-                    _ => return Err(FetcherError::UnexpectedResponse),
-                };
-
-            let proposal = VersionedProposal::try_from(&response)?;
+            let proposal = self.eth2_cl.produce_block_v3(&opts).await?;
 
             // Builders set the fee recipient to themselves, so it always
             // differs from the validator's; only verify when the
@@ -445,24 +417,10 @@ impl Fetcher {
 
     /// Queries the beacon node for attestation data.
     async fn attestation_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
-        let request = ProduceAttestationDataRequest::builder()
-            .slot(slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        match pluto_eth2api::instrument(
-            "attestation_data",
-            self.eth2_cl.produce_attestation_data(request),
-        )
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            ProduceAttestationDataResponse::Ok(ok) => {
-                Ok(phase0::AttestationData::try_from(&ok.data)?)
-            }
-            _ => Err(FetcherError::NilAttestationData),
-        }
+        self.eth2_cl
+            .produce_attestation_data(slot, comm_idx)
+            .await
+            .map_err(FetcherError::from)
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
@@ -472,32 +430,18 @@ impl Fetcher {
         comm_idx: u64,
         data_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
-        let request = GetAggregatedAttestationV2Request::builder()
-            .attestation_data_root(format!("0x{}", hex::encode(data_root)))
-            .slot(slot.to_string())
-            .committee_index(comm_idx.to_string())
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        let ok = match pluto_eth2api::instrument(
-            "aggregate_attestation",
-            self.eth2_cl.get_aggregated_attestation_v2(request),
-        )
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            GetAggregatedAttestationV2Response::Ok(ok) => ok,
-            // Some beacon nodes return nil if the root is not found; surface a
-            // retryable error.
-            _ => return Err(FetcherError::AggregateAttestationNotFound),
-        };
-
-        let version = versioned::DataVersion::from(&ok.version);
-        Ok(versioned::VersionedAttestation {
-            version,
-            validator_index: None,
-            attestation: Some(attestation_payload(version, &ok.data)?),
-        })
+        self.eth2_cl
+            .get_aggregated_attestation_v2(slot, comm_idx, data_root)
+            .await
+            .map_err(|err| match err {
+                // A 404 means the node has no aggregate for that root yet, e.g.
+                // because it is not subscribed to the committee's subnet; the
+                // duty is retried.
+                EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
+                    FetcherError::AggregateAttestationNotFound
+                }
+                other => other.into(),
+            })
     }
 
     /// Queries the beacon node for a sync committee contribution.
@@ -507,25 +451,15 @@ impl Fetcher {
         subcomm_idx: u64,
         block_root: phase0::Root,
     ) -> Result<altair::SyncCommitteeContribution> {
-        let request = ProduceSyncCommitteeContributionRequest::builder()
-            .slot(slot.to_string())
-            .subcommittee_index(subcomm_idx.to_string())
-            .beacon_block_root(format!("0x{}", hex::encode(block_root)))
-            .build()
-            .map_err(EthBeaconNodeApiClientError::RequestError)?;
-
-        match pluto_eth2api::instrument(
-            "sync_committee_contribution",
-            self.eth2_cl.produce_sync_committee_contribution(request),
-        )
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)?
-        {
-            ProduceSyncCommitteeContributionResponse::Ok(payload) => {
-                Ok(altair::SyncCommitteeContribution::try_from(&payload.data)?)
-            }
-            _ => Err(FetcherError::SyncContributionNotFound),
-        }
+        self.eth2_cl
+            .produce_sync_committee_contribution(slot, subcomm_idx, block_root)
+            .await
+            .map_err(|err| match err {
+                EthBeaconNodeApiClientError::Http(http) if http.status == StatusCode::NOT_FOUND => {
+                    FetcherError::SyncContributionNotFound
+                }
+                other => other.into(),
+            })
     }
 
     /// Invokes the AggSigDB resolver.
@@ -555,35 +489,6 @@ fn wrap(context: &'static str) -> impl Fn(FetcherError) -> FetcherError {
 /// Downcasts a `&dyn SignedData` to a concrete signed-data type.
 fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
     (data as &dyn std::any::Any).downcast_ref::<T>()
-}
-
-/// Builds a versioned attestation payload from the beacon node's aggregate
-/// attestation response.
-///
-/// The response carries the attestation as an untagged union: `Object2` is the
-/// phase0-style attestation returned up to Deneb, `Object` is the
-/// committee-aware Electra shape returned from Electra onwards.
-fn attestation_payload(
-    version: versioned::DataVersion,
-    data: &GetAggregatedAttestationV2ResponseResponseData,
-) -> Result<versioned::AttestationPayload> {
-    use GetAggregatedAttestationV2ResponseResponseData as GenData;
-    use versioned::{AttestationPayload as AP, DataVersion as DV};
-
-    Ok(match (version, data) {
-        (DV::Phase0, GenData::Object2(att)) => AP::Phase0(att.try_into()?),
-        (DV::Altair, GenData::Object2(att)) => AP::Altair(att.try_into()?),
-        (DV::Bellatrix, GenData::Object2(att)) => AP::Bellatrix(att.try_into()?),
-        (DV::Capella, GenData::Object2(att)) => AP::Capella(att.try_into()?),
-        (DV::Deneb, GenData::Object2(att)) => AP::Deneb(att.try_into()?),
-        (DV::Electra, GenData::Object(att)) => AP::Electra(att.try_into()?),
-        (DV::Fulu, GenData::Object(att)) => AP::Fulu(att.try_into()?),
-        // A spec-compliant beacon node never pairs a fork version with the
-        // other fork's attestation shape (e.g. an Electra version reporting a
-        // phase0-style body), and `version` is derived from a
-        // `ConsensusVersion`, so it is never `Unknown`.
-        _ => return Err(FetcherError::UnexpectedResponse),
-    })
 }
 
 /// Logs a warning when the fee recipient is not correctly populated in the
@@ -687,15 +592,11 @@ impl Drop for PubkeysTracker {
 mod tests {
     use std::sync::Mutex;
 
+    use pluto_eth2api::v1;
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::{
-        signeddata::AttesterDuty,
-        types::{
-            AttesterDutyDefinition, ProposerDutyDefinition, SlotNumber, SyncCommitteeDutyDefinition,
-        },
-    };
+    use crate::types::SlotNumber;
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
     const PK_LEN: usize = 48;
@@ -734,12 +635,12 @@ mod tests {
     /// `is_att_aggregator`, matching the values the prysm selection-proof test
     /// vectors were generated against.
     fn aggregator_spec() -> serde_json::Value {
-        serde_json::json!({
+        pluto_testutil::default_spec_with(serde_json::json!({
             "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
             "SYNC_COMMITTEE_SIZE": "512",
             "SYNC_COMMITTEE_SUBNET_COUNT": "4",
             "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16",
-        })
+        }))
     }
 
     /// Decodes a 96-byte BLS signature from hex.
@@ -981,18 +882,18 @@ mod tests {
         let def_set = DutyDefinitionSet::from([
             (
                 pk_a,
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: pk_a,
-                    v_idx: 2,
-                    slot: SlotNumber::new(SLOT),
+                DutyDefinition::Proposer(v1::ProposerDuty {
+                    pubkey: pk_a.0,
+                    validator_index: 2,
+                    slot: SLOT,
                 }),
             ),
             (
                 pk_b,
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: pk_b,
-                    v_idx: 3,
-                    slot: SlotNumber::new(SLOT),
+                DutyDefinition::Proposer(v1::ProposerDuty {
+                    pubkey: pk_b.0,
+                    validator_index: 3,
+                    slot: SLOT,
                 }),
             ),
         ]);
@@ -1065,7 +966,8 @@ mod tests {
         let pk_a = PubKey::new([2u8; PK_LEN]);
         let pk_b = PubKey::new([3u8; PK_LEN]);
 
-        let duty_a = AttesterDuty {
+        let duty_a = v1::AttesterDuty {
+            pubkey: pk_a.0,
             slot: SLOT,
             validator_index: V_IDX_A,
             committee_index: V_IDX_A,
@@ -1073,7 +975,8 @@ mod tests {
             committees_at_slot: NOT_ZERO,
             validator_committee_index: 0,
         };
-        let duty_b = AttesterDuty {
+        let duty_b = v1::AttesterDuty {
+            pubkey: pk_b.0,
             slot: SLOT,
             validator_index: V_IDX_B,
             committee_index: V_IDX_B,
@@ -1083,14 +986,8 @@ mod tests {
         };
 
         let def_set = DutyDefinitionSet::from([
-            (
-                pk_a,
-                DutyDefinition::Attester(attester_duty_def(pk_a, &duty_a)),
-            ),
-            (
-                pk_b,
-                DutyDefinition::Attester(attester_duty_def(pk_b, &duty_b)),
-            ),
+            (pk_a, DutyDefinition::Attester(duty_a.clone())),
+            (pk_b, DutyDefinition::Attester(duty_b.clone())),
         ]);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
@@ -1220,28 +1117,17 @@ mod tests {
             .await;
     }
 
-    /// Builds an attester duty definition from an eth2 [`AttesterDuty`], keyed
-    /// by the given public key.
-    fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> AttesterDutyDefinition {
-        AttesterDutyDefinition {
-            pubkey,
-            duty: duty.clone(),
-        }
-    }
-
     /// Builds an attester definition with the given committee index/length.
     fn attester_def(comm_idx: u64, comm_len: u64) -> DutyDefinition {
-        DutyDefinition::Attester(attester_duty_def(
-            PubKey::new([0u8; PK_LEN]),
-            &AttesterDuty {
-                slot: 1,
-                validator_index: 0,
-                committee_index: comm_idx,
-                committee_length: comm_len,
-                committees_at_slot: 1,
-                validator_committee_index: 0,
-            },
-        ))
+        DutyDefinition::Attester(v1::AttesterDuty {
+            pubkey: [0u8; PK_LEN],
+            slot: 1,
+            validator_index: 0,
+            committee_index: comm_idx,
+            committee_length: comm_len,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
+        })
     }
 
     /// Builds the AggSigDB (returns a beacon committee selection) and DutyDB
@@ -1250,8 +1136,6 @@ mod tests {
     fn aggregator_funcs(
         atts: impl AsRef<[phase0::Attestation]>,
     ) -> (AggSigDbFunc, AwaitAttDataFunc) {
-        use pluto_eth2api::v1;
-
         let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, _pubkey: PubKey| {
             Box::pin(async move {
                 let selection = BeaconCommitteeSelection::new(v1::BeaconCommitteeSelection {
@@ -1467,9 +1351,61 @@ mod tests {
             .await
             .expect_err("expected error");
         assert!(
-            err.to_string()
-                .contains("aggregate attestation not found by root (retryable)"),
-            "got: {err}"
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(**source, FetcherError::AggregateAttestationNotFound)
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_attester_propagates_beacon_node_error() {
+        const SLOT: u64 = 1;
+        let pk_a = PubKey::new([2u8; PK_LEN]);
+        let def_set = DutyDefinitionSet::from([(pk_a, attester_def(2, 1))]);
+
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/eth/v1/validator/attestation_data",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({ "code": 500, "message": "internal error" })),
+            )
+            .with_priority(1)
+            .mount(mock.server())
+            .await;
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(stub_agg_sig_db())
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
+
+        let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
+        let err = fetcher
+            .fetch(duty, def_set)
+            .await
+            .expect_err("expected error");
+        assert!(
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(
+                        &**source,
+                        FetcherError::BeaconNode(EthBeaconNodeApiClientError::Http(http))
+                            if http.status == StatusCode::INTERNAL_SERVER_ERROR
+                    )
+            ),
+            "got: {err:?}"
         );
     }
 
@@ -1520,8 +1456,8 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                    pubkey: pk,
+                DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                    pubkey: pk.0,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
                 }),
@@ -1583,9 +1519,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_sync_contribution_not_aggregator() {
-        use pluto_eth2api::v1;
+    async fn fetch_sync_contribution_not_found() {
+        const SLOT: u64 = 1;
+        let pk_a = PubKey::new([2u8; PK_LEN]);
 
+        let mut def_set = DutyDefinitionSet::new();
+        def_set.insert(
+            pk_a,
+            DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                pubkey: pk_a.0,
+                validator_index: 0,
+                validator_sync_committee_indices: vec![],
+            }),
+        );
+
+        let mock = BeaconMock::builder()
+            .spec(aggregator_spec())
+            .build()
+            .await
+            .expect("build mock");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/eth/v1/validator/sync_committee_contribution",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({ "code": 404, "message": "not found" })),
+            )
+            .with_priority(1)
+            .mount(mock.server())
+            .await;
+
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |duty: Duty, _pubkey: PubKey| {
+            Box::pin(async move {
+                let data: Box<dyn SignedData> = match duty.duty_type {
+                    DutyType::PrepareSyncContribution => {
+                        Box::new(SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
+                            slot: SLOT,
+                            validator_index: 2,
+                            subcommittee_index: 4,
+                            selection_proof: bls_sig(SYNC_AGG_SIG_A),
+                        }))
+                    }
+                    DutyType::SyncMessage => {
+                        Box::new(SignedSyncMessage::new(altair::SyncCommitteeMessage {
+                            slot: SLOT,
+                            beacon_block_root: [10u8; 32],
+                            validator_index: 2,
+                            signature: [0u8; 96],
+                        }))
+                    }
+                    _ => return Err("unsupported duty".into()),
+                };
+                Ok(data)
+            })
+        });
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
+
+        let duty = Duty::new_sync_contribution_duty(SlotNumber::new(SLOT));
+        let err = fetcher
+            .fetch(duty, def_set)
+            .await
+            .expect_err("expected error");
+        assert!(
+            matches!(
+                &err,
+                FetcherError::Fetch { source, .. }
+                    if matches!(**source, FetcherError::SyncContributionNotFound)
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_sync_contribution_not_aggregator() {
         const SLOT: u64 = 1;
         let pk_a = PubKey::new([2u8; PK_LEN]);
         let pk_b = PubKey::new([3u8; PK_LEN]);
@@ -1594,8 +1611,8 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                    pubkey: pk,
+                DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                    pubkey: pk.0,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
                 }),
@@ -1648,8 +1665,8 @@ mod tests {
         let mut def_set = DutyDefinitionSet::new();
         def_set.insert(
             pk_a,
-            DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
-                pubkey: pk_a,
+            DutyDefinition::SyncCommittee(v1::SyncCommitteeDuty {
+                pubkey: pk_a.0,
                 validator_index: 0,
                 validator_sync_committee_indices: vec![],
             }),

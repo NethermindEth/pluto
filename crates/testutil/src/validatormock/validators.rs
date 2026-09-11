@@ -8,12 +8,11 @@
 use std::collections::HashMap;
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
-    PostStateValidatorsRequest, PostStateValidatorsResponse, ValidatorRequestBody,
+    EthBeaconNodeApiClient, ValidatorsFilter,
     spec::phase0::{BLSPubKey, ValidatorIndex},
 };
 
-use super::error::{Error, Result};
+use super::error::Result;
 
 /// Active validators indexed by [`ValidatorIndex`].
 ///
@@ -63,53 +62,17 @@ where
 
 /// Fetches active validators from the beacon node and returns them as a map.
 ///
-/// Mirrors Go's `eth2Cl.ActiveValidators(ctx)`: queries `head`, filters by
-/// status, drops malformed entries.
+/// Mirrors Go's `eth2Cl.ActiveValidators(ctx)`: queries `head` and filters by
+/// status.
 pub async fn active_validators(client: &EthBeaconNodeApiClient) -> Result<ActiveValidators> {
-    let request = PostStateValidatorsRequest {
-        path: pluto_eth2api::PostStateValidatorsRequestPath {
-            state_id: "head".to_string(),
-        },
-        body: ValidatorRequestBody {
-            ids: None,
-            statuses: None,
-        },
-    };
-
     let response = client
-        .post_state_validators(request)
-        .await
-        .map_err(EthBeaconNodeApiClientError::RequestError)
-        .and_then(|r| match r {
-            PostStateValidatorsResponse::Ok(ok) => Ok(ok),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        })?;
+        .post_state_validators("head", &ValidatorsFilter::default())
+        .await?;
 
-    Ok(filter_active(response))
-}
-
-fn filter_active(response: GetStateValidatorsResponseResponse) -> ActiveValidators {
-    let mut map = HashMap::new();
-    for datum in response.data {
-        if !datum.status.is_active() {
-            continue;
-        }
-        let Ok(index) = datum.index.parse::<ValidatorIndex>() else {
-            continue;
-        };
-        let Ok(pubkey) = parse_bls_pubkey(&datum.validator.pubkey) else {
-            continue;
-        };
-        map.insert(index, pubkey);
-    }
-    ActiveValidators(map)
-}
-
-fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|e| Error::Malformed(e.to_string()))?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::Malformed(format!("pubkey length {} != 48", bytes.len())))
+    Ok(response
+        .data
+        .into_iter()
+        .filter(|validator| validator.status.is_active())
+        .map(|validator| (validator.index, validator.validator.pubkey))
+        .collect())
 }

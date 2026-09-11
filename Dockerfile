@@ -23,8 +23,6 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
-RUN cargo install oas3-gen --locked --version 0.24.0
-
 # No cache mounts: compiled deps must live in image layers for CI's `cache-to: type=gha` to persist them (gha stores layers, not mounts).
 COPY --from=planner /build/recipe.json recipe.json
 

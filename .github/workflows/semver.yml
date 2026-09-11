@@ -43,9 +43,6 @@ jobs:
           packages: protobuf-compiler=3.21.12*
           version: 3.21.12
 
-      - name: Install `oas3-gen`
-        run: cargo install oas3-gen@0.24.0 --locked
-
       - name: Get latest version tag
         id: get-baseline
         run: |

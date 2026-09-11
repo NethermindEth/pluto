@@ -4,10 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pluto_cluster::helpers;
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetNodeVersionRequest, GetNodeVersionResponse, GetPeerCountRequest,
-    GetPeerCountResponse, GetSyncingStatusRequest, GetSyncingStatusResponse,
-};
+use pluto_eth2api::EthBeaconNodeApiClient;
 use pluto_p2p::p2p_context::P2PContext;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -139,18 +136,10 @@ fn truncate_label(s: &str) -> String {
 async fn fetch_node_version(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<String, ReadyCheckerError> {
-    match pluto_eth2api::instrument(
-        "node_version",
-        beacon_node.get_node_version(GetNodeVersionRequest {}),
-    )
-    .await
-    .map_err(ReadyCheckerError::BeaconNode)?
-    {
-        GetNodeVersionResponse::Ok(response) => Ok(response.data.version),
-        GetNodeVersionResponse::InternalServerError(_) | GetNodeVersionResponse::Unknown => {
-            Err(ReadyCheckerError::UnexpectedResponse("node_version"))
-        }
-    }
+    beacon_node
+        .get_node_version()
+        .await
+        .map_err(ReadyCheckerError::BeaconNode)
 }
 
 async fn run_ready_checker(
@@ -227,11 +216,11 @@ async fn fetch_config(
     let genesis_time = beacon_node
         .fetch_genesis_time()
         .await
-        .map_err(|error| ReadyCheckerError::BeaconNode(error.into()))?;
+        .map_err(ReadyCheckerError::BeaconNode)?;
     let (slot_duration, slots_per_epoch) = beacon_node
         .fetch_slots_config()
         .await
-        .map_err(|error| ReadyCheckerError::BeaconNode(error.into()))?;
+        .map_err(ReadyCheckerError::BeaconNode)?;
 
     // `tokio::time::interval` panics on a zero period, so reject a zero slot
     // duration here rather than letting the checker loop panic.
@@ -258,52 +247,26 @@ async fn update_beacon_node_peer_count(
 }
 
 async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, ReadyCheckerError> {
-    match pluto_eth2api::instrument(
-        "node_peer_count",
-        beacon_node.get_peer_count(GetPeerCountRequest {}),
-    )
-    .await
-    .map_err(ReadyCheckerError::BeaconNode)?
-    {
-        GetPeerCountResponse::Ok(response) => {
-            parse_u64_field("connected", &response.data.connected)
-        }
-        GetPeerCountResponse::InternalServerError(_) | GetPeerCountResponse::Unknown => {
-            Err(ReadyCheckerError::UnexpectedResponse("peer_count"))
-        }
-    }
+    let peers = beacon_node
+        .get_peer_count()
+        .await
+        .map_err(ReadyCheckerError::BeaconNode)?;
+    Ok(peers.connected)
 }
 
 async fn fetch_sync_status(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<BeaconNodeSyncStatus, ReadyCheckerError> {
-    match pluto_eth2api::instrument(
-        "node_syncing",
-        beacon_node.get_syncing_status(GetSyncingStatusRequest {}),
-    )
-    .await
-    .map_err(ReadyCheckerError::BeaconNode)?
-    {
-        GetSyncingStatusResponse::Ok(response) => {
-            let sync_distance = parse_u64_field("sync_distance", &response.data.sync_distance)?;
-            MONITORING_METRICS
-                .monitoring_beacon_node_syncing
-                .set(i64::from(response.data.is_syncing));
-            Ok(BeaconNodeSyncStatus {
-                syncing: response.data.is_syncing,
-                sync_distance,
-            })
-        }
-        GetSyncingStatusResponse::InternalServerError(_) | GetSyncingStatusResponse::Unknown => {
-            Err(ReadyCheckerError::UnexpectedResponse("syncing_status"))
-        }
-    }
-}
-
-fn parse_u64_field(field: &'static str, value: &str) -> Result<u64, ReadyCheckerError> {
-    value.parse::<u64>().map_err(|_| ReadyCheckerError::Parse {
-        field,
-        value: value.to_owned(),
+    let state = beacon_node
+        .get_syncing_status()
+        .await
+        .map_err(ReadyCheckerError::BeaconNode)?;
+    MONITORING_METRICS
+        .monitoring_beacon_node_syncing
+        .set(i64::from(state.is_syncing));
+    Ok(BeaconNodeSyncStatus {
+        syncing: state.is_syncing,
+        sync_distance: state.sync_distance,
     })
 }
 
@@ -425,16 +388,10 @@ impl ReadyChecker {
 #[derive(Debug, thiserror::Error)]
 enum ReadyCheckerError {
     #[error("beacon node request failed: {0}")]
-    BeaconNode(#[source] anyhow::Error),
-
-    #[error("unexpected beacon node response from {0}")]
-    UnexpectedResponse(&'static str),
+    BeaconNode(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
     #[error("beacon node reported a zero slot duration")]
     ZeroSlotDuration,
-
-    #[error("failed to parse beacon node {field}: {value}")]
-    Parse { field: &'static str, value: String },
 }
 
 #[cfg(test)]

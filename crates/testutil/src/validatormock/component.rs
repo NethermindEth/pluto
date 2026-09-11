@@ -214,7 +214,7 @@ impl Component {
     async fn start_attesters(&self, epoch: MetaEpoch) {
         for slot in epoch.slots() {
             let attester = Arc::new(SlotAttester::new(
-                Arc::new(self.inner.eth2_cl.clone()),
+                self.inner.eth2_cl.clone(),
                 slot.slot,
                 Arc::clone(&self.inner.sign_func),
                 self.inner.pubkeys.clone(),

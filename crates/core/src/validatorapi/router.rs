@@ -49,7 +49,7 @@ use super::{
     },
 };
 use crate::signeddata::{
-    ProposalBlock, VersionedAttestation as SignedVersionedAttestation,
+    VersionedAttestation as SignedVersionedAttestation,
     VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof, VersionedSignedProposal,
 };
 
@@ -631,7 +631,8 @@ async fn propose_block_v3(
         "execution_payload_blinded": blinded,
         "execution_payload_value": execution_value,
         "consensus_block_value": consensus_value,
-        "data": serialize_proposal_block(&proposal.block)?,
+        "data": serde_json::to_value(&proposal.block)
+            .map_err(|err| internal_error("could not serialize proposal block", err))?,
     });
 
     let mut headers = HeaderMap::new();
@@ -1611,60 +1612,6 @@ fn decode_signed_blinded_proposal_block_json(
     })
 }
 
-/// Serializes an unsigned [`ProposalBlock`] to the JSON shape placed in the
-/// `data` field: the bare block for pre-Deneb forks (and all blinded forks),
-/// and the `BlockContents` object (`{ block, kzg_proofs, blobs }`) for Deneb,
-/// Electra, and Fulu full blocks.
-fn serialize_proposal_block(block: &ProposalBlock) -> Result<Value, ApiError> {
-    let to_value = |value: Result<Value, serde_json::Error>| {
-        value.map_err(|err| internal_error("could not serialize proposal block", err))
-    };
-    match block {
-        ProposalBlock::Phase0(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::Altair(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::Bellatrix(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::BellatrixBlinded(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::Capella(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::CapellaBlinded(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::DenebBlinded(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::ElectraBlinded(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::FuluBlinded(b) => to_value(serde_json::to_value(b)),
-        ProposalBlock::Deneb {
-            block,
-            kzg_proofs,
-            blobs,
-        } => block_contents_value(block.as_ref(), kzg_proofs, blobs),
-        // Electra and Fulu full blocks both carry an `electra::BeaconBlock`.
-        ProposalBlock::Electra {
-            block,
-            kzg_proofs,
-            blobs,
-        }
-        | ProposalBlock::Fulu {
-            block,
-            kzg_proofs,
-            blobs,
-        } => block_contents_value(block.as_ref(), kzg_proofs, blobs),
-    }
-}
-
-/// Builds the `BlockContents` JSON object (`{ block, kzg_proofs, blobs }`) for
-/// a Deneb-or-later full proposal.
-fn block_contents_value<B: serde::Serialize>(
-    block: &B,
-    kzg_proofs: &[pluto_eth2api::spec::deneb::KZGProof],
-    blobs: &[pluto_eth2api::spec::deneb::Blob],
-) -> Result<Value, ApiError> {
-    Ok(json!({
-        "block": serde_json::to_value(block)
-            .map_err(|err| internal_error("could not serialize block", err))?,
-        "kzg_proofs": serde_json::to_value(kzg_proofs)
-            .map_err(|err| internal_error("could not serialize kzg_proofs", err))?,
-        "blobs": serde_json::to_value(blobs)
-            .map_err(|err| internal_error("could not serialize blobs", err))?,
-    }))
-}
-
 /// Inserts a header, mapping an invalid name or value into a `500` (both are
 /// derived from internal data here, so a failure is a bug, not bad input).
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ApiError> {
@@ -1687,7 +1634,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_eth2api::spec::phase0;
+    use pluto_eth2api::{spec::phase0, versioned::ProposalBlock};
 
     use crate::validatorapi::{
         testutils::TestHandler,
@@ -1732,43 +1679,40 @@ mod tests {
     #[tokio::test]
     async fn attester_duties_wraps_handler_value() {
         let duty = AttesterDuty {
-            pubkey: "0xaabbccddeeff".to_owned(),
-            slot: "12".to_owned(),
-            committee_index: "3".to_owned(),
-            committee_length: "16".to_owned(),
-            committees_at_slot: "4".to_owned(),
-            validator_committee_index: "2".to_owned(),
-            validator_index: "7".to_owned(),
+            pubkey: [0xaa; 48],
+            slot: 12,
+            committee_index: 3,
+            committee_length: 16,
+            committees_at_slot: 4,
+            validator_committee_index: 2,
+            validator_index: 7,
         };
         let handler = TestHandler::default().with_attester_duties(AttesterDutiesResponse {
             data: vec![duty],
-            dependent_root: "0xab".to_owned(),
+            dependent_root: [0xab; 32],
             execution_optimistic: false,
         });
         let state = test_state(Arc::new(handler));
 
-        let Json(body) = attester_duties(
-            State(state),
-            Path(42u64),
-            Ok(Json(ValIndexes(vec!["7".to_owned()]))),
-        )
-        .await
-        .unwrap();
+        let Json(body) = attester_duties(State(state), Path(42u64), Ok(Json(ValIndexes(vec![7]))))
+            .await
+            .unwrap();
 
         let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["dependent_root"], "0xab");
+        assert_eq!(json["dependent_root"], format!("0x{}", "ab".repeat(32)));
         assert_eq!(json["execution_optimistic"], false);
         assert_eq!(json["data"][0]["slot"], "12");
         assert_eq!(json["data"][0]["committee_index"], "3");
         assert_eq!(json["data"][0]["validator_index"], "7");
+        assert_eq!(json["data"][0]["pubkey"], format!("0x{}", "aa".repeat(48)));
     }
 
     #[tokio::test]
     async fn sync_committee_duties_wraps_handler_value() {
         let duty = SyncCommitteeDuty {
-            pubkey: "0x112233".to_owned(),
-            validator_index: "9".to_owned(),
-            validator_sync_committee_indices: vec!["0".to_owned(), "5".to_owned()],
+            pubkey: [0x11; 48],
+            validator_index: 9,
+            validator_sync_committee_indices: vec![0, 5],
         };
         let handler =
             TestHandler::default().with_sync_committee_duties(SyncCommitteeDutiesResponse {
@@ -1777,13 +1721,10 @@ mod tests {
             });
         let state = test_state(Arc::new(handler));
 
-        let Json(body) = sync_committee_duties(
-            State(state),
-            Path(7u64),
-            Ok(Json(ValIndexes(vec!["9".to_owned()]))),
-        )
-        .await
-        .unwrap();
+        let Json(body) =
+            sync_committee_duties(State(state), Path(7u64), Ok(Json(ValIndexes(vec![9]))))
+                .await
+                .unwrap();
 
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["execution_optimistic"], true);
@@ -1829,10 +1770,11 @@ mod tests {
     #[test]
     fn val_indexes_accepts_numbers_and_strings() {
         let nums: ValIndexes = serde_json::from_str("[1, 2, 3]").unwrap();
-        assert_eq!(nums.0, vec!["1", "2", "3"]);
+        assert_eq!(nums.0, vec![1, 2, 3]);
 
         let strs: ValIndexes = serde_json::from_str(r#"["4", "5"]"#).unwrap();
-        assert_eq!(strs.0, vec!["4", "5"]);
+        assert_eq!(strs.0, vec![4, 5]);
+        assert_eq!(serde_json::to_string(&strs).unwrap(), r#"["4","5"]"#);
 
         let bad = serde_json::from_str::<ValIndexes>(r#"["not-a-number"]"#);
         assert!(bad.is_err());
@@ -1841,13 +1783,13 @@ mod tests {
     #[tokio::test]
     async fn proposer_duties_wraps_handler_value() {
         let duty = ProposerDuty {
-            pubkey: "0xaabbccddeeff".to_owned(),
-            slot: "1234".to_owned(),
-            validator_index: "7".to_owned(),
+            pubkey: [0xab; 48],
+            slot: 1234,
+            validator_index: 7,
         };
         let handler = TestHandler::default().with_proposer_duties(ProposerDutiesResponse {
             data: vec![duty],
-            dependent_root: "0xcd".to_owned(),
+            dependent_root: [0xcd; 32],
             execution_optimistic: true,
         });
         let state = test_state(Arc::new(handler));
@@ -1855,11 +1797,11 @@ mod tests {
         let Json(body) = proposer_duties(State(state), Path(99u64)).await.unwrap();
 
         let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["dependent_root"], "0xcd");
+        assert_eq!(json["dependent_root"], format!("0x{}", "cd".repeat(32)));
         assert_eq!(json["execution_optimistic"], true);
         assert_eq!(json["data"][0]["slot"], "1234");
         assert_eq!(json["data"][0]["validator_index"], "7");
-        assert_eq!(json["data"][0]["pubkey"], "0xaabbccddeeff");
+        assert_eq!(json["data"][0]["pubkey"], format!("0x{}", "ab".repeat(48)));
     }
 
     /// Verifies the manual `Query` rejection path emits the same
@@ -1979,7 +1921,7 @@ mod tests {
 
         let handler = TestHandler::default().with_attester_duties(AttesterDutiesResponse {
             data: vec![],
-            dependent_root: "0x00".to_owned(),
+            dependent_root: [0; 32],
             execution_optimistic: false,
         });
         let app = test_router(Arc::new(handler), false);
@@ -2039,7 +1981,7 @@ mod tests {
     #[test]
     fn val_indexes_accepts_mixed_elements() {
         let v: ValIndexes = serde_json::from_str(r#"[1, "2", 3, "4"]"#).unwrap();
-        assert_eq!(v.0, vec!["1", "2", "3", "4"]);
+        assert_eq!(v.0, vec![1, 2, 3, 4]);
     }
 
     /// Caps the request to `VAL_INDEXES_MAX_LEN` elements.
@@ -2072,9 +2014,8 @@ mod tests {
         http::{Method, Request},
     };
     use pluto_eth2api::{
-        GetStateValidatorsResponseResponseDatum as ValidatorDatum, ValidatorResponseValidator,
-        ValidatorStatus,
         spec::{bellatrix, phase0 as p0},
+        v1::{Validator as ValidatorDatum, ValidatorStatus},
     };
     use tower::ServiceExt;
 
@@ -2176,20 +2117,20 @@ mod tests {
         }
     }
 
-    fn sample_validator_datum(index: u64, pubkey_hex: &str) -> ValidatorDatum {
+    fn sample_validator_datum(index: u64, pubkey: [u8; 48]) -> ValidatorDatum {
         ValidatorDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_owned(),
+            index,
+            balance: 32_000_000_000,
             status: ValidatorStatus::ActiveOngoing,
-            validator: ValidatorResponseValidator {
-                pubkey: pubkey_hex.to_owned(),
-                withdrawal_credentials: format!("0x{}", "00".repeat(32)),
-                effective_balance: "32000000000".to_owned(),
+            validator: p0::Validator {
+                pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_owned(),
-                activation_epoch: "0".to_owned(),
-                exit_epoch: "18446744073709551615".to_owned(),
-                withdrawable_epoch: "18446744073709551615".to_owned(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
@@ -2509,7 +2450,7 @@ mod tests {
     #[tokio::test]
     async fn get_validators_by_query_id() {
         let handler = TestHandler::default().with_validators(EthResponse {
-            data: vec![sample_validator_datum(7, &format!("0x{}", "11".repeat(48)))],
+            data: vec![sample_validator_datum(7, [0x11; 48])],
             execution_optimistic: false,
             finalized: true,
             dependent_root: None,
@@ -2596,7 +2537,7 @@ mod tests {
     #[tokio::test]
     async fn get_validator_single_result() {
         let handler = TestHandler::default().with_validators(EthResponse {
-            data: vec![sample_validator_datum(7, &format!("0x{}", "11".repeat(48)))],
+            data: vec![sample_validator_datum(7, [0x11; 48])],
             execution_optimistic: false,
             finalized: true,
             dependent_root: None,
@@ -2638,8 +2579,8 @@ mod tests {
     async fn get_validator_multiple_results_is_500() {
         let handler = TestHandler::default().with_validators(EthResponse {
             data: vec![
-                sample_validator_datum(7, &format!("0x{}", "11".repeat(48))),
-                sample_validator_datum(8, &format!("0x{}", "22".repeat(48))),
+                sample_validator_datum(7, [0x11; 48]),
+                sample_validator_datum(8, [0x22; 48]),
             ],
             execution_optimistic: false,
             finalized: false,
