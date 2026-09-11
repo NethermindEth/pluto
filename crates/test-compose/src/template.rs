@@ -259,7 +259,7 @@ const RELAY_SERVICE: &str = r#"  relay:
 const CURL_SERVICE: &str = r#"  curl:
     container_name: curl
     # Can be used to curl services; e.g. docker compose exec curl curl http://prometheus:9090/api/v1/rules\?type\=alert
-    image: curlimages/curl:latest
+    image: curlimages/curl:8.21.0
     command: sleep 1d
     networks: [compose]
 "#;

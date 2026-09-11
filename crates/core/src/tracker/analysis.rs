@@ -607,9 +607,9 @@ mod tests {
         events: &HashMap<Duty, Vec<Event>>,
         msg_root_consistent: bool,
     ) -> Option<DutyFailure> {
-        let fs = FeatureSet::new();
-        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), &fs);
-        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, &fs)
+        let fs = &FeatureSet::new();
+        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), fs);
+        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, fs)
     }
 
     fn evt(duty: Duty, step: Step) -> Event {

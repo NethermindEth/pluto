@@ -15,17 +15,17 @@ use pluto_core::{
     signeddata::VersionedSignedValidatorRegistration,
     types::{ParSignedData, ParSignedDataSet, PubKey},
 };
-use pluto_crypto::{tbls, types::pubkey_to_eth2};
+use pluto_crypto::{tbls, types};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 use pluto_eth2util::{deposit, network, registration};
 use tracing::{info, warn};
 
 use crate::{
-    aggregate::{agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    aggregate,
     dkg::AppendConfig,
     exchanger::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG},
     share::Share,
-    validators::create_dist_validators,
+    validators,
 };
 
 /// Result type for DKG signing helpers.
@@ -138,7 +138,7 @@ pub fn sign_deposit_msgs(
     let mut set = ParSignedDataSet::new();
 
     for (share, withdrawal_address) in shares.iter().zip(withdrawal_addresses.iter()) {
-        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let eth2_pubkey = types::pubkey_to_eth2(share.pub_key);
         let pub_key = share_pubkey(share, "signing deposit message")?;
         let withdrawal_address = pluto_eth2util::helpers::checksum_address(withdrawal_address)?;
 
@@ -177,7 +177,7 @@ pub fn sign_validator_registrations(
     let mut set = ParSignedDataSet::new();
 
     for (share, fee_recipient) in shares.iter().zip(fee_recipients.iter()) {
-        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let eth2_pubkey = types::pubkey_to_eth2(share.pub_key);
         let pub_key = share_pubkey(share, "signing validator registration")?;
 
         let reg_msg = registration::new_message(
@@ -233,7 +233,7 @@ pub(crate) async fn sign_and_agg_deposit_data(
             .checked_add(u64::try_from(i)?)
             .ok_or(SigningError::Overflow)?;
         let peer_sigs = exchanger.exchange(sig_type, set).await?;
-        let deposit_data = agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
+        let deposit_data = aggregate::agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
         result.push(deposit_data);
     }
 
@@ -269,7 +269,7 @@ pub(crate) async fn sign_and_agg_validator_registrations(
     )?;
 
     let peer_sigs = exchanger.exchange(SIG_VALIDATOR_REG, set).await?;
-    Ok(agg_validator_registrations(
+    Ok(aggregate::agg_validator_registrations(
         &peer_sigs,
         shares,
         &msgs,
@@ -293,7 +293,7 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
     val_regs: Vec<VersionedSignedValidatorRegistration>,
     append_config: Option<&AppendConfig>,
 ) -> Result<Lock> {
-    let mut validators = create_dist_validators(new_shares, &deposit_datas, &val_regs)?;
+    let mut validators = validators::create_dist_validators(new_shares, &deposit_datas, &val_regs)?;
 
     if let Some(append) = append_config {
         let mut merged = append.cluster_lock.distributed_validators.clone();
@@ -361,7 +361,8 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
         })
         .collect::<Result<_>>()?;
 
-    let (agg_sig, all_pubshares) = agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
+    let (agg_sig, all_pubshares) =
+        aggregate::agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
 
     tbls::verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
     lock.signature_aggregate = agg_sig.to_vec();

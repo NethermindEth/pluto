@@ -152,16 +152,17 @@ fn peer_circuit_addrs_skips_reserved_relay_without_tracked_addrs() {
 }
 
 #[test]
-fn peer_circuit_addrs_builds_one_circuit_per_reserved_relay_addr() {
+fn peer_circuit_addrs_builds_exactly_one_circuit_per_reserved_relay() {
     let mut mgr = manager();
     let target = PeerId::random();
     let relay = PeerId::random();
 
     let relay_addrs = vec![
-        // With and without trailing /p2p/<relay> — both should produce the
-        // same canonical circuit form.
+        // With and without trailing /p2p/<relay> — both would produce the
+        // same canonical circuit form, but only the first addr is used.
         addr(&format!("/ip4/10.0.0.1/tcp/9000/p2p/{relay}")),
         addr("/ip4/10.0.0.1/udp/9000/quic-v1"),
+        addr("/ip4/10.0.0.2/tcp/9000"),
     ];
     mgr.connection_states
         .insert(relay, RelayConnectionState::Reserved);
@@ -169,15 +170,16 @@ fn peer_circuit_addrs_builds_one_circuit_per_reserved_relay_addr() {
 
     let out = mgr.peer_circuit_addrs(&target);
 
-    let expected = vec![
-        addr(&format!(
+    // libp2p dials every address in a DialOpts concurrently, so one circuit
+    // address per relay transport addr means N simultaneous HOP requests
+    // against the same relay. The relay's transport addrs are alternative
+    // routes to the relay, not to the target, so exactly one is emitted.
+    assert_eq!(
+        out,
+        vec![addr(&format!(
             "/ip4/10.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit/p2p/{target}"
-        )),
-        addr(&format!(
-            "/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{relay}/p2p-circuit/p2p/{target}"
-        )),
-    ];
-    assert_eq!(out, expected);
+        ))]
+    );
 }
 
 #[test]
@@ -687,6 +689,90 @@ async fn on_dial_failure_skipped_relay_keeps_dial_state() {
     );
 }
 
+// ---- on_dial_failure: resource-limit denial -----------------------
+
+/// A `DialError` shaped like a real relay circuit denial: the relay answered
+/// the HOP `CONNECT` with `RESOURCE_LIMIT_EXCEEDED`, which reaches the swarm
+/// as a boxed transport error several `source()` levels deep.
+fn resource_limit_dial_error() -> DialError {
+    use libp2p::{
+        core::transport::TransportError,
+        relay::{client::transport::Error as RelayTransportError, outbound::hop::ConnectError},
+    };
+
+    DialError::Transport(vec![(
+        addr("/ip4/10.0.0.1/tcp/9000"),
+        TransportError::Other(std::io::Error::other(RelayTransportError::Connect(
+            ConnectError::ResourceLimitExceeded,
+        ))),
+    )])
+}
+
+#[tokio::test]
+async fn on_dial_failure_resource_limit_throttles_campaign_and_reports_denial() {
+    let mut mgr = manager();
+    let target = PeerId::random();
+    let relay = PeerId::random();
+    mgr.connection_states
+        .insert(relay, RelayConnectionState::Reserved);
+    mgr.relay_addrs
+        .insert(relay, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+    mgr.upsert_peer_dial(target);
+
+    mgr.on_dial_failure(Some(target), &resource_limit_dial_error());
+
+    let state = mgr.dial_states.get(&target).expect("campaign stays armed");
+    assert_eq!(
+        state.retry_count, 1,
+        "a denial must advance the backoff ladder, not leave it where it was"
+    );
+
+    let Some(ToSwarm::GenerateEvent(RelayManagerEvent::DialFailed { error, .. })) =
+        mgr.events.pop_front()
+    else {
+        panic!("expected a DialFailed event");
+    };
+    assert!(
+        error.is_resource_limit_exceeded(),
+        "denial must be classified as ResourceLimitExceeded, got {error}"
+    );
+}
+
+#[tokio::test]
+async fn on_dial_failure_resource_limit_defers_next_dial_past_base_backoff() {
+    tokio::time::pause();
+
+    let mut mgr = manager();
+    let target = PeerId::random();
+    let relay = PeerId::random();
+    mgr.connection_states
+        .insert(relay, RelayConnectionState::Reserved);
+    mgr.relay_addrs
+        .insert(relay, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+    mgr.upsert_peer_dial(target);
+    mgr.on_dial_failure(Some(target), &resource_limit_dial_error());
+
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+
+    // The normal ladder would already have fired again by now (base delay 1s);
+    // a denial parks the campaign for at least RELAY_DENIAL_BACKOFF_MIN.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    mgr.events.clear();
+    mgr.process_relay_dials(&mut cx);
+    assert!(
+        mgr.events.is_empty(),
+        "throttled campaign must not re-dial within the denial backoff window"
+    );
+
+    tokio::time::advance(Duration::from_secs(30)).await;
+    mgr.process_relay_dials(&mut cx);
+    assert!(
+        mgr.events.iter().any(|e| matches!(e, ToSwarm::Dial { .. })),
+        "campaign must resume once the denial backoff window elapses"
+    );
+}
+
 // ---- upsert_peer_dial ---------------------------------------------
 
 #[tokio::test]
@@ -716,7 +802,7 @@ async fn upsert_peer_dial_preserves_backoff_when_addrs_unchanged() {
 }
 
 #[tokio::test]
-async fn upsert_peer_dial_resets_backoff_when_addrs_change() {
+async fn upsert_peer_dial_refreshes_addrs_in_place_and_keeps_backoff() {
     let mut mgr = manager();
     let target = PeerId::random();
     let relay_a = PeerId::random();
@@ -738,10 +824,26 @@ async fn upsert_peer_dial_resets_backoff_when_addrs_change() {
         .insert(relay_b, vec![addr("/ip4/10.0.0.2/tcp/9000")]);
     mgr.upsert_peer_dial(target);
 
+    let state = mgr.dial_states.get(&target).expect("dial state");
     assert_eq!(
-        mgr.dial_states.get(&target).map(|s| s.retry_count),
-        Some(0),
-        "addr-set changed: dial state (and backoff) must be replaced"
+        state.retry_count, 5,
+        "addr-set changed: the backoff ladder must survive route churn, or a \
+         flapping relay pins the campaign to the base delay forever"
+    );
+    let routed: HashSet<Multiaddr> = state.addrs.iter().cloned().collect();
+    assert_eq!(
+        routed,
+        [
+            addr(&format!(
+                "/ip4/10.0.0.1/tcp/9000/p2p/{relay_a}/p2p-circuit/p2p/{target}"
+            )),
+            addr(&format!(
+                "/ip4/10.0.0.2/tcp/9000/p2p/{relay_b}/p2p-circuit/p2p/{target}"
+            )),
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>(),
+        "the new relay's circuit must be picked up"
     );
 }
 
@@ -869,7 +971,7 @@ async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
 fn relay_connections(relay_id: PeerId) -> Option<i64> {
     P2P_METRICS
         .relay_connections
-        .get(&peer_name(&relay_id))
+        .get(&crate::name::peer_name(&relay_id))
         .map(vise::Gauge::get)
 }
 

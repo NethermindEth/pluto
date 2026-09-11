@@ -9,7 +9,7 @@ use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiadd
 use pluto_eth2util::enr::Record;
 use tokio::sync::watch;
 
-use crate::name::peer_name;
+use crate::name;
 
 /// Peer error.
 #[derive(Debug, thiserror::Error)]
@@ -86,7 +86,7 @@ impl Peer {
             id: info.id,
             addresses: info.addrs.clone(),
             index: 0,
-            name: peer_name(&info.id),
+            name: name::peer_name(&info.id),
         }
     }
 
@@ -97,7 +97,7 @@ impl Peer {
         Ok(Peer {
             id,
             index,
-            name: peer_name(&id),
+            name: name::peer_name(&id),
             addresses: vec![],
         })
     }
@@ -331,7 +331,10 @@ mod tests {
         assert!(crate::utils::is_tcp_addr(&addr), "bound {addr} is not TCP");
         assert!(!crate::utils::is_quic_addr(&addr));
         // Port 0 was configured, so the kernel picked the listening port.
-        assert!(crate::utils::tcp_port(&addr).is_some_and(|port| port != 0));
+        assert!(
+            crate::utils::addr_port(&addr, crate::utils::TransportProtocol::Tcp)
+                .is_some_and(|port| port != 0)
+        );
     }
 
     #[tokio::test]
@@ -350,7 +353,10 @@ mod tests {
             "bound {addr} is not QUIC"
         );
         assert!(!crate::utils::is_tcp_addr(&addr));
-        assert!(crate::utils::udp_port(&addr).is_some_and(|port| port != 0));
+        assert!(
+            crate::utils::addr_port(&addr, crate::utils::TransportProtocol::Quic)
+                .is_some_and(|port| port != 0)
+        );
     }
 
     #[tokio::test]

@@ -118,7 +118,7 @@ fn get_vc(
         },
         VcType::Teku => TmplVc {
             label: typ.to_string(),
-            image: "consensys/teku:latest".to_string(),
+            image: "consensys/teku:26.8.0".to_string(),
             command: teku_command(node_idx, num_vals, insecure, builder_api),
             ..TmplVc::default()
         },
@@ -159,7 +159,7 @@ mod tests {
     fn teku_command_renders() {
         let vc = get_vc(VcType::Teku, 0, 1, false, true);
         assert_eq!(vc.label, "teku");
-        assert_eq!(vc.image, "consensys/teku:latest");
+        assert_eq!(vc.image, "consensys/teku:26.8.0");
         assert_eq!(
             vc.command,
             "|

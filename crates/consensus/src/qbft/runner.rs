@@ -658,13 +658,13 @@ mod tests {
 
     #[tokio::test]
     async fn participate_skips_when_feature_disabled() {
-        let feature_set = Arc::new(
+        let feature_set: &'static FeatureSet = Box::leak(Box::new(
             FeatureSet::from_config(FeatureConfig {
                 disabled: vec![Feature::ConsensusParticipate],
                 ..FeatureConfig::default()
             })
             .expect("test featureset is valid"),
-        );
+        ));
         let consensus = component::tests::consensus_with_feature_set(0, true, feature_set);
         let duty = component::tests::duty();
 

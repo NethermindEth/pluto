@@ -1,10 +1,23 @@
 //! End-to-end integration tests for the relay HTTP layer.
 //!
-//! Spins up the real `enr_server` axum app on an ephemeral port and asserts
-//! `/` and `/enr` over a live HTTP socket via `reqwest`. Tests are isolated by
-//! binding `127.0.0.1:0` and reading the assigned port back off the listener,
-//! shutting down via `CancellationToken`, and using config-only knobs so no
-//! libp2p swarm is started.
+//! Two kinds of test live here.
+//!
+//! The first spins up the real `enr_server` axum app on an ephemeral port and
+//! asserts `/` and `/enr` over a live HTTP socket via `reqwest`, using
+//! config-only knobs so no libp2p swarm is started. These cover the
+//! external-address rendering paths cheaply.
+//!
+//! The second (see "full relay" below) starts a whole relay — swarm included —
+//! from a `Config` carrying both a TCP and a UDP listen address, and asserts
+//! that `/` and `/enr` report the ports libp2p actually bound. That is the path
+//! `run_relay_p2p_node` takes, so it exercises the wiring the config-only tests
+//! stand in for: both the TCP and the UDP listeners bound by
+//! `Node::new_server` from the node's `NodeType`, and both folded into what
+//! the HTTP handlers advertise.
+//!
+//! Tests are isolated by binding `127.0.0.1:0` everywhere and reading the
+//! assigned ports back off the bound listeners, and shut down via
+//! `CancellationToken`.
 //!
 //! DNS scenarios use `localhost` (resolved via `/etc/hosts`) so the suite
 //! does not rely on a working public-DNS path in CI.
@@ -14,10 +27,18 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 use k256::SecretKey;
 use libp2p::{Multiaddr, identity::Keypair};
 use pluto_eth2util::enr::Record;
-use pluto_p2p::{config::P2PConfig, utils::external_multiaddrs};
+use pluto_p2p::{
+    config::P2PConfig,
+    utils::{TransportProtocol, addr_port, external_multiaddrs, keypair_from_secret_key},
+};
+use pluto_relay_server::{config::Config, p2p::bind_relay};
 use rand::rngs::OsRng;
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
+
+/// Loopback address with an ephemeral port, used for every listener these tests
+/// bind: the kernel picks the port, so no test can lose a race for one.
+const ANY_ADDR: &str = "127.0.0.1:0";
 
 /// Constructs a `P2PConfig` with sensible listen addrs so the external-addr
 /// helpers produce something to advertise. The listen ports are the ports the
@@ -43,16 +64,20 @@ async fn spawn_server(
     p2p_config: P2PConfig,
     listeners: Vec<Multiaddr>,
 ) -> (String, CancellationToken, ServerHandle) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
+    let listener = TcpListener::bind(ANY_ADDR).await.expect("bind ephemeral");
     let http_addr = listener.local_addr().expect("local_addr");
 
     // No swarm runs here, so the configured listen addresses stand in for the
     // ones libp2p would report having bound.
     let bound_addrs = {
-        let mut v = p2p_config.tcp_multiaddrs().expect("tcp listen addrs");
-        v.extend(p2p_config.udp_multiaddrs().expect("udp listen addrs"));
+        let mut v = p2p_config
+            .multiaddrs(TransportProtocol::Tcp)
+            .expect("tcp listen addrs");
+        v.extend(
+            p2p_config
+                .multiaddrs(TransportProtocol::Quic)
+                .expect("udp listen addrs"),
+        );
         v
     };
     let external_addrs = external_multiaddrs(&p2p_config, &bound_addrs).expect("externals");
@@ -213,4 +238,153 @@ async fn external_host_localhost_resolves_for_enr() {
     assert_eq!(record.udp().expect("udp"), 3610);
 
     shutdown(ct, handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Full relay — a real swarm listening on both a TCP and a UDP address
+// ---------------------------------------------------------------------------
+
+/// A relay serving for as long as this value is alive: swarm, ENR HTTP server
+/// and all.
+///
+/// It is already serving when a test receives it — `bind_relay` returns only
+/// once every listener is bound *and* libp2p has reported the address it got —
+/// so a test body is requests and assertions, with no readiness poll and no
+/// startup race to mistake for a failure.
+struct FullRelay {
+    /// Base URL of the ENR/multiaddr HTTP server, on the port the kernel
+    /// assigned.
+    base_url: String,
+    /// Peer ID the relay advertises, derived from the key it was given.
+    peer_id: libp2p::PeerId,
+    /// TCP port libp2p bound, as it reported it.
+    tcp_port: u16,
+    /// UDP port libp2p bound, as it reported it.
+    udp_port: u16,
+    /// Cancels the relay.
+    ct: CancellationToken,
+    /// Relay task, resolving with the relay's exit status.
+    handle: tokio::task::JoinHandle<Result<(), pluto_relay_server::RelayP2PError>>,
+}
+
+impl FullRelay {
+    /// Starts a relay with one TCP and one UDP listen address, both on loopback
+    /// with a kernel-assigned port, and its HTTP server likewise.
+    ///
+    /// Port 0 throughout means nothing here names a port another process could
+    /// hold, and the ports that were actually bound are read back off the bound
+    /// relay — which is also what makes them assertable.
+    async fn start() -> Self {
+        let p2p_config = P2PConfig::builder()
+            .with_tcp_addrs(vec![ANY_ADDR.to_string()])
+            .with_udp_addrs(vec![ANY_ADDR.to_string()])
+            .build();
+
+        let config = Config::builder()
+            .p2p_config(p2p_config)
+            .http_addr(ANY_ADDR.to_string())
+            .max_conns(16)
+            .max_res_per_peer(4)
+            .build();
+
+        let secret_key = SecretKey::random(&mut OsRng);
+        // The relay derives its identity from this same key, so the peer ID its
+        // handlers append is known here without asking the relay for it.
+        let peer_id = keypair_from_secret_key(secret_key.clone())
+            .expect("keypair from secret key")
+            .public()
+            .to_peer_id();
+
+        let bound = bind_relay(&config, secret_key)
+            .await
+            .expect("relay binds on loopback ephemeral ports");
+
+        // Read the addresses off the bound relay before `serve` consumes it.
+        let http_addr = bound.http_addr().expect("http address is configured above");
+        let p2p_addrs = bound.p2p_addrs().await;
+        let tcp_port = p2p_addrs
+            .iter()
+            .find_map(|addr| addr_port(addr, TransportProtocol::Tcp))
+            .expect("a tcp listener was configured");
+        let udp_port = p2p_addrs
+            .iter()
+            .find_map(|addr| addr_port(addr, TransportProtocol::Quic))
+            .expect("a udp listener was configured");
+        // Port 0 is what was configured; libp2p must report what it bound.
+        assert_ne!(tcp_port, 0, "tcp listener reported the configured port 0");
+        assert_ne!(udp_port, 0, "udp listener reported the configured port 0");
+
+        let ct = CancellationToken::new();
+        let serve_ct = ct.child_token();
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await });
+
+        Self {
+            base_url: format!("http://{http_addr}"),
+            peer_id,
+            tcp_port,
+            udp_port,
+            ct,
+            handle,
+        }
+    }
+
+    /// URL for `path` on the relay's HTTP server.
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    /// Cancels the relay and waits for it to stop, asserting a clean exit.
+    async fn stop(self) {
+        self.ct.cancel();
+        match tokio::time::timeout(Duration::from_secs(5), self.handle).await {
+            Ok(Ok(exit)) => exit.expect("relay exited cleanly"),
+            Ok(Err(err)) => panic!("relay task did not join: {err}"),
+            Err(_) => panic!("relay did not shut down in time"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_relay_serves_bound_tcp_and_udp_multiaddrs() {
+    let relay = FullRelay::start().await;
+
+    let body: Vec<String> = reqwest::get(relay.url("/"))
+        .await
+        .expect("/ request")
+        .json()
+        .await
+        .expect("/ json");
+
+    assert!(!body.is_empty(), "expected at least one multiaddr");
+    for addr in &body {
+        addr.parse::<Multiaddr>()
+            .unwrap_or_else(|err| panic!("advertised addr {addr} does not parse: {err}"));
+    }
+
+    // Both configured transports are advertised, on the ports libp2p bound and
+    // with the relay's peer ID appended so the entries are dialable as they
+    // stand.
+    let peer = relay.peer_id;
+    let tcp = format!("/ip4/127.0.0.1/tcp/{}/p2p/{peer}", relay.tcp_port);
+    let udp = format!("/ip4/127.0.0.1/udp/{}/quic-v1/p2p/{peer}", relay.udp_port);
+    assert!(body.contains(&tcp), "missing {tcp} in {body:?}");
+    assert!(body.contains(&udp), "missing {udp} in {body:?}");
+
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn full_relay_serves_enr_with_bound_tcp_and_udp_ports() {
+    let relay = FullRelay::start().await;
+
+    let resp = reqwest::get(relay.url("/enr")).await.expect("/enr request");
+    assert_eq!(resp.status(), 200);
+
+    let record =
+        Record::try_from(resp.text().await.expect("/enr body").as_str()).expect("valid ENR");
+    assert_eq!(record.ip().expect("ip"), Ipv4Addr::LOCALHOST);
+    assert_eq!(record.tcp().expect("tcp"), relay.tcp_port);
+    assert_eq!(record.udp().expect("udp"), relay.udp_port);
+
+    relay.stop().await;
 }
