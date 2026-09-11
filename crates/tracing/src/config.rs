@@ -58,12 +58,6 @@ fn redact_url_userinfo(raw: &str) -> String {
 }
 
 /// Configuration for the console logging.
-///
-/// [`Default`] is defined as
-/// [`ConsoleConfig::builder().build()`](Self::builder), so the two are always
-/// in lockstep by construction; `#[builder(default = ...)]` on each field pins
-/// what those values are (see `crates/tracing`'s
-/// `console_config_defaults_are_pinned` test).
 #[derive(Debug, Clone, Builder)]
 pub struct ConsoleConfig {
     /// Whether to include the target module in logs.
@@ -132,9 +126,7 @@ mod tests {
         assert!(dbg.contains("not a url"));
     }
 
-    /// Pins every [`ConsoleConfig`] default field value. The hand-rolled
-    /// `TracingConfigBuilder::with_default_console` this replaces had no
-    /// dedicated test; this is the equivalence anchor for the bon conversion.
+    /// Pins every [`ConsoleConfig`] default field value.
     #[test]
     fn console_config_defaults_are_pinned() {
         let cfg = ConsoleConfig::default();

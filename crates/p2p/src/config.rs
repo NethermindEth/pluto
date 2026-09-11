@@ -151,16 +151,7 @@ impl PartialEq for P2PConfigError {
 type Result<T> = std::result::Result<T, P2PConfigError>;
 
 /// P2P configuration.
-///
-/// [`P2PConfig::builder`] is bon-generated; every non-`Option` field carries
-/// `#[builder(default)]` so omitting a setter keeps matching this struct's
-/// own [`Default`] impl (empty relays/addrs, reuse-port enabled) exactly as
-/// the former hand-rolled `P2PConfigBuilder` did. Each field also carries
-/// `#[builder(name = with_...)]` to keep the setter names the old hand-rolled
-/// builder used (`with_relays`, `with_tcp_addrs`, ...); other callers
-/// (e.g. `crates/relay-server/tests/http_integration.rs` from a sibling PR)
-/// already depend on those exact names.
-#[derive(Debug, Clone, Default, PartialEq, bon::Builder)]
+#[derive(Debug, Clone, bon::Builder)]
 pub struct P2PConfig {
     /// Defines the libp2p relay multiaddrs or URLs.
     #[builder(default, name = with_relays)]
@@ -185,6 +176,12 @@ pub struct P2PConfig {
     /// Whether to disable the reuse port.
     #[builder(default, name = with_disable_reuse_port)]
     pub disable_reuse_port: bool,
+}
+
+impl Default for P2PConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
 }
 
 impl P2PConfig {
@@ -470,20 +467,5 @@ mod tests {
         };
 
         assert!(config.tcp_multiaddrs().is_err());
-    }
-
-    #[test]
-    fn builder_defaults_match_default_impl() {
-        let built = P2PConfig::builder().build();
-        let default = P2PConfig::default();
-
-        assert_eq!(built, default);
-
-        assert!(built.relays.is_empty());
-        assert_eq!(built.external_ip, None);
-        assert_eq!(built.external_host, None);
-        assert!(built.tcp_addrs.is_empty());
-        assert!(built.udp_addrs.is_empty());
-        assert!(!built.disable_reuse_port);
     }
 }

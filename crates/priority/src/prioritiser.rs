@@ -243,12 +243,6 @@ impl Prioritiser {
     /// handler and its exchange silently skipped, so the instance could
     /// otherwise reach consensus on a partial message set. Callers using this
     /// seam directly must uphold that invariant.
-    ///
-    /// Use the generated named setters (e.g.
-    /// `Prioritiser::new_internal().local_id(..)....call()`) rather than a
-    /// positional call: the eight parameters all have distinct types, so
-    /// Rust's type checker already rejects a swapped call — named setters are
-    /// for call-site readability, not type safety.
     #[builder]
     pub fn new_internal(
         local_id: PeerId,

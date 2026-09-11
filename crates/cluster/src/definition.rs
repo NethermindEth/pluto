@@ -421,11 +421,6 @@ pub enum InvalidGasLimitError {
 #[bon]
 impl Definition {
     /// Create a new cluster definition.
-    ///
-    /// Use [`Definition::builder`] to construct one: named setters remove the
-    /// positional `String`/`Vec<String>` swap hazard this constructor used to
-    /// have (`fee_recipient_addresses`, `withdrawal_addresses`, and
-    /// `fork_version_hex` run consecutively, all string-shaped).
     #[builder]
     pub fn new(
         name: String,

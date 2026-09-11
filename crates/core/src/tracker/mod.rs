@@ -360,12 +360,6 @@ impl TrackerService {
     /// Both `analyser` and `deleter` must have been started with the same
     /// `cancel` token as passed here, so that all three components shut down
     /// together.
-    ///
-    /// Use the generated named setters (e.g.
-    /// `TrackerService::start().cancel(..)....call()`) rather than a
-    /// positional call: the [`AnalyserRx`]/[`DeleterRx`] newtypes guard
-    /// against swapping those two, but the remaining arguments have no such
-    /// guard.
     #[builder]
     pub fn start(
         cancel: CancellationToken,
@@ -391,10 +385,6 @@ impl TrackerService {
             .call()
     }
 
-    /// Use the generated named setters (e.g.
-    /// `TrackerService::start_with_buffer_and_sinks().cancel(..)....call()`)
-    /// rather than a positional call, for the same reason as
-    /// [`TrackerService::start`].
     #[builder]
     fn start_with_buffer_and_sinks(
         cancel: CancellationToken,
@@ -408,8 +398,6 @@ impl TrackerService {
         participation_reporter: Box<dyn ParticipationReporter>,
         feature_set: &'static FeatureSet,
     ) -> Arc<TrackerHandle> {
-        // Destructured here rather than in the parameter list: bon's builder
-        // fields need a plain identifier binding, not a pattern.
         let AnalyserRx(analyser_rx) = analyser_rx;
         let DeleterRx(deleter_rx) = deleter_rx;
 

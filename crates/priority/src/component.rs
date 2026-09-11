@@ -256,12 +256,6 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-///
-/// Use the generated named setters (e.g.
-/// `new_component().peers(..)....call()`) rather than a positional call: the
-/// eight parameters all have distinct types, so Rust's type checker already
-/// rejects a swapped call — named setters are for call-site readability, not
-/// type safety.
 #[builder]
 pub fn new_component(
     peers: Vec<PeerId>,
