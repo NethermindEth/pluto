@@ -1,20 +1,20 @@
 //! Types for the Charon core.
 
-use std::{any::Any, collections::HashMap, fmt::Display, iter};
+use std::{collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
-use dyn_clone::DynClone;
-use dyn_eq::DynEq;
-use pluto_ssz::HashRoot;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug as StdDebug;
 
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
     parsigex_codec::{deserialize_signed_data, serialize_signed_data},
-    signeddata::{AttesterDuty, SignedDataError},
+    signeddata::AttesterDuty,
 };
+
+/// Signed duty data, re-exported from [`crate::signeddata`] where the closed
+/// enum over every signed payload lives.
+pub use crate::signeddata::SignedData;
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -651,70 +651,22 @@ pub enum DutyDefinition {
 /// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
-/// Signed data type
-pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
-    /// signature returns the signed duty data's signature.
-    fn signature(&self) -> Result<Signature, SignedDataError>;
-
-    /// Returns a copy of signed duty data with the signature replaced.
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
-    where
-        Self: Sized;
-
-    /// Object-safe equivalent of [`SignedData::set_signature`].
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError>;
-
-    /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> Result<HashRoot, SignedDataError>;
-}
-
-dyn_eq::eq_trait_object!(SignedData);
-dyn_clone::clone_trait_object!(SignedData);
-
 /// ParSignedData is a partially signed duty data only signed by a single
 /// threshold BLS share.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParSignedData {
     /// Partially signed duty data.
-    pub signed_data: Box<dyn SignedData>,
+    pub signed_data: SignedData,
 
     /// Threshold BLS share index.
     pub share_idx: u64,
 }
 
-impl Clone for ParSignedData {
-    fn clone(&self) -> Self {
-        Self {
-            signed_data: self.signed_data.clone(),
-            share_idx: self.share_idx,
-        }
-    }
-}
-
-impl PartialEq for ParSignedData {
-    fn eq(&self, other: &Self) -> bool {
-        self.share_idx == other.share_idx && self.signed_data == other.signed_data
-    }
-}
-
-impl Eq for ParSignedData {}
-
 impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u64) -> Self {
+    pub fn new(partially_signed_data: impl Into<SignedData>, share_idx: u64) -> Self {
         Self {
-            signed_data: Box::new(partially_signed_data),
-            share_idx,
-        }
-    }
-
-    /// Create a new partially signed data from a boxed signed data.
-    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
-        Self {
-            signed_data: partially_signed_data,
+            signed_data: partially_signed_data.into(),
             share_idx,
         }
     }
@@ -724,7 +676,7 @@ impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
     type Error = ParSigExCodecError;
 
     fn try_from(data: &ParSignedData) -> Result<Self, Self::Error> {
-        let encoded = serialize_signed_data(data.signed_data.as_ref())?;
+        let encoded = serialize_signed_data(&data.signed_data)?;
         let share_idx =
             i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
         let signature = data
@@ -748,7 +700,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedData)> for ParSignedData {
         let share_idx =
             u64::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
         let signed_data = deserialize_signed_data(duty_type, &data.data)?;
-        Ok(Self::new_boxed(signed_data, share_idx))
+        Ok(Self::new(signed_data, share_idx))
     }
 }
 
@@ -823,7 +775,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
 }
 
 /// A set of signed duty data.
-pub type SignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
+pub type SignedDataSet = HashMap<PubKey, SignedData>;
 
 /// Slot struct
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -893,6 +845,7 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signeddata::MockSignedData;
 
     #[test]
     fn pub_key_to_string() {
@@ -1276,40 +1229,16 @@ mod tests {
         assert_eq!(pk.abbreviated(), "2a2_a2a");
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    struct MockSignedData;
-
-    impl MockSignedData {
-        fn boxed(&self) -> Box<dyn SignedData> {
-            Box::new(self.clone())
-        }
-    }
-
-    impl SignedData for MockSignedData {
-        fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok([42u8; SIGNATURE_LENGTH])
-        }
-
-        fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
-            Ok(self.clone())
-        }
-
-        fn set_signature_boxed(
-            &self,
-            signature: Signature,
-        ) -> Result<Box<dyn SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(signature)?))
-        }
-
-        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-            Ok([42u8; 32])
-        }
+    fn mock_signed_data() -> SignedData {
+        MockSignedData::new([42u8; SIGNATURE_LENGTH])
+            .with_message_root([42u8; 32])
+            .into()
     }
 
     #[test]
     fn partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
-        let par_signed = ParSignedData::new(MockSignedData, 0);
+        let par_signed = ParSignedData::new(mock_signed_data(), 0);
         partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
         let retrieved = partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN]));
         assert!(retrieved.is_some());
@@ -1324,8 +1253,8 @@ mod tests {
     #[test]
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
-        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData.boxed());
-        let expected = MockSignedData.boxed();
+        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), mock_signed_data());
+        let expected = mock_signed_data();
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
             Some(&expected)

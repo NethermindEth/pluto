@@ -3,7 +3,7 @@
 mod metrics;
 mod recast;
 
-use std::{any::Any, error::Error as StdError};
+use std::error::Error as StdError;
 
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
@@ -17,14 +17,7 @@ use tree_hash::TreeHash;
 
 pub use recast::Recaster;
 
-use crate::{
-    signeddata::{
-        SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
-        VersionedAttestation, VersionedSignedAggregateAndProof, VersionedSignedProposal,
-        VersionedSignedValidatorRegistration,
-    },
-    types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
-};
+use crate::types::{Duty, DutyType, PubKey, SignedData, SignedDataSet};
 
 /// Boxed client/provider error.
 pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
@@ -363,15 +356,19 @@ impl Broadcaster {
     /// submit via the blinded endpoint, otherwise submit the full proposal.
     async fn broadcast_proposer(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let (pubkey, agg_data) = set_to_one(set)?;
-        let block =
-            downcast_signed_data::<VersionedSignedProposal>(agg_data, Error::InvalidProposal)?;
+        let SignedData::VersionedSignedProposal(block) = agg_data else {
+            return Err(Error::InvalidProposal);
+        };
         let blinded = block.0.blinded;
 
         if blinded {
-            let proposal = block.to_blinded().map_err(|source| Error::SignedData {
-                context: "cannot broadcast, expected blinded proposal",
-                source,
-            })?;
+            let proposal = block
+                .clone()
+                .to_blinded()
+                .map_err(|source| Error::SignedData {
+                    context: "cannot broadcast, expected blinded proposal",
+                    source,
+                })?;
             self.client
                 .api()
                 .submit_signed_blinded_proposal(proposal)
@@ -383,7 +380,7 @@ impl Broadcaster {
         } else {
             self.client
                 .api()
-                .submit_signed_proposal(block.0)
+                .submit_signed_proposal(block.0.clone())
                 .await
                 .map_err(|source| Error::Client {
                     context: "submit proposal",
@@ -559,15 +556,7 @@ impl Broadcaster {
     }
 }
 
-fn downcast_signed_data<T>(data: &dyn SignedData, error: Error) -> Result<T>
-where
-    T: SignedData + Clone + 'static,
-{
-    let any = data as &dyn Any;
-    any.downcast_ref::<T>().cloned().ok_or(error)
-}
-
-fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &dyn SignedData)> {
+fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &SignedData)> {
     if set.len() != 1 {
         return Err(Error::ExpectedOneItemInSet);
     }
@@ -576,20 +565,18 @@ fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &dyn SignedData)> {
         unreachable!("set length checked")
     };
 
-    Ok((*pubkey, data.as_ref()))
+    Ok((*pubkey, data))
 }
 
-fn set_values_to<T, U, E, M>(set: &SignedDataSet, error: E, map: M) -> Result<Vec<U>>
+/// Maps every entry of the set through `map`, which selects the payload the
+/// duty expects; entries of any other [`SignedData`] variant yield `error()`.
+fn set_values_to<U, E, M>(set: &SignedDataSet, error: E, map: M) -> Result<Vec<U>>
 where
-    T: SignedData + Clone + 'static,
     E: Fn() -> Error,
-    M: Fn(T) -> U,
+    M: Fn(&SignedData) -> Option<U>,
 {
     set.values()
-        .map(|data| {
-            let value = downcast_signed_data::<T>(data.as_ref(), error())?;
-            Ok(map(value))
-        })
+        .map(|data| map(data).ok_or_else(&error))
         .collect()
 }
 
@@ -597,7 +584,10 @@ fn set_to_attestations(set: &SignedDataSet) -> Result<Vec<versioned::VersionedAt
     set_values_to(
         set,
         || Error::InvalidAttestation,
-        |attestation: VersionedAttestation| attestation.0,
+        |data| match data {
+            SignedData::VersionedAttestation(attestation) => Some(attestation.0.clone()),
+            _ => None,
+        },
     )
 }
 
@@ -607,15 +597,20 @@ fn set_to_registrations(
     set_values_to(
         set,
         || Error::InvalidRegistration,
-        |registration: VersionedSignedValidatorRegistration| registration.0,
+        |data| match data {
+            SignedData::VersionedSignedValidatorRegistration(registration) => {
+                Some(registration.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
 fn set_to_exits(set: &SignedDataSet) -> Result<Vec<(PubKey, phase0::SignedVoluntaryExit)>> {
     set.iter()
-        .map(|(pubkey, data)| {
-            downcast_signed_data::<SignedVoluntaryExit>(data.as_ref(), Error::InvalidExit)
-                .map(|exit| (*pubkey, exit.0))
+        .map(|(pubkey, data)| match data {
+            SignedData::SignedVoluntaryExit(exit) => Ok((*pubkey, exit.0.clone())),
+            _ => Err(Error::InvalidExit),
         })
         .collect()
 }
@@ -626,7 +621,12 @@ fn set_to_agg_and_proof(
     set_values_to(
         set,
         || Error::InvalidAggregateAndProof,
-        |aggregate_and_proof: VersionedSignedAggregateAndProof| aggregate_and_proof.0,
+        |data| match data {
+            SignedData::VersionedSignedAggregateAndProof(aggregate_and_proof) => {
+                Some(aggregate_and_proof.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
@@ -634,7 +634,10 @@ fn set_to_sync_messages(set: &SignedDataSet) -> Result<Vec<altair::SyncCommittee
     set_values_to(
         set,
         || Error::InvalidSyncCommitteeMessage,
-        |message: SignedSyncMessage| message.0,
+        |data| match data {
+            SignedData::SignedSyncMessage(message) => Some(message.0.clone()),
+            _ => None,
+        },
     )
 }
 
@@ -644,7 +647,12 @@ fn set_to_sync_contributions(
     set_values_to(
         set,
         || Error::InvalidSyncCommitteeContribution,
-        |contribution: SignedSyncContributionAndProof| contribution.0,
+        |data| match data {
+            SignedData::SignedSyncContributionAndProof(contribution) => {
+                Some(contribution.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
@@ -879,8 +887,8 @@ mod tests {
         PubKey::from([byte; 48])
     }
 
-    fn signed_set(pubkey: PubKey, data: impl SignedData + 'static) -> SignedDataSet {
-        HashMap::from([(pubkey, Box::new(data) as Box<dyn SignedData>)])
+    fn signed_set(pubkey: PubKey, data: impl Into<SignedData>) -> SignedDataSet {
+        HashMap::from([(pubkey, data.into())])
     }
 
     fn hex0x(bytes: impl AsRef<[u8]>) -> String {

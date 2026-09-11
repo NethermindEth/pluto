@@ -549,7 +549,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
             Box::pin(async move {
-                let signed: Box<dyn SignedData> = aggsigdb.wait_for(duty, pubkey).await?;
+                let signed: SignedData = aggsigdb.wait_for(duty, pubkey).await?;
                 Ok(signed)
             })
         })

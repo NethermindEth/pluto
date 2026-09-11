@@ -8,8 +8,8 @@ use pluto_eth2api::client::EthBeaconNodeApiClient;
 use tracing::{debug, error, info_span};
 
 use crate::{
-    eth2signeddata::{Eth2SignedDataError, as_eth2_signed_data, verify_eth2_signed_data},
-    signeddata::{SignedDataError, VersionedAttestation},
+    eth2signeddata::{Eth2SignedDataError, verify_eth2_signed_data},
+    signeddata::SignedDataError,
     types::{Duty, ParSignedData, PubKey, Signature, SignedData},
 };
 
@@ -91,7 +91,7 @@ pub enum SigAggError {
 pub type Result<T> = std::result::Result<T, SigAggError>;
 
 /// Per-duty output: one aggregated [`SignedData`] per validator public key.
-pub type AggSignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
+pub type AggSignedDataSet = HashMap<PubKey, SignedData>;
 
 /// Callback invoked after a successful threshold aggregation for a duty.
 pub type AggSub = Arc<
@@ -103,7 +103,7 @@ pub type AggSub = Arc<
 
 /// Verify callback — checks the aggregated signature against the beacon chain.
 pub type VerifyFn = Arc<
-    dyn Fn(&PubKey, &dyn SignedData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+    dyn Fn(&PubKey, &SignedData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
         + Send
         + Sync
         + 'static,
@@ -173,7 +173,7 @@ impl Aggregator {
         &self,
         pubkey: &PubKey,
         par_sigs: &[ParSignedData],
-    ) -> Result<Box<dyn SignedData>> {
+    ) -> Result<SignedData> {
         if (par_sigs.len() as u64) < self.threshold {
             return Err(SigAggError::RequireThresholdSignatures { pubkey: *pubkey });
         }
@@ -218,23 +218,19 @@ impl Aggregator {
         // All parSigs for one (pubkey, duty) share the same concrete type and
         // unsigned payload (guaranteed by consensus), so the non-attestation
         // slice is homogeneous and parSigs[0] is a valid template.
-        let mut full_sig: Option<&dyn SignedData> = None;
+        let mut full_sig: Option<&SignedData> = None;
         for ps in par_sigs {
-            let Some(att) = ps
-                .signed_data
-                .as_any()
-                .downcast_ref::<VersionedAttestation>()
-            else {
+            let SignedData::VersionedAttestation(att) = &ps.signed_data else {
                 break; // first non-attestation aborts the scan, matching Go
             };
             if att.0.validator_index.is_some() {
-                full_sig = Some(ps.signed_data.as_ref());
+                full_sig = Some(&ps.signed_data);
                 break;
             }
         }
-        let template = full_sig.unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
+        let template = full_sig.unwrap_or(&par_sigs[0].signed_data);
 
-        let agg_signed = template.set_signature_boxed(agg_bytes).map_err(|e| {
+        let agg_signed = template.set_signature(agg_bytes).map_err(|e| {
             error!(parent: &span, error = %e, "set_signature failed");
             SigAggError::SetSignature {
                 pubkey: *pubkey,
@@ -242,12 +238,10 @@ impl Aggregator {
             }
         })?;
 
-        (self.verify_fn)(pubkey, agg_signed.as_ref())
-            .await
-            .map_err(|e| {
-                error!(parent: &span, error = %e, "verify failed");
-                e
-            })?;
+        (self.verify_fn)(pubkey, &agg_signed).await.map_err(|e| {
+            error!(parent: &span, error = %e, "verify failed");
+            e
+        })?;
 
         Ok(agg_signed)
     }
@@ -256,19 +250,20 @@ impl Aggregator {
 /// Returns a [`VerifyFn`] that verifies the aggregated signature against the
 /// beacon chain.
 pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
-    Arc::new(move |pubkey: &PubKey, data: &dyn SignedData| {
+    Arc::new(move |pubkey: &PubKey, data: &SignedData| {
         let eth2_cl = eth2_cl.clone();
         // The future must be `'static`, so clone the borrowed inputs out of the
         // call frame before entering the async block.
         let tbls_pubkey = PublicKey::try_from(pubkey.as_ref());
-        let owned: Box<dyn SignedData> = dyn_clone::clone_box(data);
+        let owned = data.clone();
 
         Box::pin(async move {
             let tbls_pubkey =
                 tbls_pubkey.map_err(|source| SigAggError::PubkeyFromCore { source })?;
 
-            let eth2_signed =
-                as_eth2_signed_data(owned.as_ref()).ok_or(SigAggError::InvalidEth2SignedData)?;
+            let eth2_signed = owned
+                .as_eth2_signed_data()
+                .ok_or(SigAggError::InvalidEth2SignedData)?;
 
             verify_eth2_signed_data(&eth2_cl, eth2_signed, &tbls_pubkey).await?;
 
@@ -281,13 +276,11 @@ pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
 mod tests {
     use std::{fs, sync::Mutex};
 
-    use pluto_ssz::HashRoot;
-
     use super::*;
     use crate::{
         signeddata::{
-            SignedDataError, SignedRandao, SignedVoluntaryExit, VersionedSignedProposal,
-            VersionedSignedValidatorRegistration,
+            MockSignedData, SignedRandao, SignedVoluntaryExit, VersionedAttestation,
+            VersionedSignedProposal, VersionedSignedValidatorRegistration,
         },
         types::{SIGNATURE_LENGTH, Signature},
     };
@@ -302,109 +295,15 @@ mod tests {
         let eth2_cl = Arc::new(mock.client().clone());
         let verify = new_verifier(eth2_cl);
 
-        let data = MockSignedData {
-            sig: [0u8; SIGNATURE_LENGTH],
-        };
+        let data = SignedData::from(MockSignedData::new([0u8; SIGNATURE_LENGTH]));
         let err = verify(&PubKey::new([0x11; 48]), &data).await.unwrap_err();
 
         assert!(matches!(err, SigAggError::InvalidEth2SignedData));
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct MockSignedData {
-        sig: [u8; SIGNATURE_LENGTH],
-    }
-
-    impl SignedData for MockSignedData {
-        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
-            Ok(self.sig)
-        }
-
-        fn set_signature(&self, sig: Signature) -> std::result::Result<Self, SignedDataError>
-        where
-            Self: Sized,
-        {
-            Ok(Self { sig })
-        }
-
-        fn set_signature_boxed(
-            &self,
-            signature: Signature,
-        ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(signature)?))
-        }
-
-        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
-            Ok([0u8; 32])
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct FailSignatureMock;
-
-    impl SignedData for FailSignatureMock {
-        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
-            Err(SignedDataError::UnknownType)
-        }
-
-        fn set_signature(&self, _: Signature) -> std::result::Result<Self, SignedDataError>
-        where
-            Self: Sized,
-        {
-            Ok(Self)
-        }
-
-        fn set_signature_boxed(
-            &self,
-            sig: Signature,
-        ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(sig)?))
-        }
-
-        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
-            Ok([0u8; 32])
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct FailSetSignatureMock {
-        sig: [u8; SIGNATURE_LENGTH],
-    }
-
-    impl SignedData for FailSetSignatureMock {
-        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
-            Ok(self.sig)
-        }
-
-        fn set_signature(&self, _: Signature) -> std::result::Result<Self, SignedDataError>
-        where
-            Self: Sized,
-        {
-            Err(SignedDataError::UnknownType)
-        }
-
-        fn set_signature_boxed(
-            &self,
-            _: Signature,
-        ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
-            Err(SignedDataError::UnknownType)
-        }
-
-        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
-            Ok([0u8; 32])
-        }
-    }
-
     fn mock_par_sigs(count: usize, share_idx: u64) -> Vec<ParSignedData> {
         (0..count)
-            .map(|_| {
-                ParSignedData::new(
-                    MockSignedData {
-                        sig: [0u8; SIGNATURE_LENGTH],
-                    },
-                    share_idx,
-                )
-            })
+            .map(|_| ParSignedData::new(MockSignedData::new([0u8; SIGNATURE_LENGTH]), share_idx))
             .collect()
     }
 
@@ -466,14 +365,15 @@ mod tests {
         assert_eq!(received_sig, expected_agg);
     }
 
-    async fn run_aggregation_test(template: &dyn SignedData, duty: &Duty) {
+    async fn run_aggregation_test(template: impl Into<SignedData>, duty: &Duty) {
+        let template: SignedData = template.into();
         let ctx = make_bls_context();
         let par_sigs = ctx
             .sigs
             .iter()
             .map(|(idx, sig)| {
-                let signed = template.set_signature_boxed(*sig).unwrap();
-                ParSignedData::new_boxed(signed, *idx)
+                let signed = template.set_signature(*sig).unwrap();
+                ParSignedData::new(signed, *idx)
             })
             .collect();
         assert_aggregates(ctx.pubkey, par_sigs, ctx.expected_agg, duty).await;
@@ -517,7 +417,7 @@ mod tests {
         let par_sigs = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData::new(*sig), *idx))
             .collect();
         assert_aggregates(
             ctx.pubkey,
@@ -578,7 +478,7 @@ mod tests {
         let mut par_sigs = Vec::new();
         for (share_idx, share) in &shares {
             let sig = tbls::sign(share, &msg).unwrap();
-            par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
+            par_sigs.push(ParSignedData::new(MockSignedData::new(sig), *share_idx));
         }
 
         let mut agg = Aggregator::new(THRESHOLD, noop_verify()).unwrap();
@@ -613,14 +513,14 @@ mod tests {
         let mut par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData::new(*sig), *idx))
             .collect();
 
         // Add a duplicate of the first share — last writer wins, same sig so
         // result identical.
         let (first_idx, first_sig) = ctx.sigs[0];
         par_sigs.push(ParSignedData::new(
-            MockSignedData { sig: first_sig },
+            MockSignedData::new(first_sig),
             first_idx,
         ));
 
@@ -647,7 +547,7 @@ mod tests {
         ))
         .unwrap();
         let template: SignedRandao = serde_json::from_str(&json).unwrap();
-        run_aggregation_test(&template, &Duty::new_randao_duty(1.into())).await;
+        run_aggregation_test(template, &Duty::new_randao_duty(1.into())).await;
     }
 
     #[tokio::test]
@@ -657,7 +557,7 @@ mod tests {
         ))
         .unwrap();
         let template: SignedVoluntaryExit = serde_json::from_str(&json).unwrap();
-        run_aggregation_test(&template, &Duty::new_voluntary_exit_duty(1.into())).await;
+        run_aggregation_test(template, &Duty::new_voluntary_exit_duty(1.into())).await;
     }
 
     #[tokio::test]
@@ -667,7 +567,7 @@ mod tests {
         ))
         .unwrap();
         let template: VersionedSignedProposal = serde_json::from_str(&json).unwrap();
-        run_aggregation_test(&template, &Duty::new_proposer_duty(1.into())).await;
+        run_aggregation_test(template, &Duty::new_proposer_duty(1.into())).await;
     }
 
     #[tokio::test]
@@ -677,7 +577,7 @@ mod tests {
         ))
         .unwrap();
         let template: VersionedSignedProposal = serde_json::from_str(&json).unwrap();
-        run_aggregation_test(&template, &Duty::new_builder_proposer_duty(1.into())).await;
+        run_aggregation_test(template, &Duty::new_builder_proposer_duty(1.into())).await;
     }
 
     #[tokio::test]
@@ -685,7 +585,7 @@ mod tests {
         let json = fs::read_to_string(fixture_path("VersionedSignedValidatorRegistration.v1.json"))
             .unwrap();
         let template: VersionedSignedValidatorRegistration = serde_json::from_str(&json).unwrap();
-        run_aggregation_test(&template, &Duty::new_builder_registration_duty(1.into())).await;
+        run_aggregation_test(template, &Duty::new_builder_registration_duty(1.into())).await;
     }
 
     #[tokio::test]
@@ -710,7 +610,7 @@ mod tests {
             for (share_idx, share) in &shares {
                 let sig = tbls::sign(share, &msg).unwrap();
                 bls_map.insert(*share_idx, sig);
-                par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
+                par_sigs.push(ParSignedData::new(MockSignedData::new(sig), *share_idx));
             }
 
             let agg_sig = tbls::threshold_aggregate(&bls_map).unwrap();
@@ -753,7 +653,7 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData::new(*sig), *idx))
             .collect();
 
         let fail_verify: VerifyFn =
@@ -774,7 +674,7 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData::new(*sig), *idx))
             .collect();
 
         let mut agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -794,7 +694,7 @@ mod tests {
     async fn signature_from_core_error() {
         let agg = Aggregator::new(3, noop_verify()).unwrap();
         let par_sigs: Vec<ParSignedData> = (0..3u64)
-            .map(|i| ParSignedData::new(FailSignatureMock, i))
+            .map(|i| ParSignedData::new(MockSignedData::failing_signature(), i))
             .collect();
         let mut set = HashMap::new();
         set.insert(PubKey::new([1u8; 48]), par_sigs);
@@ -811,7 +711,9 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(FailSetSignatureMock { sig: *sig }, *idx))
+            .map(|(idx, sig)| {
+                ParSignedData::new(MockSignedData::new(*sig).with_failing_set_signature(), *idx)
+            })
             .collect();
 
         let agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -848,13 +750,17 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (idx, sig))| {
-                let template: &dyn SignedData = if i == 0 { &without_idx } else { &with_idx };
-                let signed = template.set_signature_boxed(*sig).unwrap();
-                ParSignedData::new_boxed(signed, *idx)
+                let template = if i == 0 {
+                    SignedData::from(without_idx.clone())
+                } else {
+                    SignedData::from(with_idx.clone())
+                };
+                let signed = template.set_signature(*sig).unwrap();
+                ParSignedData::new(signed, *idx)
             })
             .collect();
 
-        let captured: Arc<Mutex<Option<Box<dyn SignedData>>>> = Arc::new(Mutex::new(None));
+        let captured: Arc<Mutex<Option<SignedData>>> = Arc::new(Mutex::new(None));
         let captured_clone = captured.clone();
 
         let mut agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -874,10 +780,9 @@ mod tests {
             .unwrap();
 
         let output = captured.lock().unwrap().take().unwrap();
-        let att = output
-            .as_any()
-            .downcast_ref::<VersionedAttestation>()
-            .expect("output must be VersionedAttestation");
+        let SignedData::VersionedAttestation(att) = &output else {
+            panic!("output must be VersionedAttestation");
+        };
         assert!(
             att.0.validator_index.is_some(),
             "output must preserve validator_index from template"
@@ -894,10 +799,10 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData::new(*sig), *idx))
             .collect();
 
-        let captured: Arc<Mutex<Option<Box<dyn SignedData>>>> = Arc::new(Mutex::new(None));
+        let captured: Arc<Mutex<Option<SignedData>>> = Arc::new(Mutex::new(None));
         let captured_clone = captured.clone();
 
         let mut agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -918,7 +823,7 @@ mod tests {
 
         let output = captured.lock().unwrap().take().unwrap();
         assert!(
-            output.as_any().downcast_ref::<MockSignedData>().is_some(),
+            matches!(output, SignedData::Mock(_)),
             "output must keep the non-attestation template type (par_sigs[0])"
         );
     }

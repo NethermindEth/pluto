@@ -5,10 +5,7 @@ use pluto_cluster::{
     distvalidator::DistValidator,
     registration::{BuilderRegistration, Registration},
 };
-use pluto_core::{
-    signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::SignedData,
-};
+use pluto_core::signeddata::{SignedDataError, VersionedSignedValidatorRegistration};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 
 use crate::share::{Share, ShareMsg};

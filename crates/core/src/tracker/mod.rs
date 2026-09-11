@@ -524,13 +524,12 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex, time::Duration};
 
     use chrono::{DateTime, Utc};
-    use pluto_ssz::HashRoot;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
-        signeddata::SignedDataError,
+        signeddata::MockSignedData,
         tracker::{
             reason::Reason,
             reporters::{DutyResultReporter, ParticipationReporter},
@@ -667,37 +666,14 @@ mod tests {
 
     /// Minimal [`crate::types::SignedData`] for constructing [`ParSignedData`]
     /// in tests without needing real ETH2 attestation data.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SimpleSignedData;
-
-    impl crate::types::SignedData for SimpleSignedData {
-        fn signature(&self) -> Result<pluto_crypto::types::Signature, SignedDataError> {
-            Ok([0u8; 96])
-        }
-
-        fn set_signature(
-            &self,
-            _sig: pluto_crypto::types::Signature,
-        ) -> Result<Self, SignedDataError> {
-            Ok(Self)
-        }
-
-        fn set_signature_boxed(
-            &self,
-            sig: pluto_crypto::types::Signature,
-        ) -> Result<Box<dyn crate::types::SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(sig)?))
-        }
-
-        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-            Ok([0u8; 32])
-        }
+    fn simple_signed_data() -> crate::types::SignedData {
+        MockSignedData::new([0u8; 96]).into()
     }
 
     fn par_sig_set(pubkeys: &[PubKey], share_idx: u64) -> ParSignedDataSet {
         let mut set = ParSignedDataSet::new();
         for pk in pubkeys {
-            set.insert(*pk, ParSignedData::new(SimpleSignedData, share_idx));
+            set.insert(*pk, ParSignedData::new(simple_signed_data(), share_idx));
         }
         set
     }
