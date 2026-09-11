@@ -683,6 +683,7 @@ async fn run_lifecycle(
         parsigdb_deadliner_rx,
         aggsigdb: _aggsigdb,
         fetcher: _fetcher,
+        fetch_duty: _fetch_duty,
         inclusion_checker,
         validator_api_router,
     } = wired;
