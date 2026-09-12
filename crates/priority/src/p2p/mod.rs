@@ -66,26 +66,23 @@ impl Sender {
     /// Errors with [`Error::Shutdown`] if the behaviour has been dropped, and
     /// with [`Error::Transport`]/[`Error::Unsupported`] on dial or stream
     /// failure. The caller is responsible for applying an exchange timeout.
-    pub fn send_receive(
+    pub async fn send_receive(
         &self,
         peer: PeerId,
         request: PriorityMsg,
-    ) -> BoxFuture<'static, crate::Result<PriorityMsg>> {
-        let command_tx = self.command_tx.clone();
-        Box::pin(async move {
-            let (response_tx, response_rx) = oneshot::channel();
-            command_tx
-                .send(Command::SendReceive {
-                    peer,
-                    request: OutboundRequest {
-                        request,
-                        response: response_tx,
-                    },
-                })
-                .map_err(|_| Error::Shutdown)?;
+    ) -> crate::Result<PriorityMsg> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(Command::SendReceive {
+                peer,
+                request: OutboundRequest {
+                    request,
+                    response: response_tx,
+                },
+            })
+            .map_err(|_| Error::Shutdown)?;
 
-            response_rx.await.map_err(|_| Error::Shutdown)?
-        })
+        response_rx.await.map_err(|_| Error::Shutdown)?
     }
 }
 
