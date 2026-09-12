@@ -192,7 +192,8 @@ pub async fn write_keys_to_disk(
     let secret_shares = shares.iter().map(|s| s.secret_share).collect::<Vec<_>>();
 
     let keys_dir = pluto_cluster::helpers::create_validator_keys_dir(&conf.data_dir).await?;
-    // TODO: All paths should be handled using `std::path::*` instead of strings.
+    // TODO: All paths should be handled using `std::path::*` instead of
+    // strings.
     let keys_dir = keys_dir.to_string_lossy().into_owned();
 
     if insecure {

@@ -103,8 +103,8 @@ impl EthClient {
             return Err(EthClientError::NoExecutionEngineAddr);
         };
 
-        // Any casing is accepted (no EIP-55 check), non-hex or wrong-length input
-        // is rejected rather than silently zero-padded/truncated.
+        // Any casing is accepted (no EIP-55 check), non-hex or wrong-length
+        // input is rejected rather than silently zero-padded/truncated.
         let address = contract_address
             .as_ref()
             .parse::<alloy::primitives::Address>()

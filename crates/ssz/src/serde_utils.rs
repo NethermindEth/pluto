@@ -110,21 +110,33 @@ where
     }
 }
 
-impl<'de, T> DeserializeAs<'de, T> for HexBytes
-where
-    T: TryFrom<Vec<u8>>,
-{
-    fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
+impl<'de> DeserializeAs<'de, Vec<u8>> for HexBytes {
+    fn deserialize_as<D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        decode_0x_hex::<D::Error>(value.as_str())
+    }
+}
+
+// Fixed-size byte arrays deserialise the empty string as all-zeros rather than
+// rejecting it. Charon's `to0xHex(nil)` marshals a nil/empty byte slice as
+// `""`, and an SSZ fixed-size vector (`Bytes48`, `Bytes32`, ...) of a nil slice
+// is exactly `N` zero bytes, so `""` and `"0x00..00"` denote the same value.
+// The non-empty path still enforces the exact length.
+impl<'de, const N: usize> DeserializeAs<'de, [u8; N]> for HexBytes {
+    fn deserialize_as<D>(deserializer: D) -> Result<[u8; N], D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
         let decoded = decode_0x_hex::<D::Error>(value.as_str())?;
-        decoded.try_into().map_err(|_err: T::Error| {
-            D::Error::invalid_value(
-                Unexpected::Str(value.as_str()),
-                &"hex bytes convertible to target type",
-            )
+        if decoded.is_empty() {
+            return Ok([0u8; N]);
+        }
+        decoded.try_into().map_err(|bytes: Vec<u8>| {
+            D::Error::invalid_length(bytes.len(), &format!("{N} bytes").as_str())
         })
     }
 }

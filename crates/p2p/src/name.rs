@@ -353,9 +353,10 @@ const ADJECTIVES: &[&str] = &[
 /// The name is generated using a polynomial rolling hash of the base58-encoded
 /// peer ID, then selecting an adjective and noun from predefined lists.
 pub fn peer_name(id: &PeerId) -> String {
-    // p is chosen to be 59 because it's prime and roughly equal to the number of
-    // different characters you can have in base58 encoded strings. Base58
-    // encoded strings can consist of 58 different alphanumeric characters
+    // p is chosen to be 59 because it's prime and roughly equal to the number
+    // of different characters you can have in base58 encoded strings.
+    // Base58 encoded strings can consist of 58 different alphanumeric
+    // characters
     // (123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz)
     const P: u64 = 59;
     const M: u64 = 1_000_000_007; // 1e9 + 7
@@ -372,13 +373,19 @@ pub fn peer_name(id: &PeerId) -> String {
         p_pow = (p_pow.wrapping_mul(P)) % M;
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping_rem never overflows and cannot divide by zero (NOUNS is non-empty)"
+    )]
     let noun_idx = usize::try_from(hash_value.wrapping_rem(
         u64::try_from(NOUNS.len()).expect("NOUNS.len() is always less than u64::MAX"),
     ))
     .expect("hash_value.wrapping_rem(u64::try_from(NOUNS.len())) is always less than usize::MAX");
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping_rem never overflows and cannot divide by zero (ADJECTIVES is non-empty)"
+    )]
     let adj_idx = usize::try_from(hash_value.wrapping_rem(
         u64::try_from(ADJECTIVES.len()).expect("ADJECTIVES.len() is always less than u64::MAX"),
     ))

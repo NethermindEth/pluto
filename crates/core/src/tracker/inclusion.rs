@@ -10,11 +10,6 @@
 //! directly from tests. The networked driver that polls the beacon node and
 //! builds the `Block` inputs is layered on top separately.
 
-// TODO: The networked `InclusionChecker` that wires the default reporters and drives
-// this core is added in a follow-up; until then some core items (default
-// reporters, committee plumbing) have no in-crate caller.
-#![allow(dead_code)]
-
 use std::{
     any::Any,
     collections::HashMap,
@@ -37,7 +32,7 @@ use crate::{
         Attestation, SignedAggregateAndProof, SignedDataError, VersionedAttestation,
         VersionedSignedAggregateAndProof, VersionedSignedProposal,
     },
-    tracker::{StepError, analysis::incl_supported, metrics::TRACKER_METRICS},
+    tracker::{StepError, analysis, metrics::TRACKER_METRICS},
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
 
@@ -178,13 +173,13 @@ pub struct InclusionCore {
     tracker_incl_fn: TrackerInclFn,
     missed_fn: MissedFn,
     att_included_fn: AttIncludedFn,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
 }
 
 impl InclusionCore {
     /// Creates a core with the production reporters (`report_missed` and
     /// `report_att_inclusion`) and the given tracker callback.
-    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: &'static FeatureSet) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
             Box::new(report_missed),
@@ -198,7 +193,7 @@ impl InclusionCore {
         tracker_incl_fn: TrackerInclFn,
         missed_fn: MissedFn,
         att_included_fn: AttIncludedFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Self {
         Self {
             submissions: HashMap::new(),
@@ -221,7 +216,7 @@ impl InclusionCore {
         data: Box<dyn SignedData>,
         delay: Duration,
     ) -> Result<(), InclusionError> {
-        if !incl_supported(&self.feature_set).contains(&duty.duty_type) {
+        if !analysis::incl_supported(self.feature_set).contains(&duty.duty_type) {
             return Ok(());
         }
 
@@ -636,7 +631,7 @@ impl InclusionChecker {
     pub async fn new(
         eth2_cl: EthBeaconNodeApiClient,
         tracker_incl_fn: TrackerInclFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Result<Self, EthBeaconNodeApiClientError> {
         let genesis = eth2_cl.fetch_genesis_time().await?;
         let (slot_duration, _slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
@@ -799,19 +794,19 @@ mod tests {
     /// Shared recorder of duties passed to a callback.
     type Rec = Arc<Mutex<Vec<Duty>>>;
 
-    fn featureset(attestation_inclusion: bool) -> Arc<FeatureSet> {
+    fn featureset(attestation_inclusion: bool) -> &'static FeatureSet {
         let enabled = if attestation_inclusion {
             vec![Feature::AttestationInclusion]
         } else {
             vec![]
         };
-        Arc::new(
+        Box::leak(Box::new(
             FeatureSet::from_config(Config {
                 enabled,
                 ..Config::default()
             })
             .expect("test featureset is valid"),
-        )
+        ))
     }
 
     fn pubkey() -> PubKey {
@@ -905,7 +900,8 @@ mod tests {
         let att3 = Attestation::new(phase0_attestation(3));
         let block4 = proposal();
 
-        // Seeded into the block below; the rest are recomputed inside `submitted`.
+        // Seeded into the block below; the rest are recomputed inside
+        // `submitted`.
         let agg2_root = agg2.0.message.aggregate.data.tree_hash_root().0;
 
         core.submitted(
@@ -954,7 +950,8 @@ mod tests {
         // Attester (1, 3) and aggregator (2) report via att-included.
         assert_eq!(sorted_slots(&included), vec![1, 2, 3]);
         assert!(missed.lock().unwrap().is_empty());
-        // All four duties resolve via the tracker callback (incl. proposer 100).
+        // All four duties resolve via the tracker callback (incl. proposer
+        // 100).
         assert_eq!(sorted_slots(&resolved), vec![1, 2, 3, 100]);
     }
 

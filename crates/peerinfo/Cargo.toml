@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+pluto-proto.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true

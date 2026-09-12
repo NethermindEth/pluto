@@ -164,8 +164,8 @@ mod tests {
 
     #[test]
     fn stack_components_sets_current_and_resets_stale() {
-        // Labels are unique to this test so it does not collide with other tests
-        // mutating the global `validator_stack_params` family.
+        // Labels are unique to this test so it does not collide with other
+        // tests mutating the global `validator_stack_params` family.
         stack_components(&[
             ("test-teku".to_owned(), "--network=mainnet".to_owned()),
             ("test-lighthouse".to_owned(), "--debug".to_owned()),
@@ -182,8 +182,8 @@ mod tests {
 
     #[test]
     fn init_startup_metrics_sets_network_and_feature_flags() {
-        // Labels are unique to this test so it does not collide with other tests
-        // mutating the global gauges.
+        // Labels are unique to this test so it does not collide with other
+        // tests mutating the global gauges.
         init_startup_metrics(&StartupMetrics {
             version: "v-test",
             peer_name: "peer-test",

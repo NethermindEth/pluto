@@ -84,7 +84,7 @@ pub(crate) struct WireP2PParams {
     pub consensus: Arc<qbft::Consensus>,
     pub min_required: i64,
     pub deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator>,
-    pub feature_set: Arc<pluto_featureset::FeatureSet>,
+    pub feature_set: &'static pluto_featureset::FeatureSet,
     pub duty_gater: DutyGaterFn,
     pub eth2_cl: EthBeaconNodeApiClient,
     pub pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
@@ -167,8 +167,9 @@ pub(crate) async fn wire_p2p(
     })?;
 
     // Peer metadata exchange. Use the Charon-compatible short git hash: Charon
-    // rejects a peer's whole peerinfo record if the git hash isn't `^[0-9a-f]{7}$`,
-    // so this always advertises a well-formed hash even in git-less builds.
+    // rejects a peer's whole peerinfo record if the git hash isn't
+    // `^[0-9a-f]{7}$`, so this always advertises a well-formed hash even in
+    // git-less builds.
     let git_hash = pluto_core::version::git_commit_hash_short();
     let peerinfo_config = peerinfo::Config::new(LocalPeerInfo::new(
         pluto_core::version::VERSION.to_string(),
@@ -184,16 +185,16 @@ pub(crate) async fn wire_p2p(
     // versions/protocols/proposal types. The 6s exchange timeout (half a slot)
     // matches Charon; `new_component` fails fast on a peer missing from the
     // shared `p2p_context`.
-    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component(
-        peer_ids.clone(),
-        min_required,
-        priority_consensus,
-        std::time::Duration::from_secs(6),
-        key.clone(),
-        deadline_calc,
-        p2p_context.clone(),
-        priority_cancellation,
-    )?;
+    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component()
+        .peers(peer_ids.clone())
+        .min_required(min_required)
+        .consensus(priority_consensus)
+        .exchange_timeout(std::time::Duration::from_secs(6))
+        .privkey(key.clone())
+        .calculator(deadline_calc)
+        .p2p_context(p2p_context.clone())
+        .ct(priority_cancellation)
+        .call()?;
     let priority_comp = Arc::new(priority_comp);
 
     let infosync = Arc::new(pluto_infosync::Component::new(
@@ -201,7 +202,7 @@ pub(crate) async fn wire_p2p(
         pluto_core::version::SUPPORTED.to_vec(),
         local_protocols(),
         local_proposal_types(builder_enabled),
-        &feature_set,
+        feature_set,
     ));
 
     // Clone the context before it is moved into the node so the readiness

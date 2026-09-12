@@ -61,6 +61,10 @@ struct FioResultSingle {
     bw: f64,
 }
 
+// `expect` cannot be used here: the lint does not fire under the current
+// toolchain, so it would be flagged as an unfulfilled expectation. Kept as
+// `allow` for forward compatibility. Reason: internal trait not part of the
+// public API; no need for the `Send` bound the lint guards against.
 #[allow(async_fn_in_trait)]
 trait DiskTestTool {
     async fn check_availability(&self) -> Result<()>;

@@ -87,10 +87,6 @@ pub enum KeystoreError {
     #[error("hex decode error: {0}")]
     HexDecode(#[from] hex::FromHexError),
 
-    /// Unsupported KDF function.
-    #[error("unsupported KDF: {0}")]
-    UnsupportedKdf(String),
-
     /// Checksum verification failed.
     #[error("decrypt keystore: checksum verification failed")]
     InvalidChecksum,

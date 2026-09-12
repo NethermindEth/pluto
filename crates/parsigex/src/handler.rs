@@ -262,7 +262,7 @@ async fn do_recv(
         return Err(Failure::InvalidDuty);
     }
     for (pub_key, par_sig) in data_set.inner() {
-        verifier(duty.clone(), *pub_key, par_sig.clone())
+        verifier(duty.clone(), *pub_key, par_sig)
             .await
             .map_err(|e| Failure::InvalidPartialSignature(e.to_string()))?;
     }

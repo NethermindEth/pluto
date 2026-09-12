@@ -23,11 +23,12 @@
 // casts) would obscure the contract rather than protect it. All inputs are
 // bounded by the algorithm (Schrage's method keeps seedrand within i32; Read
 // consumes 7 low bytes per draw).
-#![allow(
+#![expect(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "fixed-width wrapping arithmetic and two's-complement casts are the Go PRNG specification; inputs are algorithm-bounded"
 )]
 
 const RNG_LEN: usize = 607;

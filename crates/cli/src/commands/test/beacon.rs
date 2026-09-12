@@ -12,8 +12,9 @@ use super::{
     helpers::{
         AllCategoriesResult, CategoryScore, TestCaseName, TestCategory, TestCategoryResult,
         TestResult, TestResultError, TestVerdict, calculate_score, evaluate_highest_rtt,
-        evaluate_rtt, filter_tests, must_output_to_file_on_quiet, publish_result_to_obol_api,
-        request_rtt, sort_tests, write_result_to_file, write_result_to_writer,
+        evaluate_rtt, filter_tests, http_client, must_output_to_file_on_quiet,
+        publish_result_to_obol_api, request_rtt, sort_tests, write_result_to_file,
+        write_result_to_writer,
     },
 };
 use crate::{duration::Duration, error::Result as CliResult};
@@ -28,18 +29,6 @@ use tokio::{
     time::{Instant, interval, interval_at, sleep},
 };
 use tokio_util::sync::CancellationToken;
-
-/// Per-request timeout for beacon-node diagnostic HTTP calls, so a hostile or
-/// slow endpoint cannot stall a diagnostic indefinitely.
-const BEACON_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-
-/// Builds a diagnostic HTTP client with a request timeout.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(BEACON_HTTP_TIMEOUT)
-        .build()
-        .unwrap_or_default()
-}
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
@@ -311,9 +300,7 @@ pub async fn run(
     let mut queued = filter_tests(&all_cases, args.test_config.test_cases.as_deref());
 
     if queued.is_empty() {
-        return Err(crate::error::CliError::Other(
-            "test case not supported".into(),
-        ));
+        return Err(crate::error::CliError::TestCaseNotSupported);
     }
     sort_tests(&mut queued);
 
@@ -969,17 +956,29 @@ async fn single_cluster_simulation(cancel: CancellationToken, target: &str) -> S
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
     let now = Instant::now();
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut slot_interval = interval_at(now + SLOT_TIME, SLOT_TIME);
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_12_slots = interval_at(
         now + SLOT_TIME.saturating_mul(12),
         SLOT_TIME.saturating_mul(12),
     );
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_10_sec =
         interval_at(now + StdDuration::from_secs(10), StdDuration::from_secs(10));
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_minute =
         interval_at(now + StdDuration::from_secs(60), StdDuration::from_secs(60));
 
@@ -1293,7 +1292,10 @@ async fn attestation_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1346,7 +1348,10 @@ async fn aggregation_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
@@ -1392,7 +1397,10 @@ async fn proposal_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1426,7 +1434,10 @@ async fn proposal_duty(
     (produce_all, publish_all)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "orchestrates several independent sync-committee duty streams; splitting the arguments into a struct would not improve clarity"
+)]
 async fn sync_committee_duties(
     cancel: CancellationToken,
     target: &str,
@@ -1459,7 +1470,10 @@ async fn sync_committee_duties(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time_subscribe, tick_time_subscribe);
 
     loop {
@@ -1491,7 +1505,10 @@ async fn sync_committee_contribution_duty(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1543,7 +1560,10 @@ async fn sync_committee_message_duty(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
@@ -1626,15 +1646,15 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
 
     let min = sorted[0];
     let max = sorted[sorted.len().saturating_sub(1)];
-    // For even-length slices this picks the upper-middle element, matching typical
-    // beacon tooling.
+    // For even-length slices this picks the upper-middle element, matching
+    // typical beacon tooling.
     let median = sorted[sorted.len() / 2];
     let sum: StdDuration = durations.iter().sum();
     let count = u32::try_from(durations.len()).unwrap_or_else(|_| {
         tracing::warn!("Failed to convert duration length to u32");
         u32::MAX
     });
-    #[allow(
+    #[expect(
         clippy::arithmetic_side_effects,
         reason = "count is non-zero (early return above)"
     )]
@@ -2419,8 +2439,8 @@ mod tests {
         let cfg = default_beacon_args(vec![]);
         let result = beacon_ping_test(cancel, cfg, &url_without_auth).await;
 
-        // Without credentials the request still succeeds (no auth enforcement by
-        // request_rtt), but no Authorization header is sent.
+        // Without credentials the request still succeeds (no auth enforcement
+        // by request_rtt), but no Authorization header is sent.
         assert_eq!(result.verdict, TestVerdict::Ok);
 
         let requests = server.received_requests().await.unwrap();

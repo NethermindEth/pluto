@@ -132,7 +132,8 @@ struct BeaconNodeContainer {
 }
 
 impl BeaconNodeContainer {
-    // Create a new Lighthouse container configured to run the HTTP API on port 5052
+    // Create a new Lighthouse container configured to run the HTTP API on port
+    // 5052
     async fn new() -> Self {
         let container = GenericImage::new("sigp/lighthouse", "v8.0.1")
             .with_exposed_port(5052.tcp())

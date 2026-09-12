@@ -4,8 +4,10 @@
 //! cluster setup, including tests for peers, beacon nodes, validator clients,
 //! MEV relays, and infrastructure.
 
-// TODO: Foundation for the test command, the detail will be implemented later
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "foundation for the test command; the detail will be implemented later"
+)]
 
 pub mod all;
 pub mod beacon;

@@ -235,7 +235,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path: PathBuf = dir.path().join("privkeylocktest");
 
-        // Create a stale file that is ignored (one extra second past the threshold).
+        // Create a stale file that is ignored (one extra second past the
+        // threshold).
         let stale_time = aged_around_threshold(Utc::now(), 1_000);
         write_file(&path, "test", stale_time)
             .await

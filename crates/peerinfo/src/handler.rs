@@ -142,11 +142,12 @@ impl ConnectionHandler for Handler {
         cx: &mut Context<'_>,
     ) -> Poll<ConnectionHandlerEvent<ReadyUpgrade<StreamProtocol>, (), Result<Success, Failure>>>
     {
-        // Handle inbound requests BEFORE the state gate: `Inactive` only means the
-        // REMOTE does not serve peerinfo (our outbound negotiation failed), not that
-        // we should stop serving. The charon relay is exactly this peer — it polls
-        // peerinfo as a client without serving it — and must still get answers, else
-        // every relay poll times out with "Peerinfo failed: read response".
+        // Handle inbound requests BEFORE the state gate: `Inactive` only means
+        // the REMOTE does not serve peerinfo (our outbound negotiation
+        // failed), not that we should stop serving. The charon relay is
+        // exactly this peer — it polls peerinfo as a client without
+        // serving it — and must still get answers, else every relay
+        // poll times out with "Peerinfo failed: read response".
         if let Some(fut) = self.inbound.as_mut() {
             match fut.poll_unpin(cx) {
                 Poll::Pending => {}
@@ -156,16 +157,18 @@ impl ConnectionHandler for Handler {
                 }
                 Poll::Ready(Ok((_stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
-                    // Don't try to read again - Charon closes the stream after each exchange.
-                    // A new inbound stream will be opened for the next request.
+                    // Don't try to read again - Charon closes the stream after
+                    // each exchange. A new inbound stream
+                    // will be opened for the next request.
                     self.inbound = None;
                 }
             }
         }
 
-        // Outbound polling only on Active connections. Once the remote is known not
-        // to serve peerinfo (Inactive), stop dialing it and report Unsupported once —
-        // but keep answering its inbound requests above.
+        // Outbound polling only on Active connections. Once the remote is known
+        // not to serve peerinfo (Inactive), stop dialing it and report
+        // Unsupported once — but keep answering its inbound requests
+        // above.
         match self.state {
             State::Inactive { reported: true } => {
                 return Poll::Pending; // Nothing to do on this connection
@@ -186,8 +189,9 @@ impl ConnectionHandler for Handler {
 
                 self.failures = self.failures.saturating_add(1);
 
-                // For backward-compatibility, the first failure is "free" and silent.
-                // This allows peers using new substreams for each request to have
+                // For backward-compatibility, the first failure is "free" and
+                // silent. This allows peers using new
+                // substreams for each request to have
                 // successful exchanges with peers using a single substream.
                 if self.failures > 1 {
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Err(error)));
@@ -204,7 +208,8 @@ impl ConnectionHandler for Handler {
                     Poll::Ready(Ok((_stream, peer_info))) => {
                         self.failures = 0;
                         self.interval.reset(self.config.interval());
-                        // Don't keep the stream idle for reuse - Charon closes streams after each
+                        // Don't keep the stream idle for reuse - Charon closes
+                        // streams after each
                         // exchange. A new outbound stream will be opened
                         // for the next request.
                         self.outbound = None;

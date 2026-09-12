@@ -191,7 +191,8 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
         calculator: C,
     ) -> (DeadlinerHandle, mpsc::Receiver<Duty>) {
         // Matches Charon's `outputBuffer = 10` — big enough for all duty
-        // types expiring simultaneously while the consumer drains synchronously.
+        // types expiring simultaneously while the consumer drains
+        // synchronously.
         const OUTPUT_BUFFER: usize = 10;
         // Charon uses an unbuffered input channel. tokio's `mpsc` requires
         // capacity >= 1, so we use 1; the per-input `oneshot` ack already
@@ -462,7 +463,8 @@ mod tests {
     async fn deadliner() -> Result<()> {
         let (expired_duties, non_expired_duties, future_duties) = setup_data();
 
-        // Use real time with generous durations to avoid flakiness on loaded CI.
+        // Use real time with generous durations to avoid flakiness on loaded
+        // CI.
         let start_time = Utc::now();
         let expired_set: HashSet<_> = expired_duties.iter().cloned().collect();
         let calculator = TestCalculator {
@@ -520,7 +522,8 @@ mod tests {
         }
 
         // Collect expired duties from output channel.
-        // Timeout must exceed the longest non-expired deadline (~1s for slot 2).
+        // Timeout must exceed the longest non-expired deadline (~1s for slot
+        // 2).
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
             let duty = timeout(Duration::from_secs(5), output_rx.recv())

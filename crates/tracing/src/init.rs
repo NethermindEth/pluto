@@ -1,8 +1,8 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use percent_encoding::percent_decode_str;
-use tracing_loki::{BackgroundTask, BackgroundTaskController, url::Url};
+use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
     EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
@@ -27,23 +27,48 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Loki background task plus the controller used to signal graceful shutdown.
+/// Grace period given to the Loki background task to flush buffered events once
+/// shutdown has been signalled.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The running Loki background task, returned by [`init`] when Loki is
+/// configured.
 ///
-/// For long-lived services, hold onto `controller` and call
-/// `controller.shutdown().await` followed by awaiting the spawned `task`
-/// before exit so buffered events are drained. Short-lived programs (e.g.
-/// examples, one-shot CLI subcommands) may drop the controller; any logs
-/// not yet posted to Loki at process exit will be lost.
-#[must_use = "the background `task` must be spawned for events to reach Loki"]
-pub struct LokiInit {
-    /// Handle used to tell the background task to drain its queue and exit.
-    pub controller: BackgroundTaskController,
-    /// Future that ships buffered events to Loki; must be spawned to run.
-    pub task: BackgroundTask,
+/// Dropping this rather than calling [`LokiWorker::shutdown`] loses every event
+/// not yet posted to Loki.
+pub struct LokiWorker {
+    controller: BackgroundTaskController,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl LokiWorker {
+    /// Drains buffered events and stops the worker.
+    ///
+    /// Signalling and draining share a single grace period so an unreachable
+    /// Loki endpoint cannot wedge process exit; the worker is hard-aborted once
+    /// the budget elapses.
+    pub async fn shutdown(self) {
+        let abort_handle = self.handle.abort_handle();
+
+        let _ = tokio::time::timeout(FLUSH_TIMEOUT, async {
+            self.controller.shutdown().await;
+            let _ = self.handle.await;
+        })
+        .await;
+
+        abort_handle.abort();
+    }
 }
 
 /// Initializes the tracing subscriber.
-pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
+///
+/// When `config` enables Loki, the background task that ships events is spawned
+/// here and returned so the caller can drain it before exit.
+///
+/// # Panics
+///
+/// Panics when Loki is configured and this is called outside a Tokio runtime.
+pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
     let env_filter = if let Some(override_env_filter) = config.override_env_filter.as_ref() {
         EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
     } else {
@@ -53,6 +78,8 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
     let console_config = config.console.clone().unwrap_or_default();
 
     let fmt_layer = tracing_subscriber::fmt::layer()
+        // Logs belong on stderr so a command's stdout stays pipeable.
+        .with_writer(std::io::stderr)
         .with_target(console_config.with_target)
         .with_level(console_config.with_level)
         .with_thread_ids(console_config.with_thread_ids)
@@ -91,7 +118,10 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
         let registry = registry.with(loki_layer);
         registry.try_init()?;
 
-        Ok(Some(LokiInit { controller, task }))
+        Ok(Some(LokiWorker {
+            controller,
+            handle: tokio::spawn(task),
+        }))
     } else {
         registry.try_init()?;
         Ok(None)

@@ -115,8 +115,9 @@ impl NodeSigBcast {
             (NONE_DATA.to_vec(), NONE_DATA.to_vec())
         };
 
-        // Make the lock hash available to incoming callbacks before broadcasting.
-        // Only fails if all receivers are dropped, which cannot happen here.
+        // Make the lock hash available to incoming callbacks before
+        // broadcasting. Only fails if all receivers are dropped, which
+        // cannot happen here.
         let _ = self.lock_hash_tx.send(Some(lock_hash));
 
         let peer_index =
@@ -303,7 +304,8 @@ mod tests {
 
     // Ports TestSigsCallbacks from charon/dkg/nodesigs_internal_test.go.
     // n=10 peers; peer_index 11 = n+1, 10 = n.
-    // sender_peer_idx is the index into `peers` used as the transport-layer PeerId.
+    // sender_peer_idx is the index into `peers` used as the transport-layer
+    // PeerId.
     #[test_case(0,  0, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_equal_to_ours")]
     #[test_case(0, 11, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_more_than_operators")]
     #[test_case(0, 10, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_exactly_at_len")]

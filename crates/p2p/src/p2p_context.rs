@@ -280,7 +280,8 @@ mod tests {
         let known_peer = test_peer(0);
         let known: HashSet<PeerId> = std::iter::once(known_peer.id).collect();
 
-        // Insert the known peer first (oldest), then flood with non-known peers.
+        // Insert the known peer first (oldest), then flood with non-known
+        // peers.
         store.remove_peer(known_peer.clone(), &known);
         for n in 1..=(MAX_INACTIVE_PEERS + 5) {
             store.remove_peer(test_peer(n), &known);
@@ -299,8 +300,9 @@ mod tests {
         let known = HashSet::new();
         let peer = test_peer(1);
 
-        // Inactive, then re-activated: must be removed from the inactive set and
-        // the ordering queue so it is not double-counted when it goes inactive again.
+        // Inactive, then re-activated: must be removed from the inactive set
+        // and the ordering queue so it is not double-counted when it
+        // goes inactive again.
         store.remove_peer(peer.clone(), &known);
         assert_eq!(store.inactive_count(), 1);
         store.add_peer(peer.clone());

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ffi::OsStr, fmt, num::TryFromIntError, path, time::Duration};
 
-use bon::Builder;
+use bon::{Builder, builder};
 use futures::StreamExt;
 use libp2p::PeerId;
 use pluto_app::{privkeylock, utils::UtilsError};
@@ -33,10 +33,7 @@ use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
-use pluto_p2p::{
-    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
-};
-use pluto_tracing::TracingConfig;
+use pluto_p2p::{bootnode::BootnodeError, config::P2PConfig, k1, p2p::P2PError, peer::Peer};
 use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
@@ -275,10 +272,6 @@ pub struct Config {
     #[builder(default = default_p2p_config())]
     pub p2p: P2PConfig,
 
-    /// Shared tracing configuration for the DKG entrypoint.
-    #[builder(default = default_tracing_config())]
-    pub log: pluto_tracing::TracingConfig,
-
     /// Keymanager configuration.
     #[builder(default)]
     pub keymanager: KeymanagerConfig,
@@ -369,13 +362,6 @@ fn default_p2p_config() -> P2PConfig {
     }
 }
 
-fn default_tracing_config() -> TracingConfig {
-    TracingConfig::builder()
-        .with_default_console()
-        .override_env_filter("info")
-        .build()
-}
-
 /// Runs the DKG entrypoint.
 #[tracing::instrument(name = "dkg", level = "debug", skip_all, fields(topic = "dkg"))]
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
@@ -432,7 +418,7 @@ fn log_private_key_lock_result(
 }
 
 fn private_key_lock_path(data_dir: &path::Path) -> path::PathBuf {
-    let mut lock_path = key_path(data_dir);
+    let mut lock_path = k1::key_path(data_dir);
     let file_name = lock_path
         .file_name()
         .and_then(OsStr::to_str)
@@ -597,27 +583,27 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let network_ct = ct.child_token();
     let network_task = pluto_tracing::spawn(drive_dkg_network(node, network_ct.clone()));
 
-    let result = run_ceremony(
-        &conf,
-        &eth1,
-        ct.child_token(),
-        def,
-        total_validators,
-        new_validators,
-        new_withdrawal_addresses,
-        new_fee_recipient_addresses,
-        network,
-        def_hash,
-        key,
-        node_idx,
-        peers,
-        exchanger,
-        &mut frost_transport,
-        node_sig_caster,
-        sync_server,
-        sync_clients,
-    )
-    .await;
+    let result = run_ceremony()
+        .conf(&conf)
+        .eth1(&eth1)
+        .ct(ct.child_token())
+        .def(def)
+        .total_validators(total_validators)
+        .new_validators(new_validators)
+        .new_withdrawal_addresses(new_withdrawal_addresses)
+        .new_fee_recipient_addresses(new_fee_recipient_addresses)
+        .network(network)
+        .def_hash(def_hash)
+        .key(key)
+        .node_idx(node_idx)
+        .peers(peers)
+        .exchanger(exchanger)
+        .frost_transport(&mut frost_transport)
+        .node_sig_caster(node_sig_caster)
+        .sync_server(sync_server)
+        .sync_clients(sync_clients)
+        .call()
+        .await;
 
     network_ct.cancel();
     network_task.await?;
@@ -625,7 +611,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     result
 }
 
-#[allow(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+#[builder]
 async fn run_ceremony<T: frost::FTransport>(
     conf: &Config,
     eth1: &EthClient,
@@ -1092,8 +1078,6 @@ mod tests {
         assert!(!config.no_verify);
         assert_eq!(config.data_dir, path::PathBuf::from(DEFAULT_DATA_DIR));
         assert_eq!(config.p2p.relays, pluto_p2p::config::default_relays());
-        assert_eq!(config.log.override_env_filter.as_deref(), Some("info"));
-        assert!(config.log.console.is_some());
         assert_eq!(config.publish.address, DEFAULT_PUBLISH_ADDRESS);
         assert_eq!(config.publish.timeout, DEFAULT_PUBLISH_TIMEOUT);
         assert!(!config.publish.enabled);

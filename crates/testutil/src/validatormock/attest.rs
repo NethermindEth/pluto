@@ -105,7 +105,10 @@ pub struct BeaconCommitteeSelection {
 pub struct SlotAttester {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     slot: Slot,
-    #[allow(dead_code)] // matched against duties via the active-validator map
+    #[expect(
+        dead_code,
+        reason = "matched against duties via the active-validator map"
+    )]
     pubkeys: Vec<BLSPubKey>,
     sign_func: SignFunc,
 
@@ -456,8 +459,9 @@ async fn attest(
             // on `POST /eth/v2/beacon/pool/attestations` — go-eth2-client (and
             // hence Charon) converts the internal versioned attestation to this
             // before POSTing (`ToSingleAttestation`): committee index from the
-            // assigned committee, attester index from the validator, carrying the
-            // data + signature (aggregation bits are dropped for a single).
+            // assigned committee, attester index from the validator, carrying
+            // the data + signature (aggregation bits are dropped
+            // for a single).
             atts.push(electra::SingleAttestation {
                 committee_index: duty.committee_index,
                 attester_index: duty.validator_index,
@@ -528,9 +532,10 @@ async fn aggregate(
 
         let proof_sig = sign_func.sign(pubkey, &sig_data)?;
 
-        // Electra+ beacon nodes take a bare `[SignedAggregateAndProof]` array on
-        // `/eth/v2/validator/aggregate_and_proofs` (go-eth2-client unwraps the
-        // opts before POST); the versioned envelope is not the wire shape.
+        // Electra+ beacon nodes take a bare `[SignedAggregateAndProof]` array
+        // on `/eth/v2/validator/aggregate_and_proofs` (go-eth2-client
+        // unwraps the opts before POST); the versioned envelope is not
+        // the wire shape.
         aggs.push(electra::SignedAggregateAndProof {
             message: proof_message,
             signature: proof_sig,
@@ -754,8 +759,8 @@ mod tests {
             .expect("build mock");
 
         // Phase 1's `active_validators` uses POST on `states/head/validators`;
-        // the beaconmock only serves GET by default, so mount a POST passthrough
-        // that returns the same payload as the GET handler.
+        // the beaconmock only serves GET by default, so mount a POST
+        // passthrough that returns the same payload as the GET handler.
         mount_post_state_validators(mock.server(), &valset).await;
 
         // `BeaconCommitteeSelections` is a DV-only endpoint not mounted by the
@@ -800,8 +805,8 @@ mod tests {
         let ok = attester.aggregate().await.expect("aggregate");
         assert_eq!(expect_aggregations > 0, ok);
 
-        // The SUT issues exactly one POST to each endpoint. Both bodies are bare
-        // JSON arrays: `SingleAttestation`s for attestations, and
+        // The SUT issues exactly one POST to each endpoint. Both bodies are
+        // bare JSON arrays: `SingleAttestation`s for attestations, and
         // `SignedAggregateAndProof`s for aggregate_and_proofs.
         let atts_bodies = atts_capture.take();
         assert_eq!(atts_bodies.len(), 1, "expected one POST to attestations");

@@ -1,3 +1,4 @@
+// reason: test fixture items need no doc comments
 #![allow(missing_docs)]
 
 use crate::spec::{altair, bellatrix, capella, deneb, electra, phase0};

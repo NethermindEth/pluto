@@ -24,7 +24,7 @@ use crate::{
     config::EXTERNAL_HOST_RESOLVE_INTERVAL,
     error::{RelayP2PError, Result},
 };
-use pluto_p2p::{config::P2PConfig, manet::Manet, name::peer_name};
+use pluto_p2p::{config::P2PConfig, manet::Manet, name};
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]
@@ -132,7 +132,7 @@ pub async fn enr_server(
 
     info!(
         "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
-        peer_name = peer_name(&state.peer_id),
+        peer_name = name::peer_name(&state.peer_id),
         tcp_addrs = state.p2p_config.tcp_addrs.join(", "),
         udp_addrs = state.p2p_config.udp_addrs.join(", "),
     );
@@ -235,9 +235,12 @@ pub async fn enr_handler(
 
     for addr in &sorted_addrs {
         if tcp_addr.is_none() && utils::is_tcp_addr(addr) {
-            if let Some((ip, port)) = utils::extract_ip_and_tcp_port(addr) {
+            if let Some((ip, port)) =
+                utils::extract_ip_and_port(addr, utils::TransportProtocol::Tcp)
+            {
                 tcp_addr = Some((apply_ip_override(&state, ip).await, port));
-            } else if let Some((_host, port)) = utils::extract_dns_and_tcp_port(addr)
+            } else if let Some((_host, port)) =
+                utils::extract_dns_and_port(addr, utils::TransportProtocol::Tcp)
                 && let Some(resolved) = state.get_external_host_ip().await
             {
                 tcp_addr = Some((resolved, port));
@@ -245,9 +248,12 @@ pub async fn enr_handler(
         }
 
         if udp_addr.is_none() && utils::is_quic_addr(addr) {
-            if let Some((ip, port)) = utils::extract_ip_and_udp_port(addr) {
+            if let Some((ip, port)) =
+                utils::extract_ip_and_port(addr, utils::TransportProtocol::Quic)
+            {
                 udp_addr = Some((apply_ip_override(&state, ip).await, port));
-            } else if let Some((_host, port)) = utils::extract_dns_and_udp_port(addr)
+            } else if let Some((_host, port)) =
+                utils::extract_dns_and_port(addr, utils::TransportProtocol::Quic)
                 && let Some(resolved) = state.get_external_host_ip().await
             {
                 udp_addr = Some((resolved, port));

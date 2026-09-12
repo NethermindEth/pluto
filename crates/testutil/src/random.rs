@@ -343,7 +343,8 @@ mod tests {
             // Decode to bytes and verify bit count
             let bytes = hex::decode(&bitlist[2..]).unwrap();
             let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
-            // Bit count must be <= length (collisions possible for large lengths)
+            // Bit count must be <= length (collisions possible for large
+            // lengths)
             assert!(bit_count <= u32::try_from(length).unwrap());
         }
 

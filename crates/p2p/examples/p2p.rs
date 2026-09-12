@@ -35,7 +35,7 @@ pub struct CombinedBehaviour {
 }
 
 /// Events emitted by the combined behaviour.
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "example enum variants are self-explanatory")]
 #[derive(Debug)]
 pub enum CombinedBehaviourEvent {
     Relay(relay::client::Event),

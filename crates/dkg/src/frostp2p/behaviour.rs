@@ -24,7 +24,7 @@ use tracing::{debug, warn};
 use super::{
     FrostP2PError, FrostP2PEvent,
     handler::{FrostP2PHandler, InEvent, OutEvent},
-    transport::validate_round1_p2p,
+    transport,
 };
 use crate::{dkgpb::v1::frost::FrostRound1P2p, frost::FrostError};
 
@@ -280,9 +280,10 @@ impl FrostP2PBehaviour {
         });
 
         for peer_id in peers {
-            // This can only cancel handler-local queued opens. If the handler has
-            // already started writing, stale completion is ignored because all
-            // result waiters were removed above.
+            // This can only cancel handler-local queued opens. If the handler
+            // has already started writing, stale completion is
+            // ignored because all result waiters were removed
+            // above.
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
                 handler: NotifyHandler::Any,
@@ -353,9 +354,10 @@ impl NetworkBehaviour for FrostP2PBehaviour {
                 self.flush_pending_for_peer(event.peer_id);
             }
             FromSwarm::ConnectionClosed(event) if !self.is_connected(&event.peer_id) => {
-                // PlutoBehaviour runs conn_logger before inner behaviours, so the
-                // shared peer store already reflects this close. Multiple live
-                // connections per peer are valid; only fail sends when none remain.
+                // PlutoBehaviour runs conn_logger before inner behaviours, so
+                // the shared peer store already reflects this
+                // close. Multiple live connections per peer are
+                // valid; only fail sends when none remain.
                 self.fail_peer_sends(event.peer_id);
             }
             FromSwarm::DialFailure(event) => {
@@ -383,7 +385,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
         };
         match event {
             OutEvent::Received(msg) => {
-                if let Err(error) = validate_round1_p2p(
+                if let Err(error) = transport::validate_round1_p2p(
                     peer_id,
                     &self.share_idx_by_peer,
                     self.local_share_idx,

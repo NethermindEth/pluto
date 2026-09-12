@@ -1,3 +1,4 @@
+// reason: example binary items need no doc comments
 #![allow(missing_docs)]
 //! Partial-signature exchange example.
 //!
@@ -100,7 +101,9 @@ struct CombinedBehaviour {
 enum CombinedBehaviourEvent {
     ParSigEx(Event),
     Relay(relay::client::Event),
-    RelayManager(#[allow(dead_code)] RelayManagerEvent),
+    RelayManager(
+        #[expect(dead_code, reason = "variant payload unused in example")] RelayManagerEvent,
+    ),
 }
 
 impl From<Event> for CombinedBehaviourEvent {
@@ -205,7 +208,7 @@ async fn main() -> Result<()> {
 
     pluto_tracing::init(
         &TracingConfig::builder()
-            .with_default_console()
+            .console(pluto_tracing::ConsoleConfig::default())
             .override_env_filter(&args.log_level)
             .build(),
     )?;

@@ -52,11 +52,6 @@ pub enum ReadinessError {
     #[error("vc not connected")]
     ValidatorClientNotConnected,
 
-    /// Validator client calls were observed, but not for every expected
-    /// validator.
-    #[error("vc missing validators")]
-    ValidatorClientMissingValidators,
-
     /// Custom readiness failure reason supplied by future wiring.
     #[error("{0}")]
     Custom(String),
@@ -64,14 +59,14 @@ pub enum ReadinessError {
 
 impl ReadinessError {
     /// Charon-compatible `/readyz` metric code for this failure reason. A ready
-    /// node is reported separately as `1`; these codes must stay stable.
+    /// node is reported separately as `1`; these codes must stay stable. Code
+    /// `6` (`vc missing validators`) is retired, matching Charon `v1.10.0`.
     pub(crate) fn readyz_code(&self) -> i64 {
         match self {
             Self::Uninitialised | Self::BeaconNodeDown | Self::Custom(_) => 2,
             Self::BeaconNodeSyncing => 3,
             Self::InsufficientPeers => 4,
             Self::ValidatorClientNotConnected => 5,
-            Self::ValidatorClientMissingValidators => 6,
             Self::BeaconNodeZeroPeers => 7,
             Self::BeaconNodeFarBehind => 8,
         }

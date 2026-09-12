@@ -607,9 +607,9 @@ mod tests {
         events: &HashMap<Duty, Vec<Event>>,
         msg_root_consistent: bool,
     ) -> Option<DutyFailure> {
-        let fs = FeatureSet::new();
-        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), &fs);
-        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, &fs)
+        let fs = &FeatureSet::new();
+        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), fs);
+        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, fs)
     }
 
     fn evt(duty: Duty, step: Step) -> Event {
@@ -731,7 +731,8 @@ mod tests {
         assert_eq!(r.step, Step::Consensus);
         assert_eq!(r.reason, REASON_NO_CONSENSUS);
 
-        // dutyDB step with no error → reported as validatorAPI / NoLocalVCSignature.
+        // dutyDB step with no error → reported as validatorAPI /
+        // NoLocalVCSignature.
         events
             .entry(att.clone())
             .or_default()

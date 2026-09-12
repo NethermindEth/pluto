@@ -740,9 +740,9 @@ fn in_memory_network(
                 compare_attestations,
                 timer_func: match round_timeout {
                     Some(timeout) => short_timer_func(timeout),
-                    None => crate::timer::get_round_timer_func(Arc::new(
+                    None => crate::timer::get_round_timer_func(Box::leak(Box::new(
                         pluto_featureset::FeatureSet::new(),
-                    )),
+                    ))),
                 },
                 sniffer: {
                     let sniffed_tx = sniffed_tx.clone();

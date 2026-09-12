@@ -59,7 +59,8 @@ impl MemoryDBActor {
                 }
             }
 
-            // After each message, trim waiters in case that the futures are dropped.
+            // After each message, trim waiters in case that the futures are
+            // dropped.
             self.trim_readers();
         }
     }
@@ -69,7 +70,8 @@ impl MemoryDBActor {
             return Ok(());
         }
 
-        // TODO(charon): Distinguish between no deadline supported vs already expired.
+        // TODO(charon): Distinguish between no deadline supported vs already
+        // expired.
         let _ = self.deadliner.add(duty.clone()).await;
 
         // NOTE: Partial insertions on error match the semantics of Charon.
@@ -293,9 +295,9 @@ mod tests {
             tokio::spawn(async move { store.wait_for(duty, pub_key).await })
         };
 
-        // Give the reader a chance to reach `notified.await` before we store, so the
-        // test actually exercises the notify wakeup path rather than the
-        // fast-path lookup.
+        // Give the reader a chance to reach `notified.await` before we store,
+        // so the test actually exercises the notify wakeup path rather
+        // than the fast-path lookup.
         tokio::task::yield_now().await;
         assert!(!reader.is_finished(), "wait_for should block until store");
 
@@ -383,8 +385,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Queue the expiration. Immediately run a dummy store, and by the time it
-        // compeltes we know that the expiration has been processed.
+        // Queue the expiration. Immediately run a dummy store, and by the time
+        // it compeltes we know that the expiration has been processed.
         expiration_tx.send(duty.clone()).await.unwrap();
         {
             let dummy = Duty::new_attester_duty(SlotNumber::new(u64::MAX));
@@ -401,13 +403,13 @@ mod tests {
             tokio::spawn(async move { store.wait_for(duty, pub_key).await })
         };
 
-        // The eviction has been applied, so wait_for has no entry to return and must
-        // block.
+        // The eviction has been applied, so wait_for has no entry to return and
+        // must block.
         tokio::task::yield_now().await;
         assert!(!reader.is_finished(), "wait_for should block until store");
 
-        // Store new data for the same duty and pubkey. The reader should wake up and
-        // return the new data, not the evicted data.
+        // Store new data for the same duty and pubkey. The reader should wake
+        // up and return the new data, not the evicted data.
         store.store(duty, second.singleton(pub_key)).await.unwrap();
 
         let read = reader.await.unwrap().unwrap();

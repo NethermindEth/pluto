@@ -106,7 +106,8 @@ pub(crate) fn withdrawal_creds_from_addr(
 /// Verifies various conditions about partial deposit amounts.
 pub fn verify_deposit_amounts(amounts: &[Gwei], compounding: bool) -> Result<()> {
     if amounts.is_empty() {
-        // If no partial amounts specified, the implementation shall default to 32ETH
+        // If no partial amounts specified, the implementation shall default to
+        // 32ETH
         return Ok(());
     }
 
@@ -210,8 +211,8 @@ pub async fn write_deposit_data_file(
 
     tokio::fs::write(&file_path, bytes).await?;
 
-    // TODO: The write and set permissions may not atomic, which the file has write
-    // permission between write and set perm actions.
+    // TODO: The write and set permissions may not atomic, which the file has
+    // write permission between write and set perm actions.
     let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
     perms.set_readonly(true);
     tokio::fs::set_permissions(&file_path, perms).await?;
@@ -226,7 +227,10 @@ pub fn get_deposit_file_path(data_dir: impl AsRef<Path>, amount: Gwei) -> PathBu
         "deposit-data.json".to_string()
     } else {
         // Convert Gwei to ETH and format
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "gwei amount fits precisely in f64 for filename formatting"
+        )]
         let eth = amount as f64 / ONE_ETH_IN_GWEI as f64;
         format!("deposit-data-{}eth.json", eth)
     };

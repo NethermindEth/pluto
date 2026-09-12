@@ -211,7 +211,8 @@ fn compare_file_contents(path1: &path::Path, path2: &path::Path) -> Result<()> {
             if n == 0 {
                 break;
             }
-            // `read_exact` is safe here because sizes are equal and we haven't reached EOF
+            // `read_exact` is safe here because sizes are equal and we haven't
+            // reached EOF
             file2.read_exact(&mut buf2[..n])?;
             if buf1[..n] != buf2[..n] {
                 return error;

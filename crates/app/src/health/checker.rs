@@ -281,7 +281,8 @@ mod tests {
 
         checker.scrape().expect("scrape");
 
-        // Gathered once for the scan, once more after detecting high cardinality.
+        // Gathered once for the scan, once more after detecting high
+        // cardinality.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(checker.metrics.len(), 1);
     }
@@ -340,7 +341,8 @@ mod tests {
             max_label_count(&series(MetricType::Histogram, &["peer", "le"])),
             1
         );
-        // Non-histogram: a literal `le` label is counted (matches the protobuf model).
+        // Non-histogram: a literal `le` label is counted (matches the protobuf
+        // model).
         assert_eq!(
             max_label_count(&series(MetricType::Gauge, &["peer", "le"])),
             2

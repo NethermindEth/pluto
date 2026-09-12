@@ -294,7 +294,8 @@ mod tests {
 
     #[tokio::test]
     async fn get_by_head_successful_fetch() {
-        // Create a set of validators with different statuses (some active, some not)
+        // Create a set of validators with different statuses (some active, some
+        // not)
         let pubkeys = (0..10u8).map(test_pubkey).collect::<Vec<PubKey>>();
         let datums = [
             test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
@@ -373,8 +374,9 @@ mod tests {
         // re-acquiring the write lock only guarantees a single stored value,
         // not a single request. Once the cache is warm, further reads take the
         // read-lock fast path and issue no request (see
-        // `get_by_head_successful_fetch`). In production `get_by_head` is driven
-        // by the scheduler's slot tick, so this cold-start burst does not occur.
+        // `get_by_head_successful_fetch`). In production `get_by_head` is
+        // driven by the scheduler's slot tick, so this cold-start burst
+        // does not occur.
         const CONCURRENCY: u64 = 8;
         let pubkeys = (0..3u8).map(test_pubkey).collect::<Vec<PubKey>>();
         let datums = vec![
@@ -414,7 +416,8 @@ mod tests {
             assert_eq!(complete.len(), 3);
         }
 
-        // After warm-up, the read-lock fast path serves without any new request.
+        // After warm-up, the read-lock fast path serves without any new
+        // request.
         let (active, _) = cache.get_by_head().await.expect("warm read");
         assert_eq!(active.len(), 3);
     }
@@ -492,7 +495,8 @@ mod tests {
         // Create a cache.
         let cache = ValidatorCache::new(test_client(&mock), pubkeys.clone());
 
-        // Test slot 1: 1 active validator (index 1), 2 complete, refreshed_by_slot=true
+        // Test slot 1: 1 active validator (index 1), 2 complete,
+        // refreshed_by_slot=true
         let (active, complete, refreshed_by_slot) = cache
             .get_by_slot(1)
             .await

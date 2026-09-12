@@ -153,8 +153,8 @@ mod tests {
     async fn is_att_aggregator() {
         let mock = default_client().await;
         let client = mock.client();
-        // comm_len=3, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=max(3/16,1)=1 →
-        // always true
+        // comm_len=3, TARGET_AGGREGATORS_PER_COMMITTEE=16 →
+        // modulo=max(3/16,1)=1 → always true
         assert!(
             super::is_att_aggregator(client, 3, decode_sig(ATT_SIG_HEX))
                 .await
