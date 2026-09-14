@@ -4,15 +4,11 @@ x-node-base: &node-base
   command: No charon commands needed for keygen=create define step
   networks: [compose]
   volumes: [testdir:/compose]
-  
 
 services:
   node0:
     <<: *node-base
     container_name: node0
-    
-
-  
 
 networks:
   compose:

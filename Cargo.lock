@@ -5698,6 +5698,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-test-compose"
+version = "1.7.1"
+dependencies = [
+ "k256",
+ "nix",
+ "pluto-eth2util",
+ "pluto-k1util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-case",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pluto-testutil"
 version = "1.7.1"
 dependencies = [

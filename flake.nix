@@ -66,9 +66,6 @@
           cargo-machete
           protobuf
           oas3-gen
-          go
-          gopls
-          delve
         ];
 
         shellHook = ''

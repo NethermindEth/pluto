@@ -34,5 +34,5 @@ test-infra/sszfixtures/sszfixtures
 .claude/scheduled_tasks.lock
 test-cluster
 
-# Smoke-test docker-compose logs (go test -log-dir)
-test-infra/compose/**/*.log
+# Compose smoke-test logs (SMOKE_LOG_DIR lands in the test cwd, crates/test-compose/)
+*.log
