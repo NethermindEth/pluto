@@ -454,9 +454,6 @@ fn rule_block(name: &str, expr: &str, description: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The generated scrape config covers every configured node plus the
-    /// relay, so the `up == 0` and injected-zero broadcast alerts see all of
-    /// them.
     #[test]
     fn prometheus_config_scrapes_all_nodes() {
         let mut conf = Config::new_default();
@@ -482,9 +479,6 @@ mod tests {
         );
     }
 
-    /// The broadcast liveness expression injects a zero for scraped node
-    /// jobs with no core_bcast_broadcast_total series, so a node that never
-    /// broadcasts fails instead of silently passing.
     #[test]
     fn alert_rules_broadcast_covers_missing_series() {
         let content = alert_rules(&Config::new_default());
@@ -497,8 +491,6 @@ mod tests {
         );
     }
 
-    /// `alert_exclude_jobs` exempts a node from every behavioural rule while
-    /// "Pluto Down" keeps watching it.
     #[test]
     fn alert_rules_excludes_degraded_jobs() {
         let mut conf = Config::new_default();
@@ -535,12 +527,9 @@ mod tests {
             "{content}"
         );
 
-        // The scrape-liveness rule must never carry exclusions.
         assert!(content.contains("expr: up == 0"), "{content}");
     }
 
-    /// The Warn Log Rate gate excludes exactly the two charon mock-noise
-    /// topics.
     #[test]
     fn alert_rules_warn_topics() {
         let content = alert_rules(&Config::new_default());
@@ -550,8 +539,6 @@ mod tests {
         );
     }
 
-    /// Charon's dead "Outstanding Duty Rate" rule stays removed: broadcast
-    /// counts can never exceed scheduled counts, so it could never fire.
     #[test]
     fn alert_rules_drops_outstanding_duty() {
         let content = alert_rules(&Config::new_default());
@@ -559,8 +546,6 @@ mod tests {
         assert!(!content.contains("core_scheduler_duty_total"), "{content}");
     }
 
-    /// `alert_disable_rules` drops exactly the named rules and validation
-    /// rejects unknown names.
     #[test]
     fn alert_rules_disable_rules() {
         let mut conf = Config::new_default();
@@ -569,7 +554,6 @@ mod tests {
         let content = alert_rules(&conf);
         assert!(!content.contains("Error Log Rate"), "{content}");
         assert!(!content.contains(r#"endpoint!="proxy""#), "{content}");
-        // The remaining gates stay.
         assert!(content.contains("Pluto Down"), "{content}");
         assert!(content.contains("Warn Log Rate"), "{content}");
         assert!(content.contains("Proxy API Error Rate"), "{content}");
@@ -582,8 +566,6 @@ mod tests {
         assert!(err.to_string().contains("unknown alert rule name"), "{err}");
     }
 
-    /// The split keys dir must lie inside the compose dir: a nested dir is
-    /// accepted (as its relative path), a sibling and a `..` escape are not.
     #[test]
     fn rel_split_keys_dir_requires_a_child() {
         let root = tempfile::tempdir().expect("tempdir");

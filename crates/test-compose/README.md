@@ -20,16 +20,21 @@ generated at build time).
 
 ```bash
 # one or more scenarios
-cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture --exact scenario_default_alpha scenario_pluto_dkg
+PLUTO_REPO=$PWD cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture --exact scenario_default_alpha scenario_pluto_dkg
 # the CI matrix (very_large needs a big machine)
 cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture --test-threads=1 --skip scenario_very_large
 # keep per-scenario logs
 SMOKE_LOG_DIR=. cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture --exact scenario_default_alpha
 ```
 
+Scenarios run one at a time whatever `--test-threads` says: a mutex in
+`tests/smoke.rs` serializes them, since clusters competing for CPU and memory
+produce duty timeouts a sequential run never sees. `--test-threads=1` only
+keeps the output orderly.
+
 | Variable | Effect |
 |---|---|
-| `PLUTO_REPO` | Repository root the `pluto:local` image is built from (default: this workspace). |
+| `PLUTO_REPO` | Repository root the `pluto:local` image is built from. Scenarios that run pluto are skipped when unset. |
 | `SMOKE_SUDO_PERMS` | Set to `1` when containers run as root, so the harness can `sudo chown` its artefacts. |
 | `SMOKE_LOG_DIR` | Write `<dir>/<scenario>.log` with the `docker compose up` output. |
 | `SMOKE_EXTERNAL_RELAY` | Use this relay URL instead of the in-cluster relay. |

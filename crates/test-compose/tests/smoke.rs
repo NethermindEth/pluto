@@ -1,29 +1,16 @@
 //! Docker-based smoke tests: each scenario stands up a full compose cluster
-//! and watches it for alerts. All are ignored by default; run them with
-//!
-//! ```text
-//! cargo test -p pluto-test-compose --test smoke -- --ignored --nocapture [--skip very_large]
-//! ```
+//! and watches it for alerts. Ignored by default; see the crate README for
+//! the run command and environment variables.
 //!
 //! Scenarios run one at a time whatever `--test-threads` says: clusters
-//! competing for CPU and memory produce duty timeouts that a sequential run
-//! never sees, so a concurrent pass would test the host, not the cluster.
-//!
-//! Environment:
-//! - `PLUTO_REPO`: pluto checkout to build `pluto:local` from; scenarios that
-//!   run pluto are skipped when it is unset.
-//! - `SMOKE_SUDO_PERMS=1`: fix root-owned artefacts with `sudo` after each
-//!   step.
-//! - `SMOKE_LOG_DIR=<dir>`: write each scenario's `docker compose up` output to
-//!   `<dir>/<scenario>.log` instead of stdout.
-//! - `SMOKE_EXTERNAL_RELAY=<url>`: route the cluster through an external relay.
+//! competing for CPU and memory produce duty timeouts a sequential run never
+//! sees.
 
 use std::path::PathBuf;
 
 use pluto_test_compose::{PLUTO_REPO_ENV, auto, env_non_empty, smoke, write_config};
 use tokio::sync::Mutex;
 
-/// Held for the whole of a scenario so the docker clusters never overlap.
 static SERIAL: Mutex<()> = Mutex::const_new(());
 
 async fn run_scenario(name: &str) {
