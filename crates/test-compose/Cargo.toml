@@ -7,6 +7,14 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+smoke = []
+
+[[test]]
+name = "smoke"
+path = "tests/smoke.rs"
+required-features = ["smoke"]
+
 [dependencies]
 k256.workspace = true
 nix.workspace = true

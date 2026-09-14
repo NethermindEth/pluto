@@ -1,6 +1,7 @@
 //! Docker-based smoke tests: each scenario stands up a full compose cluster
-//! and watches it for alerts. Ignored by default; see the crate README for
-//! the run command and environment variables.
+//! and watches it for alerts. Feature-gated behind `smoke` (see the crate
+//! README for the run command and environment variables), so a plain `cargo
+//! test --workspace` never builds or runs them.
 //!
 //! Scenarios run one at a time whatever `--test-threads` says: clusters
 //! competing for CPU and memory produce duty timeouts a sequential run never
@@ -13,7 +14,20 @@ use tokio::sync::Mutex;
 
 static SERIAL: Mutex<()> = Mutex::const_new(());
 
-async fn run_scenario(name: &str) {
+#[test_case::test_case("default_alpha" ; "default_alpha")]
+#[test_case::test_case("default_beta" ; "default_beta")]
+#[test_case::test_case("default_stable" ; "default_stable")]
+#[test_case::test_case("dkg" ; "dkg")]
+#[test_case::test_case("very_large" ; "very_large")]
+#[test_case::test_case("node_1_of_4_down" ; "node_1_of_4_down")]
+#[test_case::test_case("node_1_of_3_down" ; "node_1_of_3_down")]
+#[test_case::test_case("blinded_blocks_vmock" ; "blinded_blocks_vmock")]
+#[test_case::test_case("pluto_keygen_create" ; "pluto_keygen_create")]
+#[test_case::test_case("all_pluto" ; "all_pluto")]
+#[test_case::test_case("mixed_2_charon_2_pluto" ; "mixed_2_charon_2_pluto")]
+#[test_case::test_case("pluto_dkg" ; "pluto_dkg")]
+#[tokio::test]
+async fn scenario(name: &str) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     let scenario = smoke::scenario(name).unwrap_or_else(|| panic!("unknown scenario {name}"));
@@ -41,37 +55,12 @@ async fn run_scenario(name: &str) {
     }
 }
 
-macro_rules! smoke_tests {
-    ($($test:ident => $name:literal),* $(,)?) => {
-        const SCENARIO_NAMES: &[&str] = &[$($name),*];
-
-        $(
-            #[tokio::test]
-            #[ignore = "docker-based smoke test; run with --ignored"]
-            async fn $test() {
-                run_scenario($name).await;
-            }
-        )*
-    };
-}
-
-smoke_tests! {
-    scenario_default_alpha => "default_alpha",
-    scenario_default_beta => "default_beta",
-    scenario_default_stable => "default_stable",
-    scenario_dkg => "dkg",
-    scenario_very_large => "very_large",
-    scenario_1_of_4_down => "1_of_4_down",
-    scenario_1_of_3_down => "1_of_3_down",
-    scenario_blinded_blocks_vmock => "blinded_blocks_vmock",
-    scenario_pluto_keygen_create => "pluto_keygen_create",
-    scenario_all_pluto => "all_pluto",
-    scenario_mixed_2_charon_2_pluto => "mixed_2_charon_2_pluto",
-    scenario_pluto_dkg => "pluto_dkg",
-}
-
+/// One `test_case` line per `smoke::SCENARIOS` entry. Catches the matrix and
+/// the test cases drifting apart (an entry added to one but not the other)
+/// without listing every name a second time; a typo in a case's first
+/// argument instead fails at runtime via `scenario`'s `unwrap_or_else`.
 #[test]
-fn every_scenario_has_a_test() {
-    let names: Vec<&str> = smoke::SCENARIOS.iter().map(|s| s.name).collect();
-    assert_eq!(names, SCENARIO_NAMES);
+fn scenario_count_matches_matrix() {
+    const CASES: usize = 12;
+    assert_eq!(smoke::SCENARIOS.len(), CASES);
 }

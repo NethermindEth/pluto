@@ -69,8 +69,11 @@ jobs:
       - name: Install `oas3-gen`
         run: cargo install oas3-gen@0.24.0 --locked
 
-      - name: Build (all features)
-        run: cargo test --locked --workspace --all-features --no-run
+      # Enables eth2api's docker-based integration tests; NOT pluto-test-compose's
+      # `smoke` feature, whose tests are docker-compose clusters run manually via
+      # smoke-tests.yml.
+      - name: Build (integration features)
+        run: cargo test --locked --workspace --features pluto-eth2api/integration --no-run
 
       # Slash-less `charon/priority/2.0.0` Charon interop relies on the vendored
       # multistream-select fork ([patch.crates-io] -> third_party/). If a libp2p
@@ -86,5 +89,5 @@ jobs:
           fi
           echo "multistream-select fork patch applied ✓"
 
-      - name: Run tests (all features)
-        run: cargo test --locked --workspace --all-features
+      - name: Run tests (integration features)
+        run: cargo test --locked --workspace --features pluto-eth2api/integration

@@ -96,6 +96,8 @@ pub fn print_docker_compose(dir: impl AsRef<Path>) -> Result<()> {
 /// Hands the compose artefacts back to the current user. Containers run as
 /// root and leave root-owned files behind, so this runs
 /// `sudo chown -R <uid>:<gid> .` followed by `sudo chmod -R a+wrX .` in `dir`.
+// TODO: run the containers as a non-root user so this sudo chown/chmod
+// workaround can go away.
 pub async fn fix_perms(dir: impl AsRef<Path>) -> Result<()> {
     let dir = dir.as_ref();
     let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());

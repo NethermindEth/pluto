@@ -158,7 +158,7 @@ pub const SCENARIOS: &[Scenario] = &[
             ];
         },
         run_tmpl_fn: Some(unset_node0_p2p),
-        ..Scenario::new("1_of_4_down")
+        ..Scenario::new("node_1_of_4_down")
     },
     Scenario {
         config_fn: |conf| {
@@ -169,7 +169,7 @@ pub const SCENARIOS: &[Scenario] = &[
                 vec![ERROR_RATE_RULE.to_string(), VAPI_RATE_RULE.to_string()];
         },
         run_tmpl_fn: Some(unset_node0_p2p),
-        ..Scenario::new("1_of_3_down")
+        ..Scenario::new("node_1_of_3_down")
     },
     Scenario {
         config_fn: |conf| {
