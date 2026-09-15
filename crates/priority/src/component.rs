@@ -388,6 +388,7 @@ impl Component {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use pluto_core::corepb::v1::{core::Duty, priority::PriorityScoredResult};
 
     use super::*;
@@ -599,7 +600,7 @@ mod tests {
     #[test]
     fn new_component_rejects_peer_absent_from_context() {
         struct NoopConsensus;
-        #[async_trait::async_trait]
+        #[async_trait]
         impl Consensus for NoopConsensus {
             async fn propose_priority(
                 &self,
