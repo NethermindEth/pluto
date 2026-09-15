@@ -62,8 +62,6 @@ pub(crate) struct CoreBehaviour {
 pub struct CoreHandles {
     /// Outbound partial-signature broadcast + inbound subscription handle.
     pub parsigex: parsigex::Handle,
-    /// Outbound QBFT broadcast handle.
-    pub consensus: qbft::p2p::Handle,
     /// Shared P2P runtime context (known peers + live connections), used by the
     /// monitoring API's readiness checker to compute quorum connectivity.
     pub p2p_context: P2PContext,
@@ -82,6 +80,9 @@ pub(crate) struct WireP2PParams {
     pub p2p_config: pluto_p2p::config::P2PConfig,
     pub peers: Vec<Peer>,
     pub consensus: Arc<qbft::Consensus>,
+    /// Receiving half of the QBFT broadcast channel whose [`qbft::p2p::Handle`]
+    /// already backs `consensus`'s broadcaster.
+    pub consensus_broadcast_queue: qbft::p2p::BroadcastQueue,
     pub min_required: i64,
     pub deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator>,
     pub feature_set: &'static pluto_featureset::FeatureSet,
@@ -105,6 +106,7 @@ pub(crate) async fn wire_p2p(
         p2p_config,
         peers,
         consensus,
+        consensus_broadcast_queue,
         min_required,
         deadline_calc,
         feature_set,
@@ -157,14 +159,18 @@ pub(crate) async fn wire_p2p(
     let priority_consensus: Arc<dyn pluto_priority::Consensus> = consensus.clone();
     let priority_cancellation = cancellation.clone();
 
-    // QBFT consensus transport. `Behaviour::new` errors if the local peer id is
-    // not present in the configured cluster peer list.
-    let (consensus_comp, consensus_handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
-        consensus,
-        p2p_context: p2p_context.clone(),
-        local_peer_id,
-        cancellation,
-    })?;
+    // QBFT consensus transport: drains the broadcast channel the caller
+    // already handed to `consensus`'s broadcaster. `Behaviour::new` errors if
+    // the local peer id is not present in the configured cluster peer list.
+    let consensus_comp = qbft::p2p::Behaviour::new(
+        qbft::p2p::Config {
+            consensus,
+            p2p_context: p2p_context.clone(),
+            local_peer_id,
+            cancellation,
+        },
+        consensus_broadcast_queue,
+    )?;
 
     // Peer metadata exchange. Use the Charon-compatible short git hash: Charon
     // rejects a peer's whole peerinfo record if the git hash isn't
@@ -230,7 +236,6 @@ pub(crate) async fn wire_p2p(
 
     let handles = CoreHandles {
         parsigex: parsigex_handle,
-        consensus: consensus_handle,
         p2p_context: p2p_context_for_handle,
         priority: priority_comp,
         priority_expired_rx,
