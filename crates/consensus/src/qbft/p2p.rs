@@ -990,6 +990,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcasts_before_behaviour_exists_queue_until_drained() -> TestResult<()> {
+        let keys = test_keys()?;
+        let peer_ids = peer_ids(&keys)?;
+        let local_peer_id = peer_ids[1];
+        let p2p_context = connected_context(&peer_ids)?;
+
+        // The channel comes first, so `Consensus` can hold a working
+        // broadcaster before the behaviour (which needs the `Consensus`)
+        // exists. Dropping the handle proves the broadcaster alone keeps the
+        // sending half alive.
+        let (handle, queue) = broadcast_channel();
+        let broadcaster = handle.broadcaster();
+        drop(handle);
+
+        let ct = CancellationToken::new();
+        for peer_idx in [1, 1] {
+            broadcaster(ct.clone(), signed_consensus_msg(&duty(), peer_idx)?).await?;
+        }
+
+        let mut behaviour = Behaviour::new(
+            Config {
+                consensus: Arc::new(consensus(1, true)),
+                p2p_context,
+                local_peer_id,
+                cancellation: ct,
+            },
+            queue,
+        )?;
+        let events = drain_behaviour_events(&mut behaviour);
+
+        // Both pre-behaviour broadcasts survived the wait and fan out in
+        // send order once the behaviour is polled.
+        let queued = events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::GenerateEvent(Event::BroadcastQueued {
+                    request_id,
+                    target_count,
+                }) => Some((*request_id, *target_count)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let sends = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    ToSwarm::NotifyHandler {
+                        event: Either::Left(ToHandler::Send { .. }),
+                        ..
+                    }
+                )
+            })
+            .count();
+
+        assert_eq!(queued, vec![(0, 2), (1, 2)]);
+        assert_eq!(sends, 4);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn dial_peer_condition_false_preserves_pending_send() -> TestResult<()> {
         let keys = test_keys()?;
         let peer_ids = peer_ids(&keys)?[..2].to_vec();
