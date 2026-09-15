@@ -329,16 +329,21 @@ impl EthBeaconNodeApiClient {
 
     /// `GET /eth/v1/beacon/blocks/{block_id}/root`: the root of a block.
     pub async fn get_block_root(&self, block_id: &str) -> Result<BlockRootResponse> {
-        let body = self
-            .send(self.get(&["eth", "v1", "beacon", "blocks", block_id, "root"]))
-            .await?
-            .text()
-            .await?;
-        decode(&body)
+        crate::metrics::instrument("beacon_block_root", async {
+            let body = self
+                .send(self.get(&["eth", "v1", "beacon", "blocks", block_id, "root"]))
+                .await?
+                .text()
+                .await?;
+            decode(&body)
+        })
+        .await
     }
 
     /// `GET /eth/v1/beacon/headers/{block_id}`: the signed header of a block.
     pub async fn get_block_header(&self, block_id: &str) -> Result<BlockHeaderResponse> {
+        // Unlabelled because no duty reads a block header, so nothing calls
+        // this in production. Add a label with the first caller.
         let body = self
             .send(self.get(&["eth", "v1", "beacon", "headers", block_id]))
             .await?
@@ -350,26 +355,33 @@ impl EthBeaconNodeApiClient {
     /// `GET /eth/v2/beacon/blocks/{block_id}`: a full signed block, or `None`
     /// when no block exists for `block_id`.
     pub async fn get_block_v2(&self, block_id: &str) -> Result<Option<SignedBlockResponse>> {
-        let response = match self
-            .send(self.get(&["eth", "v2", "beacon", "blocks", block_id]))
-            .await
-        {
+        // `instrument` stays inside the 404 mapping so a missing block counts
+        // as an error, as in Charon's `eth2wrap`.
+        let result = crate::metrics::instrument("signed_beacon_block", async {
+            let body = self
+                .send(self.get(&["eth", "v2", "beacon", "blocks", block_id]))
+                .await?
+                .text()
+                .await?;
+            let envelope: Versioned<'_> = decode(&body)?;
+
+            Ok(SignedBlockResponse {
+                version: envelope.version,
+                execution_optimistic: envelope.execution_optimistic,
+                finalized: envelope.finalized,
+                data: decode_signed_block(envelope.version, envelope.data.get())?,
+            })
+        })
+        .await;
+
+        match result {
             Err(EthBeaconNodeApiClientError::Http(http))
                 if http.status == StatusCode::NOT_FOUND =>
             {
-                return Ok(None);
+                Ok(None)
             }
-            response => response?,
-        };
-        let body = response.text().await?;
-        let envelope: Versioned<'_> = decode(&body)?;
-
-        Ok(Some(SignedBlockResponse {
-            version: envelope.version,
-            execution_optimistic: envelope.execution_optimistic,
-            finalized: envelope.finalized,
-            data: decode_signed_block(envelope.version, envelope.data.get())?,
-        }))
+            result => result.map(Some),
+        }
     }
 
     /// `POST /eth/v1/beacon/states/{state_id}/validators`: validators of a
@@ -591,15 +603,18 @@ impl EthBeaconNodeApiClient {
         &self,
         selections: &[v1::BeaconCommitteeSelection],
     ) -> Result<Vec<v1::BeaconCommitteeSelection>> {
-        let body = self
-            .send(
-                self.post(&["eth", "v1", "validator", "beacon_committee_selections"])
-                    .json(selections),
-            )
-            .await?
-            .text()
-            .await?;
-        Ok(decode::<Data<Vec<v1::BeaconCommitteeSelection>>>(&body)?.data)
+        crate::metrics::instrument("beacon_committee_selections", async {
+            let body = self
+                .send(
+                    self.post(&["eth", "v1", "validator", "beacon_committee_selections"])
+                        .json(selections),
+                )
+                .await?
+                .text()
+                .await?;
+            Ok(decode::<Data<Vec<v1::BeaconCommitteeSelection>>>(&body)?.data)
+        })
+        .await
     }
 
     /// `POST /eth/v1/validator/contribution_and_proofs`: submits signed sync
@@ -705,12 +720,15 @@ impl EthBeaconNodeApiClient {
         &self,
         preparations: &[v1::ProposalPreparation],
     ) -> Result<()> {
-        self.send(
-            self.post(&["eth", "v1", "validator", "prepare_beacon_proposer"])
-                .json(preparations),
-        )
-        .await?;
-        Ok(())
+        crate::metrics::instrument("submit_proposal_preparations", async {
+            self.send(
+                self.post(&["eth", "v1", "validator", "prepare_beacon_proposer"])
+                    .json(preparations),
+            )
+            .await?;
+            Ok(())
+        })
+        .await
     }
 
     /// `POST /eth/v1/validator/register_validator`: forwards signed builder
@@ -765,15 +783,18 @@ impl EthBeaconNodeApiClient {
         &self,
         selections: &[v1::SyncCommitteeSelection],
     ) -> Result<Vec<v1::SyncCommitteeSelection>> {
-        let body = self
-            .send(
-                self.post(&["eth", "v1", "validator", "sync_committee_selections"])
-                    .json(selections),
-            )
-            .await?
-            .text()
-            .await?;
-        Ok(decode::<Data<Vec<v1::SyncCommitteeSelection>>>(&body)?.data)
+        crate::metrics::instrument("sync_committee_selections", async {
+            let body = self
+                .send(
+                    self.post(&["eth", "v1", "validator", "sync_committee_selections"])
+                        .json(selections),
+                )
+                .await?
+                .text()
+                .await?;
+            Ok(decode::<Data<Vec<v1::SyncCommitteeSelection>>>(&body)?.data)
+        })
+        .await
     }
 
     /// `POST /eth/v1/validator/sync_committee_subscriptions`: subscribes the
@@ -782,12 +803,15 @@ impl EthBeaconNodeApiClient {
         &self,
         subscriptions: &[v1::SyncCommitteeSubscription],
     ) -> Result<()> {
-        self.send(
-            self.post(&["eth", "v1", "validator", "sync_committee_subscriptions"])
-                .json(subscriptions),
-        )
-        .await?;
-        Ok(())
+        crate::metrics::instrument("submit_sync_committee_subscriptions", async {
+            self.send(
+                self.post(&["eth", "v1", "validator", "sync_committee_subscriptions"])
+                    .json(subscriptions),
+            )
+            .await?;
+            Ok(())
+        })
+        .await
     }
 
     /// `GET /eth/v2/validator/aggregate_attestation`: the aggregate
