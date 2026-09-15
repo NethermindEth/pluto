@@ -42,7 +42,6 @@ tree_hash.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 clap.workspace = true
 rand.workspace = true
 prost.workspace = true

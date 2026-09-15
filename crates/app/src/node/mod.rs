@@ -126,7 +126,7 @@ pub enum AppError {
     #[error("priority: {0}")]
     Priority(#[from] pluto_priority::Error),
 
-    /// A beacon node API request failed.
+    /// Building the beacon node API client or a request through it failed.
     #[error("beacon node api: {0}")]
     BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
@@ -152,10 +152,6 @@ pub enum AppError {
         /// hex representation if it matches no known network).
         beacon_node_network: String,
     },
-
-    /// Beacon node client construction failed.
-    #[error("beacon client: {0}")]
-    BeaconClient(#[source] anyhow::Error),
 
     /// Duty gater construction failed.
     #[error("duty gater: {0}")]
@@ -380,7 +376,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     }
 
     // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_client = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -416,7 +412,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
-        .get(&pluto_eth2api::ConsensusVersion::Electra)
+        .get(&pluto_eth2api::spec::DataVersion::Electra)
         .map(|schedule| schedule.epoch)
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);
@@ -507,7 +503,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Aggregated-signature verifier: verifies the reconstructed group signature
     // against the beacon-node signing domain.
-    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     // The readiness checker uses its own beacon-client clone, taken before
     // `eth2_cl` is moved into the workflow inputs below.
@@ -539,7 +535,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             threshold,
             share_idx,
             eth2_cl,
-            submission_api,
+            submission_client,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
@@ -1074,9 +1070,10 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| AppError::BeaconClient(e.into()))?;
-    pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
-        .map_err(AppError::BeaconClient)
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::Transport)?;
+    Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
+        base_url, http,
+    )?)
 }
 
 /// Adapts the simnet validator mock into the abstract [`wire::SlotTickFn`] seam

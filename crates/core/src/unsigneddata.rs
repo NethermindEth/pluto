@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use pluto_eth2api::spec::phase0;
+use pluto_eth2api::{spec::phase0, v1};
 use pluto_ssz::decode;
-use serde::{Deserialize, Deserializer, de};
+use serde::Deserialize;
 use ssz::{Decode, Encode};
 
 use crate::{
@@ -12,8 +12,7 @@ use crate::{
     corepb::v1::core as pbcore,
     parsigex_codec,
     signeddata::{
-        AttestationData, AttesterDuty, SyncContribution, VersionedAggregatedAttestation,
-        VersionedProposal,
+        AttestationData, SyncContribution, VersionedAggregatedAttestation, VersionedProposal,
     },
     ssz_codec,
     types::{DutyType, PubKey},
@@ -75,11 +74,8 @@ fn marshal_unsigned_duty_data(data: &UnsignedDutyData) -> Result<Vec<u8>, ParSig
 
 /// SSZ-encodes an [`AttestationData`] using charon's layout:
 /// `offset(4)=8 + offset(4) + AttestationData SSZ + AttesterDuty SSZ`, where
-/// the `AttesterDuty` body is a 48-byte zero pubkey followed by six
-/// little-endian `u64` fields (`charon/core/ssz.go` `attesterDutySSZ`). The
-/// leading pubkey is zeroed because pluto's [`AttesterDuty`] omits it (it is
-/// recovered from the aggregation bits downstream), matching the attester
-/// decode path.
+/// the `AttesterDuty` body is the 48-byte pubkey followed by six little-endian
+/// `u64` fields (`charon/core/ssz.go` `attesterDutySSZ`).
 ///
 /// This is hand-rolled rather than derived with `ssz_derive` on purpose: charon
 /// emits a two-slot offset table (`4 + 4`) here even though both
@@ -106,8 +102,7 @@ fn encode_attestation_data_ssz(att: &AttestationData) -> Result<Vec<u8>, ParSigE
     out.extend_from_slice(&data_offset.to_le_bytes());
     out.extend_from_slice(&duty_offset.to_le_bytes());
     out.extend_from_slice(&attestation);
-    // AttesterDuty: 48-byte pubkey (zeroed) + 6 u64 fields.
-    out.extend_from_slice(&[0u8; 48]);
+    out.extend_from_slice(&att.duty.pubkey);
     out.extend_from_slice(&att.duty.slot.to_le_bytes());
     out.extend_from_slice(&att.duty.validator_index.to_le_bytes());
     out.extend_from_slice(&att.duty.committee_index.to_le_bytes());
@@ -163,9 +158,8 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
     }
 
     if parsigex_codec::looks_like_json(data) {
-        // Reuses `VersionedProposal`'s `Deserialize` impl (shared per-fork JSON
-        // dispatch in `signeddata`).
-        return serde_json::from_slice(data).map_err(ParSigExCodecError::from);
+        return crate::signeddata::versioned_proposal_from_json(data)
+            .map_err(ParSigExCodecError::from);
     }
 
     Err(ParSigExCodecError::UnsignedData(
@@ -242,7 +236,7 @@ fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodec
             serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
         return Ok(AttestationData {
             data: decoded.attestation_data,
-            duty: decoded.attestation_duty.into(),
+            duty: decoded.attestation_duty,
         });
     }
 
@@ -289,7 +283,7 @@ fn decode_attestation_data_ssz(data: &[u8]) -> Result<AttestationData, ParSigExC
     })
 }
 
-fn decode_attester_duty_ssz(data: &[u8]) -> Result<AttesterDuty, ParSigExCodecError> {
+fn decode_attester_duty_ssz(data: &[u8]) -> Result<v1::AttesterDuty, ParSigExCodecError> {
     if data.len() < ATTESTER_DUTY_SSZ_SIZE {
         return Err(ParSigExCodecError::UnsignedData(
             "attester duty too short".to_string(),
@@ -300,8 +294,12 @@ fn decode_attester_duty_ssz(data: &[u8]) -> Result<AttesterDuty, ParSigExCodecEr
         decode::decode_u64(&data[start..end])
             .map_err(|err| ParSigExCodecError::UnsignedData(err.to_string()))
     };
+    let pubkey = data[..48]
+        .try_into()
+        .map_err(|_| ParSigExCodecError::UnsignedData("attester duty pubkey".to_string()))?;
 
-    Ok(AttesterDuty {
+    Ok(v1::AttesterDuty {
+        pubkey,
         slot: field(48, 56)?,
         validator_index: field(56, 64)?,
         committee_index: field(64, 72)?,
@@ -314,50 +312,7 @@ fn decode_attester_duty_ssz(data: &[u8]) -> Result<AttesterDuty, ParSigExCodecEr
 #[derive(Deserialize)]
 struct AttestationDataJson {
     attestation_data: phase0::AttestationData,
-    attestation_duty: AttesterDutyJson,
-}
-
-#[derive(Deserialize)]
-struct AttesterDutyJson {
-    #[serde(deserialize_with = "deserialize_u64")]
-    slot: u64,
-    #[serde(deserialize_with = "deserialize_u64")]
-    validator_index: u64,
-    #[serde(deserialize_with = "deserialize_u64")]
-    committee_index: u64,
-    #[serde(deserialize_with = "deserialize_u64")]
-    committee_length: u64,
-    #[serde(deserialize_with = "deserialize_u64")]
-    committees_at_slot: u64,
-    #[serde(deserialize_with = "deserialize_u64")]
-    validator_committee_index: u64,
-}
-
-impl From<AttesterDutyJson> for AttesterDuty {
-    fn from(value: AttesterDutyJson) -> Self {
-        Self {
-            slot: value.slot,
-            validator_index: value.validator_index,
-            committee_index: value.committee_index,
-            committee_length: value.committee_length,
-            committees_at_slot: value.committees_at_slot,
-            validator_committee_index: value.validator_committee_index,
-        }
-    }
-}
-
-fn deserialize_u64<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::Number(number) => number
-            .as_u64()
-            .ok_or_else(|| de::Error::custom("invalid u64 number")),
-        serde_json::Value::String(string) => string.parse().map_err(de::Error::custom),
-        _ => Err(de::Error::custom("expected u64 string or number")),
-    }
+    attestation_duty: v1::AttesterDuty,
 }
 
 #[cfg(test)]
@@ -420,7 +375,8 @@ mod tests {
                 source: phase0::Checkpoint::default(),
                 target: phase0::Checkpoint::default(),
             },
-            duty: AttesterDuty {
+            duty: v1::AttesterDuty {
+                pubkey: [0xab; 48],
                 slot,
                 validator_index,
                 committee_index,
@@ -460,7 +416,7 @@ mod tests {
                 .to_le_bytes(),
         );
         out.extend_from_slice(&attestation);
-        out.extend_from_slice(&[0; 48]);
+        out.extend_from_slice(&data.duty.pubkey);
         out.extend_from_slice(&data.duty.slot.to_le_bytes());
         out.extend_from_slice(&data.duty.validator_index.to_le_bytes());
         out.extend_from_slice(&data.duty.committee_index.to_le_bytes());
@@ -476,14 +432,7 @@ mod tests {
     ) -> pbcore::UnsignedDataSet {
         let value = serde_json::json!({
             "attestation_data": data.data,
-            "attestation_duty": {
-                "slot": data.duty.slot.to_string(),
-                "validator_index": data.duty.validator_index.to_string(),
-                "committee_index": data.duty.committee_index.to_string(),
-                "committee_length": data.duty.committee_length.to_string(),
-                "committees_at_slot": data.duty.committees_at_slot.to_string(),
-                "validator_committee_index": data.duty.validator_committee_index.to_string(),
-            },
+            "attestation_duty": data.duty,
         });
         pbcore::UnsignedDataSet {
             set: [(
