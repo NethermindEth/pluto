@@ -108,24 +108,25 @@ pub fn new_for_test(
         ..Default::default()
     };
 
-    let mut definition = definition::Definition::new(
-        "test cluster".into(),
-        dv.try_into().unwrap(),
-        k,
-        fee_recipient_addresses,
-        withdrawal_addresses,
-        pluto_eth2util::network::GOERLI
-            .genesis_fork_version_hex
-            .into(),
-        creator,
-        ops,
-        Vec::new(),
-        "".into(),
-        30_000_000,
-        false,
-        Vec::new(),
-    )
-    .unwrap();
+    let mut definition = definition::Definition::builder()
+        .name("test cluster".into())
+        .num_validators(dv.try_into().unwrap())
+        .threshold(k)
+        .fee_recipient_addresses(fee_recipient_addresses)
+        .withdrawal_addresses(withdrawal_addresses)
+        .fork_version_hex(
+            pluto_eth2util::network::GOERLI
+                .genesis_fork_version_hex
+                .into(),
+        )
+        .creator(creator)
+        .operators(ops)
+        .deposit_amounts(Vec::new())
+        .consensus_protocol("".into())
+        .target_gas_limit(30_000_000)
+        .compounding(false)
+        .build()
+        .unwrap();
 
     // Definition version prior to v1.3.0 don't support EIP712 signatures.
     if definition::Definition::support_eip712_sigs(&definition.version) {
