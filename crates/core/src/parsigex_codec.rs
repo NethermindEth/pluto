@@ -93,46 +93,26 @@ fn deserialize_signature(bytes: &[u8]) -> Result<SignedData, ParSigExCodecError>
 
 pub(crate) fn serialize_signed_data(data: &SignedData) -> Result<Vec<u8>, ParSigExCodecError> {
     match data {
-        // ---------------------------------------------------------------
-        // SSZ-capable types — encode as SSZ binary (matching Go `marshal`)
-        // ---------------------------------------------------------------
-
-        // phase0::Attestation (non-versioned, raw SSZ)
         SignedData::Attestation(value) => Ok(ssz_codec::encode_phase0_attestation(&value.0)?),
-
-        // VersionedAttestation (versioned header + inner SSZ)
         SignedData::VersionedAttestation(value) => {
             Ok(ssz_codec::encode_versioned_attestation(&value.0)?)
         }
-
-        // phase0::SignedAggregateAndProof (non-versioned, raw SSZ)
         SignedData::SignedAggregateAndProof(value) => Ok(
             ssz_codec::encode_phase0_signed_aggregate_and_proof(&value.0)?,
         ),
-
-        // VersionedSignedAggregateAndProof (versioned header + inner SSZ)
         SignedData::VersionedSignedAggregateAndProof(value) => Ok(
             ssz_codec::encode_versioned_signed_aggregate_and_proof(&value.0)?,
         ),
-
-        // altair::SyncCommitteeMessage (non-versioned, all fixed)
         SignedData::SignedSyncMessage(value) => {
             Ok(ssz_codec::encode_sync_committee_message(&value.0)?)
         }
-
-        // altair::SignedContributionAndProof (non-versioned, all fixed)
         SignedData::SignedSyncContributionAndProof(value) => {
             Ok(ssz_codec::encode_signed_contribution_and_proof(&value.0)?)
         }
-
-        // VersionedSignedProposal (versioned header + inner SSZ)
         SignedData::VersionedSignedProposal(value) => {
             Ok(ssz_codec::encode_versioned_signed_proposal(&value.0)?)
         }
 
-        // ---------------------------------------------------------------
-        // JSON-only types
-        // ---------------------------------------------------------------
         SignedData::VersionedSignedValidatorRegistration(value) => Ok(serde_json::to_vec(value)?),
         SignedData::SignedVoluntaryExit(value) => Ok(serde_json::to_vec(value)?),
         SignedData::SignedRandao(value) => Ok(serde_json::to_vec(value)?),
@@ -140,11 +120,8 @@ pub(crate) fn serialize_signed_data(data: &SignedData) -> Result<Vec<u8>, ParSig
         SignedData::BeaconCommitteeSelection(value) => Ok(serde_json::to_vec(value)?),
         SignedData::SyncCommitteeSelection(value) => Ok(serde_json::to_vec(value)?),
 
-        // ---------------------------------------------------------------
-        // Never exchanged on the wire: the unsigned contribution-and-proof is
-        // only signed locally (charon exchanges the *signed* variant), so it
-        // has no `marshal` counterpart.
-        // ---------------------------------------------------------------
+        // Never exchanged on the wire: the unsigned contribution-and-proof is only signed
+        // locally (charon exchanges the *signed* variant), so it has no `marshal` counterpart.
         SignedData::SyncContributionAndProof(_) => Err(ParSigExCodecError::UnsupportedDutyType),
         #[cfg(test)]
         SignedData::Mock(_) => Err(ParSigExCodecError::UnsupportedDutyType),
