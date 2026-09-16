@@ -331,7 +331,10 @@ mod tests {
         assert!(crate::utils::is_tcp_addr(&addr), "bound {addr} is not TCP");
         assert!(!crate::utils::is_quic_addr(&addr));
         // Port 0 was configured, so the kernel picked the listening port.
-        assert!(crate::utils::tcp_port(&addr).is_some_and(|port| port != 0));
+        assert!(
+            crate::utils::addr_port(&addr, crate::utils::TransportProtocol::Tcp)
+                .is_some_and(|port| port != 0)
+        );
     }
 
     #[tokio::test]
@@ -350,7 +353,10 @@ mod tests {
             "bound {addr} is not QUIC"
         );
         assert!(!crate::utils::is_tcp_addr(&addr));
-        assert!(crate::utils::udp_port(&addr).is_some_and(|port| port != 0));
+        assert!(
+            crate::utils::addr_port(&addr, crate::utils::TransportProtocol::Quic)
+                .is_some_and(|port| port != 0)
+        );
     }
 
     #[tokio::test]

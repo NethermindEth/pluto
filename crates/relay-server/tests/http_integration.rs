@@ -11,8 +11,9 @@
 //! from a `Config` carrying both a TCP and a UDP listen address, and asserts
 //! that `/` and `/enr` report the ports libp2p actually bound. That is the path
 //! `run_relay_p2p_node` takes, so it exercises the wiring the config-only tests
-//! stand in for: TCP listeners bound by `Node::new_server`, UDP ones by
-//! `listen_on`, and both folded into what the HTTP handlers advertise.
+//! stand in for: both the TCP and the UDP listeners bound by
+//! `Node::new_server` from the node's `NodeType`, and both folded into what
+//! the HTTP handlers advertise.
 //!
 //! Tests are isolated by binding `127.0.0.1:0` everywhere and reading the
 //! assigned ports back off the bound listeners, and shut down via
@@ -28,7 +29,7 @@ use libp2p::{Multiaddr, identity::Keypair};
 use pluto_eth2util::enr::Record;
 use pluto_p2p::{
     config::P2PConfig,
-    utils::{external_multiaddrs, keypair_from_secret_key, tcp_port, udp_port},
+    utils::{TransportProtocol, addr_port, external_multiaddrs, keypair_from_secret_key},
 };
 use pluto_relay_server::{config::Config, p2p::bind_relay};
 use rand::rngs::OsRng;
@@ -69,8 +70,14 @@ async fn spawn_server(
     // No swarm runs here, so the configured listen addresses stand in for the
     // ones libp2p would report having bound.
     let bound_addrs = {
-        let mut v = p2p_config.tcp_multiaddrs().expect("tcp listen addrs");
-        v.extend(p2p_config.udp_multiaddrs().expect("udp listen addrs"));
+        let mut v = p2p_config
+            .multiaddrs(TransportProtocol::Tcp)
+            .expect("tcp listen addrs");
+        v.extend(
+            p2p_config
+                .multiaddrs(TransportProtocol::Quic)
+                .expect("udp listen addrs"),
+        );
         v
     };
     let external_addrs = external_multiaddrs(&p2p_config, &bound_addrs).expect("externals");
@@ -297,11 +304,11 @@ impl FullRelay {
         let p2p_addrs = bound.p2p_addrs().await;
         let tcp_port = p2p_addrs
             .iter()
-            .find_map(tcp_port)
+            .find_map(|addr| addr_port(addr, TransportProtocol::Tcp))
             .expect("a tcp listener was configured");
         let udp_port = p2p_addrs
             .iter()
-            .find_map(udp_port)
+            .find_map(|addr| addr_port(addr, TransportProtocol::Quic))
             .expect("a udp listener was configured");
         // Port 0 is what was configured; libp2p must report what it bound.
         assert_ne!(tcp_port, 0, "tcp listener reported the configured port 0");

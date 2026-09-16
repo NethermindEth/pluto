@@ -968,21 +968,20 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
 
     let consensus_protocol = args.consensus_protocol.clone().unwrap_or_default();
 
-    let def = pluto_cluster::definition::Definition::new(
-        name,
-        num_validators,
-        threshold,
-        fee_recipient_addrs,
-        withdrawal_addrs,
-        fork_version,
-        pluto_cluster::definition::Creator::default(),
-        operators,
-        deposit::eths_to_gweis(&args.deposit_amounts),
-        consensus_protocol,
-        args.target_gas_limit,
-        args.compounding,
-        vec![],
-    )?;
+    let def = pluto_cluster::definition::Definition::builder()
+        .name(name)
+        .num_validators(num_validators)
+        .threshold(threshold)
+        .fee_recipient_addresses(fee_recipient_addrs)
+        .withdrawal_addresses(withdrawal_addrs)
+        .fork_version_hex(fork_version)
+        .creator(pluto_cluster::definition::Creator::default())
+        .operators(operators)
+        .deposit_amounts(deposit::eths_to_gweis(&args.deposit_amounts))
+        .consensus_protocol(consensus_protocol)
+        .target_gas_limit(args.target_gas_limit)
+        .compounding(args.compounding)
+        .build()?;
     Ok(def)
 }
 

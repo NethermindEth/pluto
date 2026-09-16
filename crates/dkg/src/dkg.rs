@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ffi::OsStr, fmt, num::TryFromIntError, path, time::Duration};
 
-use bon::Builder;
+use bon::{Builder, builder};
 use futures::StreamExt;
 use libp2p::PeerId;
 use pluto_app::{privkeylock, utils::UtilsError};
@@ -582,27 +582,27 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let network_ct = ct.child_token();
     let network_task = tokio::spawn(drive_dkg_network(node, network_ct.clone()));
 
-    let result = run_ceremony(
-        &conf,
-        &eth1,
-        ct.child_token(),
-        def,
-        total_validators,
-        new_validators,
-        new_withdrawal_addresses,
-        new_fee_recipient_addresses,
-        network,
-        def_hash,
-        key,
-        node_idx,
-        peers,
-        exchanger,
-        &mut frost_transport,
-        node_sig_caster,
-        sync_server,
-        sync_clients,
-    )
-    .await;
+    let result = run_ceremony()
+        .conf(&conf)
+        .eth1(&eth1)
+        .ct(ct.child_token())
+        .def(def)
+        .total_validators(total_validators)
+        .new_validators(new_validators)
+        .new_withdrawal_addresses(new_withdrawal_addresses)
+        .new_fee_recipient_addresses(new_fee_recipient_addresses)
+        .network(network)
+        .def_hash(def_hash)
+        .key(key)
+        .node_idx(node_idx)
+        .peers(peers)
+        .exchanger(exchanger)
+        .frost_transport(&mut frost_transport)
+        .node_sig_caster(node_sig_caster)
+        .sync_server(sync_server)
+        .sync_clients(sync_clients)
+        .call()
+        .await;
 
     network_ct.cancel();
     network_task.await?;
@@ -610,7 +610,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     result
 }
 
-#[expect(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+#[builder]
 async fn run_ceremony<T: frost::FTransport>(
     conf: &Config,
     eth1: &EthClient,

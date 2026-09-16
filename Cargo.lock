@@ -5160,6 +5160,7 @@ dependencies = [
 name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
+ "async-trait",
  "bytes",
  "chrono",
  "clap",
@@ -5205,6 +5206,7 @@ dependencies = [
 name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
+ "bon",
  "chrono",
  "hex",
  "k256",
@@ -5237,6 +5239,7 @@ name = "pluto-consensus"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "cancellation",
  "chrono",
@@ -5289,6 +5292,7 @@ dependencies = [
  "dyn-eq",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "futures",
  "hex",
  "pluto-build-proto",
  "pluto-cluster",
@@ -5528,6 +5532,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "backon",
+ "bon",
  "chrono",
  "clap",
  "either",
@@ -5625,6 +5630,7 @@ name = "pluto-priority"
 version = "1.7.1"
 dependencies = [
  "async-trait",
+ "bon",
  "chrono",
  "either",
  "futures",
@@ -5723,6 +5729,7 @@ name = "pluto-tracing"
 version = "1.7.1"
 dependencies = [
  "base64 0.22.1",
+ "bon",
  "percent-encoding",
  "thiserror 2.0.20",
  "tokio",
