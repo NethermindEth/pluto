@@ -12,25 +12,6 @@ pub enum Eth2ExpError {
     #[error("get eth2 spec: {0}")]
     GetSpec(#[from] EthBeaconNodeApiClientError),
 
-    /// The `TARGET_AGGREGATORS_PER_COMMITTEE` spec field is missing or not a
-    /// valid u64.
-    #[error("invalid TARGET_AGGREGATORS_PER_COMMITTEE")]
-    InvalidTargetAggregatorsPerCommittee,
-
-    /// The `SYNC_COMMITTEE_SIZE` spec field is missing or not a valid u64.
-    #[error("invalid SYNC_COMMITTEE_SIZE")]
-    InvalidSyncCommitteeSize,
-
-    /// The `SYNC_COMMITTEE_SUBNET_COUNT` spec field is missing or not a valid
-    /// u64.
-    #[error("invalid SYNC_COMMITTEE_SUBNET_COUNT")]
-    InvalidSyncCommitteeSubnetCount,
-
-    /// The `TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE` spec field is missing or
-    /// not a valid u64.
-    #[error("invalid TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE")]
-    InvalidTargetAggregatorsPerSyncSubcommittee,
-
     /// The `TARGET_AGGREGATORS_PER_COMMITTEE` spec field is zero.
     #[error("zero TARGET_AGGREGATORS_PER_COMMITTEE")]
     ZeroTargetAggregatorsPerCommittee,
@@ -53,15 +34,8 @@ pub async fn is_att_aggregator(
 ) -> Result<bool, Eth2ExpError> {
     let spec = client.fetch_spec().await?;
 
-    let aggs_per_comm = spec
-        .as_object()
-        .and_then(|o| o.get("TARGET_AGGREGATORS_PER_COMMITTEE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or(Eth2ExpError::InvalidTargetAggregatorsPerCommittee)?;
-
     let modulo = comm_len
-        .checked_div(aggs_per_comm)
+        .checked_div(spec.target_aggregators_per_committee)
         .ok_or(Eth2ExpError::ZeroTargetAggregatorsPerCommittee)?
         .max(1);
 
@@ -76,31 +50,11 @@ pub async fn is_sync_comm_aggregator(
 ) -> Result<bool, Eth2ExpError> {
     let spec = client.fetch_spec().await?;
 
-    let comm_size = spec
-        .as_object()
-        .and_then(|o| o.get("SYNC_COMMITTEE_SIZE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or(Eth2ExpError::InvalidSyncCommitteeSize)?;
-
-    let comm_subnet_count = spec
-        .as_object()
-        .and_then(|o| o.get("SYNC_COMMITTEE_SUBNET_COUNT"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or(Eth2ExpError::InvalidSyncCommitteeSubnetCount)?;
-
-    let aggs_per_comm = spec
-        .as_object()
-        .and_then(|o| o.get("TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or(Eth2ExpError::InvalidTargetAggregatorsPerSyncSubcommittee)?;
-
-    let modulo = comm_size
-        .checked_div(comm_subnet_count)
+    let modulo = spec
+        .sync_committee_size
+        .checked_div(spec.sync_committee_subnet_count)
         .ok_or(Eth2ExpError::ZeroSyncCommitteeSubnetCount)?
-        .checked_div(aggs_per_comm)
+        .checked_div(spec.target_aggregators_per_sync_subcommittee)
         .ok_or(Eth2ExpError::ZeroTargetAggregatorsPerSyncSubcommittee)?
         .max(1);
 
@@ -130,12 +84,12 @@ mod tests {
     }
 
     async fn default_client() -> BeaconMock {
-        mock_client(json!({
+        mock_client(pluto_testutil::default_spec_with(json!({
             "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
             "SYNC_COMMITTEE_SIZE": "512",
             "SYNC_COMMITTEE_SUBNET_COUNT": "4",
             "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16"
-        }))
+        })))
         .await
     }
 

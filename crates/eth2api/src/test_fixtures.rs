@@ -635,3 +635,92 @@ pub(crate) fn fulu_beacon_block_body_fixture() -> electra::BeaconBlockBody {
 pub(crate) fn fulu_beacon_block_fixture() -> electra::BeaconBlock {
     electra_beacon_block_fixture()
 }
+
+pub(crate) fn deneb_blinded_beacon_block_fixture() -> deneb::BlindedBeaconBlock {
+    let block = deneb_beacon_block_fixture();
+    let body = block.body;
+    deneb::BlindedBeaconBlock {
+        slot: block.slot,
+        proposer_index: block.proposer_index,
+        parent_root: block.parent_root,
+        state_root: block.state_root,
+        body: deneb::BlindedBeaconBlockBody {
+            randao_reveal: body.randao_reveal,
+            eth1_data: body.eth1_data,
+            graffiti: body.graffiti,
+            proposer_slashings: body.proposer_slashings,
+            attester_slashings: body.attester_slashings,
+            attestations: body.attestations,
+            deposits: body.deposits,
+            voluntary_exits: body.voluntary_exits,
+            sync_aggregate: body.sync_aggregate,
+            execution_payload_header: deneb_execution_payload_header_fixture(),
+            bls_to_execution_changes: body.bls_to_execution_changes,
+            blob_kzg_commitments: body.blob_kzg_commitments,
+        },
+    }
+}
+
+pub(crate) fn electra_blinded_beacon_block_fixture() -> electra::BlindedBeaconBlock {
+    let block = electra_beacon_block_fixture();
+    let body = block.body;
+    electra::BlindedBeaconBlock {
+        slot: block.slot,
+        proposer_index: block.proposer_index,
+        parent_root: block.parent_root,
+        state_root: block.state_root,
+        body: electra::BlindedBeaconBlockBody {
+            randao_reveal: body.randao_reveal,
+            eth1_data: body.eth1_data,
+            graffiti: body.graffiti,
+            proposer_slashings: body.proposer_slashings,
+            attester_slashings: body.attester_slashings,
+            attestations: body.attestations,
+            deposits: body.deposits,
+            voluntary_exits: body.voluntary_exits,
+            sync_aggregate: body.sync_aggregate,
+            execution_payload_header: deneb_execution_payload_header_fixture(),
+            bls_to_execution_changes: body.bls_to_execution_changes,
+            blob_kzg_commitments: body.blob_kzg_commitments,
+            execution_requests: body.execution_requests,
+        },
+    }
+}
+
+/// A `GET /eth/v1/config/spec` payload with every key [`crate::Spec`] reads,
+/// plus keys it ignores.
+pub(crate) fn spec_json() -> Value {
+    serde_json::json!({
+        "CONFIG_NAME": "fixture",
+        "SECONDS_PER_SLOT": "12",
+        "SLOTS_PER_EPOCH": "32",
+        "ALTAIR_FORK_VERSION": "0x01020304",
+        "ALTAIR_FORK_EPOCH": "10",
+        "BELLATRIX_FORK_VERSION": "0x02030405",
+        "BELLATRIX_FORK_EPOCH": "20",
+        "CAPELLA_FORK_VERSION": "0x03040506",
+        "CAPELLA_FORK_EPOCH": "30",
+        "DENEB_FORK_VERSION": "0x04050607",
+        "DENEB_FORK_EPOCH": "40",
+        "ELECTRA_FORK_VERSION": "0x05060708",
+        "ELECTRA_FORK_EPOCH": "50",
+        "FULU_FORK_VERSION": "0x06070809",
+        "FULU_FORK_EPOCH": "60",
+        "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
+        "SYNC_COMMITTEE_SIZE": "512",
+        "SYNC_COMMITTEE_SUBNET_COUNT": "4",
+        "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16",
+        "DOMAIN_BEACON_PROPOSER": "0x00000000",
+        "DOMAIN_BEACON_ATTESTER": "0x01000000",
+        "DOMAIN_RANDAO": "0x02000000",
+        "DOMAIN_DEPOSIT": "0x03000000",
+        "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
+        "DOMAIN_SELECTION_PROOF": "0x05000000",
+        "DOMAIN_AGGREGATE_AND_PROOF": "0x06000000",
+        "DOMAIN_SYNC_COMMITTEE": "0x07000000",
+        "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
+        "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
+        "DOMAIN_APPLICATION_BUILDER": "0x00000001",
+        "BLOB_SCHEDULE": [{ "EPOCH": "1", "MAX_BLOBS_PER_BLOCK": "6" }],
+    })
+}

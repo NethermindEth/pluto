@@ -18,10 +18,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockV2Request, GetBlockV2Response,
-    versioned,
-};
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, v1, versioned};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
 use tokio_util::sync::CancellationToken;
@@ -131,15 +128,6 @@ pub struct Submission {
     pub delay: Duration,
 }
 
-/// A minimal attester duty, carrying only the fields used by inclusion checks.
-#[derive(Clone)]
-pub struct AttesterDuty {
-    /// Validator index the duty belongs to.
-    pub validator_index: u64,
-    /// Index of the validator within its committee's aggregation bits.
-    pub validator_committee_index: u64,
-}
-
 /// A beacon committee for a slot, carrying only the fields used by inclusion.
 #[derive(Clone)]
 pub struct BeaconCommittee {
@@ -154,7 +142,7 @@ pub struct Block {
     /// Slot of the block.
     pub slot: u64,
     /// Attester duties relevant to this slot (used for Electra inclusion).
-    pub att_duties: Vec<AttesterDuty>,
+    pub att_duties: Vec<v1::AttesterDuty>,
     /// Block attestations keyed by their attestation-data root.
     pub attestations_by_data_root: HashMap<HashRoot, versioned::VersionedAttestation>,
     /// Beacon committees for the slot, ordered by committee index.
@@ -695,27 +683,11 @@ impl InclusionChecker {
         head.checked_sub(INCL_CHECK_LAG)
     }
 
-    /// Reports whether a block exists at `slot`. A `404` means no block was
-    /// proposed, which is a normal outcome rather than an error — the same
-    /// distinction charon draws via `is404Error`.
+    /// Reports whether a block was proposed at `slot`.
     async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
-        let request = GetBlockV2Request::builder()
-            .block_id(slot.to_string())
-            .build()
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
+        let block = self.eth2_cl.get_block_v2(&slot.to_string()).await?;
 
-        match self
-            .eth2_cl
-            .get_block_v2(request)
-            .await
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?
-        {
-            GetBlockV2Response::Ok(_) | GetBlockV2Response::OkBinary(_) => Ok(true),
-            GetBlockV2Response::NotFound(_) => Ok(false),
-            other => Err(InclusionCheckerError::UnexpectedResponse(format!(
-                "{other:?}"
-            ))),
-        }
+        Ok(block.is_some())
     }
 
     /// Drives inclusion checking until `cancel` fires: once per due slot, ask
@@ -764,13 +736,9 @@ impl InclusionChecker {
 /// retried on the next tick.
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
-    /// The beacon-node request failed or could not be built. Boxed because the
-    /// generated client surfaces `anyhow::Error`, which `pluto-core` avoids.
+    /// The beacon-node request failed.
     #[error("beacon node request failed: {0}")]
-    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// The beacon node returned a status the checker does not handle.
-    #[error("unexpected beacon node response: {0}")]
-    UnexpectedResponse(String),
+    Request(#[from] EthBeaconNodeApiClientError),
 }
 
 #[cfg(test)]
@@ -1157,9 +1125,14 @@ mod tests {
         );
         let block = Block {
             slot,
-            att_duties: vec![AttesterDuty {
+            att_duties: vec![v1::AttesterDuty {
+                pubkey: [0u8; 48],
                 validator_index,
+                committee_index: u64::try_from(committee_index).unwrap(),
+                committee_length: 4,
+                committees_at_slot: 2,
                 validator_committee_index,
+                slot,
             }],
             attestations_by_data_root: HashMap::from([(data_root, block_att)]),
             beacon_committees: vec![
