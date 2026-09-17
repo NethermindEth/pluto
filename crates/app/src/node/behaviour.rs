@@ -214,9 +214,7 @@ pub(crate) async fn wire_p2p(
     // checker observes the same shared peer/connection state the swarm updates.
     let p2p_context_for_handle = p2p_context.clone();
 
-    // A QUIC node listens on the configured UDP addresses alongside TCP and
-    // upgrades direct TCP connections to QUIC (Charon's `wireP2P` picks
-    // `NodeTypeQUIC` off the same featureset flag).
+    // Charon's `wireP2P` picks the node type off the same flag.
     let node_type = if feature_set.enabled(pluto_featureset::Feature::Quic) {
         NodeType::QUIC
     } else {
