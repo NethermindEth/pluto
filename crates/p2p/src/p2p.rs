@@ -291,6 +291,18 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Listeners registered through [`Node::listen_on`], in registration order.
     listener_ids: Vec<ListenerId>,
+
+    /// External IP / hostname overrides, advertised on the bound ports.
+    cfg: P2PConfig,
+
+    /// Whether private bound addresses are withheld from advertisement.
+    filter_private_addrs: bool,
+
+    /// Addresses libp2p reported as bound, kernel-assigned ports included.
+    bound_addrs: Vec<Multiaddr>,
+
+    /// Addresses this node currently registers as external on the swarm.
+    advertised_addrs: Vec<Multiaddr>,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -348,7 +360,7 @@ impl<B: NetworkBehaviour> Node<B> {
 
         let mut node = Self::build_client(keypair, node_type, p2p_context, behaviour_fn)?;
 
-        node.apply_config(&cfg, filter_private_addrs)?;
+        node.apply_config(cfg, filter_private_addrs)?;
 
         Ok(node)
     }
@@ -389,18 +401,22 @@ impl<B: NetworkBehaviour> Node<B> {
         let mut node =
             Self::build_server(keypair, node_type, p2p_context, bandwidth, behaviour_fn)?;
 
-        node.apply_config(&cfg, filter_private_addrs)?;
+        node.apply_config(cfg, filter_private_addrs)?;
 
         Ok(node)
     }
 
-    /// Listens on and advertises the configured addresses of every transport
-    /// this node's [`NodeType`] installs.
+    /// Listens on the configured addresses of every transport this node's
+    /// [`NodeType`] installs.
     ///
     /// Transport and address selection are driven by the same
     /// [`NodeType::transports`] list, so a node can never listen on a transport
     /// it did not install, nor install one it never listens on.
-    fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
+    ///
+    /// Nothing is advertised yet: a configured port of 0 means the kernel picks
+    /// one, so the advertised set is derived from the addresses libp2p reports
+    /// as bound (see [`Node::readvertise`]).
+    fn apply_config(&mut self, cfg: P2PConfig, filter_private_addrs: bool) -> Result<()> {
         let mut addrs = Vec::new();
 
         for &proto in self.node_type.transports() {
@@ -419,48 +435,54 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        // Listen on internal addresses only
-        for addr in &addrs {
-            self.listen_on(addr.clone())?;
+        // Surface an unparsable external IP here, where the error can
+        // propagate; `readvertise` runs from the event loop and cannot.
+        utils::external_multiaddrs(&cfg, &addrs)?;
+
+        for addr in addrs {
+            self.listen_on(addr)?;
         }
 
-        self.set_advertised_addrs(cfg, filter_private_addrs, &addrs)
-    }
-
-    /// Advertises the external IP / hostname from `cfg` on the ports of
-    /// `listen_addrs`, together with `listen_addrs` themselves.
-    ///
-    /// Replaces everything the node advertises, including addresses added
-    /// through [`Node::add_external_address`].
-    ///
-    /// Callers that listen on port 0 should call this again once libp2p has
-    /// reported the kernel-assigned ports: the configured addresses advertise
-    /// port 0, which is not dialable.
-    pub fn set_advertised_addrs(
-        &mut self,
-        cfg: &P2PConfig,
-        filter_private_addrs: bool,
-        listen_addrs: &[Multiaddr],
-    ) -> Result<()> {
-        let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
-
-        // Advertise filtered addresses (external + optionally filtered
-        // internal)
-        let advertised_addrs = utils::filter_advertised_addresses(
-            utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(listen_addrs.to_vec()),
-            filter_private_addrs,
-        );
-
-        for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
-            self.swarm.remove_external_address(&addr);
-        }
-
-        for addr in advertised_addrs {
-            self.swarm.add_external_address(addr);
-        }
+        self.cfg = cfg;
+        self.filter_private_addrs = filter_private_addrs;
 
         Ok(())
+    }
+
+    /// Re-derives the advertised set from the bound addresses: the external IP
+    /// / hostname on the bound ports, plus the bound addresses themselves, with
+    /// private ones withheld when configured. Only the difference to the
+    /// previously advertised set is applied, so addresses added through
+    /// [`Node::add_external_address`] are left alone.
+    fn readvertise(&mut self) {
+        let external_addrs = match utils::external_multiaddrs(&self.cfg, &self.bound_addrs) {
+            Ok(addrs) => addrs,
+            // Unreachable after `apply_config` validated the config, but a
+            // swarm event handler cannot propagate errors.
+            Err(err) => {
+                warn!(%err, "failed to derive external addresses");
+                return;
+            }
+        };
+
+        let next = utils::filter_advertised_addresses(
+            utils::ExternalAddresses(external_addrs),
+            utils::InternalAddresses(self.bound_addrs.clone()),
+            self.filter_private_addrs,
+        );
+
+        for addr in &self.advertised_addrs {
+            if !next.contains(addr) {
+                self.swarm.remove_external_address(addr);
+            }
+        }
+        for addr in &next {
+            if !self.advertised_addrs.contains(addr) {
+                self.swarm.add_external_address(addr.clone());
+            }
+        }
+
+        self.advertised_addrs = next;
     }
 
     fn bind_local_peer_id(p2p_context: &P2PContext, local_peer_id: PeerId) -> Result<()> {
@@ -517,6 +539,10 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            cfg: P2PConfig::default(),
+            filter_private_addrs: false,
+            bound_addrs: Vec::new(),
+            advertised_addrs: Vec::new(),
         })
     }
 
@@ -552,6 +578,10 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            cfg: P2PConfig::default(),
+            filter_private_addrs: false,
+            bound_addrs: Vec::new(),
+            advertised_addrs: Vec::new(),
         })
     }
 
@@ -669,12 +699,22 @@ impl<B: NetworkBehaviour> Node<B> {
                 }
             }
 
-            // Listen address changes
+            // Listen address changes drive what the node advertises.
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!(%address, "listening on new address");
+                if !self.bound_addrs.contains(address) {
+                    self.bound_addrs.push(address.clone());
+                    self.readvertise();
+                }
             }
             SwarmEvent::ExpiredListenAddr { address, .. } => {
                 info!(%address, "listen address expired");
+                self.bound_addrs.retain(|bound| bound != address);
+                self.readvertise();
+            }
+            SwarmEvent::ListenerClosed { addresses, .. } => {
+                self.bound_addrs.retain(|bound| !addresses.contains(bound));
+                self.readvertise();
             }
 
             // External address discovery

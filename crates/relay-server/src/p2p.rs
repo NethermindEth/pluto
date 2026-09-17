@@ -249,18 +249,11 @@ pub async fn bind_relay(config: &Config, key: SecretKey) -> Result<BoundRelay> {
     )?;
 
     // First poll of the swarm, and so the first point at which this relay
-    // services anything. Every other listener is already bound.
+    // services anything. Every other listener is already bound, and the node
+    // advertises each address as libp2p reports it bound.
     let listen_addrs = Arc::new(RwLock::new(Vec::new()));
     wait_for_listen_addrs(&mut node, &listen_addrs).await?;
     let bound_addrs = listen_addrs.read().await.clone();
-
-    // Advertise the ports libp2p bound rather than the configured ones, which
-    // carry port 0 whenever the kernel picked the port.
-    node.set_advertised_addrs(
-        &config.p2p_config,
-        config.filter_private_addrs,
-        &bound_addrs,
-    )?;
 
     // Compute external multiaddrs from external_ip / external_host config so
     // they're advertised on `/` and folded into ENR responses on `/enr` even
