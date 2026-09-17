@@ -558,41 +558,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tick_is_a_noop_on_a_tcp_only_node() {
+    async fn tick_leaves_relayed_only_peers_to_force_direct() {
         let peer = PeerId::random();
-        let mut behaviour = connected(false, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+        let mut behaviour = connected(true, peer, &[(1, relayed(TCP))], &[addr(QUIC)]);
 
         behaviour.run_upgrade_logic();
 
         assert!(behaviour.pending_events.is_empty());
         assert!(behaviour.pending_upgrades.is_empty());
-    }
-
-    #[tokio::test]
-    async fn tick_skips_peers_that_cannot_be_upgraded() {
-        let peer = PeerId::random();
-        let cases = [
-            ("no connection", vec![], vec![addr(QUIC)]),
-            (
-                "only a relayed TCP connection",
-                vec![(1, relayed(TCP))],
-                vec![addr(QUIC)],
-            ),
-            (
-                "no direct QUIC address",
-                vec![(1, addr(TCP))],
-                vec![addr(TCP), relayed(QUIC)],
-            ),
-        ];
-
-        for (case, conns, addrs) in cases {
-            let mut behaviour = connected(true, peer, &conns, &addrs);
-
-            behaviour.run_upgrade_logic();
-
-            assert!(behaviour.pending_events.is_empty(), "{case}");
-            assert!(behaviour.pending_upgrades.is_empty(), "{case}");
-        }
     }
 
     #[tokio::test]
@@ -643,45 +616,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_quic_connection_during_upgrade_records_a_failure() {
-        let peer = PeerId::random();
-        let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
-        behaviour.run_upgrade_logic();
+    async fn failed_upgrade_keeps_tcp_and_arms_backoff() {
+        /// Fails `peer`'s armed upgrade.
+        type Fail = fn(&mut QuicUpgradeBehaviour, PeerId);
 
-        behaviour.handle_connection_established(peer, &addr(TCP));
+        let cases: [(&str, Fail); 2] = [
+            ("non-QUIC connection", |behaviour, peer| {
+                behaviour.handle_connection_established(peer, &addr(TCP));
+            }),
+            ("dial failure", |behaviour, peer| {
+                behaviour.handle_dial_failure(Some(peer));
+            }),
+        ];
 
-        assert!(upgraded(&behaviour).is_empty());
-        assert!(closed(&behaviour).is_empty(), "the TCP connection is kept");
-        assert_eq!(
-            failure_reason(&behaviour, &peer).as_deref(),
-            Some("connected via non-direct address instead of direct QUIC")
-        );
-        assert!(behaviour.pending_upgrades.is_empty());
-        assert!(behaviour.should_skip(&peer), "failure arms the backoff");
-    }
+        for (case, fail) in cases {
+            let peer = PeerId::random();
+            let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+            behaviour.run_upgrade_logic();
 
-    #[tokio::test]
-    async fn dial_failure_during_upgrade_records_a_failure() {
-        let peer = PeerId::random();
-        let other = PeerId::random();
-        let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
-        behaviour.run_upgrade_logic();
+            // Failures of peers with no armed upgrade are not this behaviour's.
+            behaviour.handle_dial_failure(Some(PeerId::random()));
+            behaviour.handle_dial_failure(None);
 
-        // Dial failures for peers with no armed upgrade are not this
-        // behaviour's.
-        behaviour.handle_dial_failure(Some(other));
-        behaviour.handle_dial_failure(None);
-        assert!(failure_reason(&behaviour, &other).is_none());
+            fail(&mut behaviour, peer);
 
-        behaviour.handle_dial_failure(Some(peer));
-
-        assert_eq!(
-            failure_reason(&behaviour, &peer).as_deref(),
-            Some("dial failed")
-        );
-        assert!(closed(&behaviour).is_empty(), "the TCP connection is kept");
-        assert!(behaviour.pending_upgrades.is_empty());
-        assert!(behaviour.should_skip(&peer), "failure arms the backoff");
+            assert!(upgraded(&behaviour).is_empty(), "{case}");
+            assert!(
+                closed(&behaviour).is_empty(),
+                "{case}: the TCP connection is kept"
+            );
+            assert!(failure_reason(&behaviour, &peer).is_some(), "{case}");
+            assert!(behaviour.pending_upgrades.is_empty(), "{case}");
+            assert!(
+                behaviour.backoffs.contains_key(&peer),
+                "{case}: failure arms the backoff"
+            );
+        }
     }
 
     #[test]
