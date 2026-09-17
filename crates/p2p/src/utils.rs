@@ -51,11 +51,8 @@ pub fn external_multiaddrs(
     ))
 }
 
-/// [`external_multiaddrs`] over an already parsed external IP.
-///
-/// `listen_addrs` must be the addresses the node actually listens on: a
-/// configured port of 0 means the kernel picks one, so the configured value
-/// would advertise nothing dialable.
+/// Returns `external_ip` and `external_host` as multiaddrs on the ports of
+/// `listen_addrs`, TCP forms first.
 pub(crate) fn external_multiaddrs_on(
     external_ip: Option<IpAddr>,
     external_host: Option<&str>,
@@ -90,7 +87,7 @@ pub(crate) fn external_multiaddrs_on(
 }
 
 /// Appends the `proto` transport on `port` to `base`.
-fn with_transport(base: Multiaddr, port: u16, proto: TransportProtocol) -> Multiaddr {
+pub(crate) fn with_transport(base: Multiaddr, port: u16, proto: TransportProtocol) -> Multiaddr {
     match proto {
         TransportProtocol::Tcp => base.with(MaProtocol::Tcp(port)),
         TransportProtocol::Quic => base.with(MaProtocol::Udp(port)).with(MaProtocol::QuicV1),
