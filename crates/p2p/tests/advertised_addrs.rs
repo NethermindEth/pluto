@@ -1,12 +1,12 @@
-//! A node configured to listen on port 0 must advertise the ports the kernel
-//! assigned, never the configured 0, and must advertise its external IP on
-//! those same ports.
+//! What a node advertises, seen through identify as a peer receives it.
 //!
-//! Checked through identify as received by a peer, which is the only view
-//! other nodes ever get of what this node advertises.
+//! A node configured to listen on port 0 must advertise the kernel-assigned
+//! port, never the configured 0, with its external IP on that same port; and a
+//! relay circuit listener must not leak the relay's port into that set.
 
-use std::time::Duration;
+mod common;
 
+use common::{TEST_TIMEOUT, spawn_relay_server};
 use futures::StreamExt as _;
 use libp2p::{Multiaddr, identify, multiaddr::Protocol, relay, swarm::SwarmEvent};
 use pluto_p2p::{
@@ -15,13 +15,13 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::peer_id_from_key,
+    utils::is_relay_addr,
 };
 use pluto_testutil::random::generate_insecure_k1_key;
 use tokio::time::timeout;
 
 type ClientNode = Node<relay::client::Behaviour>;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 const EXTERNAL_IP: &str = "1.2.3.4";
 
 fn tcp_port(addr: &Multiaddr) -> Option<u16> {
@@ -31,26 +31,33 @@ fn tcp_port(addr: &Multiaddr) -> Option<u16> {
     })
 }
 
-async fn first_listen_addr(node: &mut ClientNode) -> Multiaddr {
+/// Drives `node` until it has reported `want` listen addresses.
+async fn listen_addrs(node: &mut ClientNode, want: usize) -> Vec<Multiaddr> {
     timeout(TEST_TIMEOUT, async {
-        loop {
+        let mut addrs = Vec::with_capacity(want);
+        while addrs.len() < want {
             if let SwarmEvent::NewListenAddr { address, .. } = node.select_next_some().await {
-                return address;
+                addrs.push(address);
             }
         }
+        addrs
     })
     .await
-    .expect("timed out waiting for a listen address")
+    .expect("timed out waiting for the listen addresses")
 }
 
 #[tokio::test]
-async fn advertises_bound_ports_not_configured_port_zero() {
+async fn advertises_own_bound_ports_only() {
+    let (relay_peer, relay_addr, relay_handle) =
+        spawn_relay_server(generate_insecure_k1_key(20)).await;
+
     let key_a = generate_insecure_k1_key(21);
     let key_b = generate_insecure_k1_key(22);
     let peer_a = peer_id_from_key(key_a.public_key()).expect("peer id A");
     let peer_b = peer_id_from_key(key_b.public_key()).expect("peer id B");
 
-    // A listens on a kernel-assigned port and has an external IP override.
+    // A listens on a kernel-assigned TCP port, reserves a relay circuit, and
+    // has an external IP override.
     let mut node_a: ClientNode = Node::new(
         P2PConfig::builder()
             .with_tcp_addrs(vec!["127.0.0.1:0".to_owned()])
@@ -59,10 +66,17 @@ async fn advertises_bound_ports_not_configured_port_zero() {
         key_a,
         NodeType::TCP,
         false,
-        P2PContext::new(vec![peer_b]),
+        P2PContext::new(vec![peer_b, relay_peer]),
         |builder, _keypair, relay_client| builder.with_inner(relay_client),
     )
     .expect("build node A");
+    node_a
+        .listen_on(
+            relay_addr
+                .with(Protocol::P2p(relay_peer))
+                .with(Protocol::P2pCircuit),
+        )
+        .expect("A listen_on circuit");
 
     let mut node_b: ClientNode = Node::new(
         P2PConfig::default(),
@@ -74,11 +88,15 @@ async fn advertises_bound_ports_not_configured_port_zero() {
     )
     .expect("build node B");
 
-    let bound = first_listen_addr(&mut node_a).await;
+    let bound = listen_addrs(&mut node_a, 2)
+        .await
+        .into_iter()
+        .find(|addr| !is_relay_addr(addr))
+        .expect("A must report its TCP listen address");
     let bound_port = tcp_port(&bound).expect("bound TCP port");
     assert!(bound_port != 0, "kernel must have assigned a port");
 
-    node_b.dial(bound.clone()).expect("dial A");
+    node_b.dial(bound).expect("dial A");
 
     // Drive both until B has A's identify payload.
     let advertised = timeout(TEST_TIMEOUT, async {
@@ -100,20 +118,23 @@ async fn advertises_bound_ports_not_configured_port_zero() {
     .await
     .expect("timed out waiting for A's identify");
 
+    relay_handle.abort();
+
     let external: Multiaddr = format!("/ip4/{EXTERNAL_IP}/tcp/{bound_port}")
         .parse()
         .expect("external multiaddr");
-
-    assert!(
-        advertised.contains(&bound),
-        "bound address {bound} missing from {advertised:?}",
-    );
     assert!(
         advertised.contains(&external),
         "external address {external} missing from {advertised:?}",
     );
+
+    // Neither the configured port 0 nor the relay's port may appear: every
+    // non-circuit address carries the port A actually bound.
     assert!(
-        advertised.iter().all(|addr| tcp_port(addr) != Some(0)),
-        "port 0 must never be advertised: {advertised:?}",
+        advertised
+            .iter()
+            .filter(|addr| !is_relay_addr(addr))
+            .all(|addr| tcp_port(addr) == Some(bound_port)),
+        "advertised addresses on a port other than {bound_port}: {advertised:?}",
     );
 }

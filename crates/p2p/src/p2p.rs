@@ -88,6 +88,7 @@
 //! Client nodes may include relay client to support connecting via relays.
 
 use std::{
+    net::IpAddr,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -293,14 +294,14 @@ pub struct Node<B: NetworkBehaviour> {
     /// Listeners registered through [`Node::listen_on`], in registration order.
     listener_ids: Vec<ListenerId>,
 
-    /// External IP / hostname overrides, advertised on the bound ports.
-    cfg: P2PConfig,
+    /// External IP to advertise on the bound ports.
+    external_ip: Option<IpAddr>,
 
-    /// Whether private bound addresses are withheld from advertisement.
+    /// External hostname to advertise on the bound ports.
+    external_host: Option<String>,
+
+    /// Whether private listen addresses are withheld from advertisement.
     filter_private_addrs: bool,
-
-    /// Addresses libp2p reported as bound, kernel-assigned ports included.
-    bound_addrs: Vec<Multiaddr>,
 
     /// Addresses this node currently registers as external on the swarm.
     advertised_addrs: Vec<Multiaddr>,
@@ -361,7 +362,7 @@ impl<B: NetworkBehaviour> Node<B> {
 
         let mut node = Self::build_client(keypair, node_type, p2p_context, behaviour_fn)?;
 
-        node.apply_config(cfg, filter_private_addrs)?;
+        node.apply_config(&cfg, filter_private_addrs)?;
 
         Ok(node)
     }
@@ -402,7 +403,7 @@ impl<B: NetworkBehaviour> Node<B> {
         let mut node =
             Self::build_server(keypair, node_type, p2p_context, bandwidth, behaviour_fn)?;
 
-        node.apply_config(cfg, filter_private_addrs)?;
+        node.apply_config(&cfg, filter_private_addrs)?;
 
         Ok(node)
     }
@@ -417,7 +418,15 @@ impl<B: NetworkBehaviour> Node<B> {
     /// Nothing is advertised yet: a configured port of 0 means the kernel picks
     /// one, so the advertised set is derived from the addresses libp2p reports
     /// as bound (see [`Node::readvertise`]).
-    fn apply_config(&mut self, cfg: P2PConfig, filter_private_addrs: bool) -> Result<()> {
+    fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
+        self.external_ip = cfg
+            .external_ip
+            .as_deref()
+            .map(str::parse::<IpAddr>)
+            .transpose()?;
+        self.external_host = cfg.external_host.clone();
+        self.filter_private_addrs = filter_private_addrs;
+
         let mut addrs = Vec::new();
 
         for &proto in self.node_type.transports() {
@@ -436,39 +445,36 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        // Surface an unparsable external IP here, where the error can
-        // propagate; `readvertise` runs from the event loop and cannot.
-        utils::external_multiaddrs(&cfg, &addrs)?;
-
         for addr in addrs {
             self.listen_on(addr)?;
         }
 
-        self.cfg = cfg;
-        self.filter_private_addrs = filter_private_addrs;
-
         Ok(())
     }
 
-    /// Re-derives the advertised set from the bound addresses: the external IP
-    /// / hostname on the bound ports, plus the bound addresses themselves, with
-    /// private ones withheld when configured. Only the difference to the
-    /// previously advertised set is applied, so addresses added through
-    /// [`Node::add_external_address`] are left alone.
+    /// Re-derives the advertised set from the listen addresses libp2p reports:
+    /// the external IP / hostname on their ports plus the addresses themselves,
+    /// private ones withheld when configured. Relay circuit listeners are
+    /// skipped: their ports are the relay's, and identify lists them anyway.
+    /// Only the difference to the previous set is applied, so addresses the
+    /// swarm confirmed by other means (AutoNAT) survive.
     fn readvertise(&mut self) {
-        let external_addrs = match utils::external_multiaddrs(&self.cfg, &self.bound_addrs) {
-            Ok(addrs) => addrs,
-            // Unreachable after `apply_config` validated the config, but a
-            // swarm event handler cannot propagate errors.
-            Err(err) => {
-                warn!(%err, "failed to derive external addresses");
-                return;
-            }
-        };
+        let listen_addrs: Vec<Multiaddr> = self
+            .swarm
+            .listeners()
+            .filter(|addr| !utils::is_relay_addr(addr))
+            .cloned()
+            .collect();
+
+        let external_addrs = utils::external_multiaddrs_on(
+            self.external_ip,
+            self.external_host.as_deref(),
+            &listen_addrs,
+        );
 
         let next = utils::filter_advertised_addresses(
             utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(self.bound_addrs.clone()),
+            utils::InternalAddresses(listen_addrs),
             self.filter_private_addrs,
         );
 
@@ -540,9 +546,9 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
-            cfg: P2PConfig::default(),
+            external_ip: None,
+            external_host: None,
             filter_private_addrs: false,
-            bound_addrs: Vec::new(),
             advertised_addrs: Vec::new(),
         })
     }
@@ -579,9 +585,9 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
-            cfg: P2PConfig::default(),
+            external_ip: None,
+            external_host: None,
             filter_private_addrs: false,
-            bound_addrs: Vec::new(),
             advertised_addrs: Vec::new(),
         })
     }
@@ -700,23 +706,16 @@ impl<B: NetworkBehaviour> Node<B> {
                 }
             }
 
-            // Listen address changes drive what the node advertises.
+            // Listener changes drive what the node advertises.
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!(%address, "listening on new address");
-                if !self.bound_addrs.contains(address) {
-                    self.bound_addrs.push(address.clone());
-                    self.readvertise();
-                }
+                self.readvertise();
             }
             SwarmEvent::ExpiredListenAddr { address, .. } => {
                 info!(%address, "listen address expired");
-                self.bound_addrs.retain(|bound| bound != address);
                 self.readvertise();
             }
-            SwarmEvent::ListenerClosed { addresses, .. } => {
-                self.bound_addrs.retain(|bound| !addresses.contains(bound));
-                self.readvertise();
-            }
+            SwarmEvent::ListenerClosed { .. } => self.readvertise(),
 
             // External address discovery
             SwarmEvent::ExternalAddrConfirmed { address } => {
