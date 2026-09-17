@@ -18,6 +18,7 @@ use tokio::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     instance::{self, InstanceIo, RunnerError, RunnerResult},
@@ -265,43 +266,53 @@ async fn run_instance_inner(
         Sniffer::new(i64::try_from(nodes).expect("node count fits i64"), peer_idx),
     ));
 
+    // `JoinSet::spawn` starts each task with an empty span stack, just like
+    // `tokio::spawn`, so the `qbft` topic opened by this function would not
+    // reach any of the instance's subtasks. Charon gets this for free by
+    // passing the instance `ctx` into every goroutine; here the span is
+    // re-attached to each spawned future by hand.
+    let qbft_span = tracing::Span::current();
+
     let mut tasks = JoinSet::new();
-    tasks.spawn(bridge_mpsc_to_crossbeam(
-        instance_ct.clone(),
-        inner_recv_rx,
-        core_recv_tx,
-    ));
-    tasks.spawn(bridge_mpsc_to_crossbeam(
-        instance_ct.clone(),
-        hash_rx,
-        core_hash_tx,
-    ));
-    tasks.spawn(bridge_mpsc_to_crossbeam(
-        instance_ct.clone(),
-        verify_rx,
-        core_verify_tx,
-    ));
+    tasks.spawn(
+        bridge_mpsc_to_crossbeam(instance_ct.clone(), inner_recv_rx, core_recv_tx)
+            .instrument(qbft_span.clone()),
+    );
+    tasks.spawn(
+        bridge_mpsc_to_crossbeam(instance_ct.clone(), hash_rx, core_hash_tx)
+            .instrument(qbft_span.clone()),
+    );
+    tasks.spawn(
+        bridge_mpsc_to_crossbeam(instance_ct.clone(), verify_rx, core_verify_tx)
+            .instrument(qbft_span.clone()),
+    );
 
     {
         let transport = Arc::clone(&transport);
         let instance_ct = instance_ct.clone();
         let transport_error = Arc::clone(&transport_error);
-        tasks.spawn(async move {
-            if let Err(err) = transport.process_receives(instance_ct, outer_rx).await {
-                *transport_error
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(err.to_string());
+        tasks.spawn(
+            async move {
+                if let Err(err) = transport.process_receives(instance_ct, outer_rx).await {
+                    *transport_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(err.to_string());
+                }
             }
-        });
+            .instrument(qbft_span.clone()),
+        );
     }
 
     {
         let instance_ct = instance_ct.clone();
         let core_cts = Arc::clone(&core_cts);
-        tasks.spawn(async move {
-            instance_ct.cancelled().await;
-            core_cts.cancel();
-        });
+        tasks.spawn(
+            async move {
+                instance_ct.cancelled().await;
+                core_cts.cancel();
+            }
+            .instrument(qbft_span.clone()),
+        );
     }
 
     let decide_callback: DecideCallback = {
@@ -379,7 +390,11 @@ async fn run_instance_inner(
 
     let core_ct_for_run = core_ct.clone();
     let core_duty = duty.clone();
+    // The blocking core runs the `Definition` callbacks, which log their own
+    // warnings; entering the span keeps those on `topic="qbft"`.
+    let core_span = qbft_span.clone();
     let core_result = tokio::task::spawn_blocking(move || {
+        let _entered = core_span.enter();
         qbft::run(
             &core_ct_for_run,
             &def,

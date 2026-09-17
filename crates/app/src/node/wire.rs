@@ -48,6 +48,7 @@ use pluto_eth2api::{
 };
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::node::AppError;
 
@@ -635,8 +636,11 @@ pub async fn wire_core_workflow(
             move |duty: Duty, value: pbcore::UnsignedDataSet| {
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
-                let span = tracing::debug_span!("app-start", topic = "app-start");
-                tokio::spawn(tracing::Instrument::instrument(
+                // `tokio::spawn` starts the task with an empty span stack, so
+                // re-attach the caller's span: this callback runs during core
+                // wiring, under the node's `app-start` topic.
+                let span = tracing::Span::current();
+                tokio::spawn(
                     async move {
                         let core_set = match unsigneddata::unsigned_data_set_from_proto(
                             &duty.duty_type,
@@ -659,9 +663,9 @@ pub async fn wire_core_workflow(
                             }
                         };
                         tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-                    },
-                    span,
-                ));
+                    }
+                    .instrument(span),
+                );
                 Ok(())
             },
         ));

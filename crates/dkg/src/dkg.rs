@@ -7,7 +7,7 @@ use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument as _, Span, debug, error, info, warn};
 
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
@@ -581,7 +581,13 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let sync_clients = handlers.sync.clone();
     let sync_server = handlers.sync_server.clone();
     let network_ct = ct.child_token();
-    let network_task = pluto_tracing::spawn(drive_dkg_network(node, network_ct.clone()));
+    // A bare `tokio::spawn` starts the driver with an empty span stack, which
+    // would drop the `dkg` topic set by `run` and count the driver's warnings
+    // on `app_log_warn_total{topic=""}`. Re-attach the current span so the
+    // subtask keeps it, mirroring charon passing `context.Context` into the
+    // goroutine.
+    let network_task =
+        tokio::spawn(drive_dkg_network(node, network_ct.clone()).instrument(Span::current()));
 
     let result = run_ceremony()
         .conf(&conf)

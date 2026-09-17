@@ -23,6 +23,7 @@ pub use config::AppConfig;
 
 use std::{
     collections::HashMap,
+    future::Future,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -37,6 +38,7 @@ use pluto_testutil::{
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use behaviour::{CoreBehaviour, CoreHandles};
 use wire::{ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, WiredComponents};
@@ -217,6 +219,21 @@ impl App {
     pub async fn run(self, ct: CancellationToken) -> Result<(), AppError> {
         run(self.config, ct).await
     }
+}
+
+/// Puts a long-lived background task under the `app-start` topic.
+///
+/// Charon's lifecycle manager hands every background hook a
+/// `log.WithTopic(context.Background(), "app-start")` context
+/// (`app/lifecycle/hook.go`), so a task that never sets a topic of its own
+/// still reports under `app-start`. `tokio::spawn` has no such inheritance —
+/// it starts the task with an empty span stack — so the span is attached here
+/// instead, at the one place background tasks are started.
+///
+/// Tasks that open their own topic span (`sched`, `tracker`, `health`, …)
+/// shadow this one, exactly as a nested `log.WithTopic` does in Go.
+fn background<F: Future>(task: F) -> tracing::instrument::Instrumented<F> {
+    task.instrument(tracing::debug_span!("app-start", topic = "app-start"))
 }
 
 /// Loads the cluster lock + key, builds the consensus component and P2P
@@ -698,37 +715,37 @@ async fn run_lifecycle(
 
     // Supervise the scheduler actor alongside the other long-lived tasks so
     // its exit triggers node shutdown (it only exits on cancellation).
-    tasks.extend([async move {
+    tasks.extend([background(async move {
         let _ = scheduler_task.await;
         Ok::<(), AppError>(())
-    }]);
+    })]);
 
     // Swarm drive loop (push-based routing inside behaviours).
     {
         let ct = ct.clone();
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             drive_network(node, ct).await;
             Ok(())
-        });
+        }));
     }
 
     // ParSigDB trim task.
     {
         let parsigdb = Arc::clone(&parsigdb);
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
             Ok(())
-        });
+        }));
     }
 
     // Networked inclusion checker: polls the beacon node once per due slot and
     // resolves each tracked duty's on-chain inclusion step.
     {
         let ct = ct.clone();
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             inclusion_checker.run(ct).await;
             Ok(())
-        });
+        }));
     }
 
     // Private-key lock maintenance loop. Only spawn `run` when locking is
@@ -738,7 +755,9 @@ async fn run_lifecycle(
         let svc = Arc::clone(svc);
         // A lock-maintenance failure fails the run (Charon parity); a graceful
         // `close()` returns `Ok`.
-        tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
+        tasks.spawn(background(async move {
+            svc.run().await.map_err(AppError::PrivKeyLock)
+        }));
     }
 
     // ---- Monitoring API ----
@@ -778,10 +797,10 @@ async fn run_lifecycle(
             Box::new(health::ViseGatherer),
             num_validators,
         );
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             checker.run(ct).await;
             Ok(())
-        });
+        }));
     }
 
     // Validator API axum server. Each request bumps the readiness "vc
@@ -795,20 +814,20 @@ async fn run_lifecycle(
             }
         },
     ));
-    tasks.spawn(serve_validator_api(
+    tasks.spawn(background(serve_validator_api(
         validator_api_addr,
         validator_api_router,
         ct.clone(),
-    ));
+    )));
 
     // Monitoring HTTP server (metrics + livez + readyz).
-    tasks.spawn(serve_monitoring_api(
+    tasks.spawn(background(serve_monitoring_api(
         monitoring_addr,
         monitoringapi::router_with_state(
             monitoringapi::MonitoringState::new(readiness).with_labels(monitoring_labels),
         ),
         ct.clone(),
-    ));
+    )));
 
     // Supervise: stop on cancellation or first task completion. A failed task
     // fails the whole run (Charon parity).

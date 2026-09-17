@@ -6,6 +6,7 @@ use std::{
 use backon::{BackoffBuilder, Retryable};
 use tokio::{sync, task::JoinHandle};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
+use tracing::Instrument as _;
 
 use crate::{scheduler::metrics::SCHEDULER_METRICS, types};
 use pluto_eth2api::{v1, valcache};
@@ -121,7 +122,7 @@ impl SchedulerBuilder {
         // TODO: We might want to return a handle so clients can `.abort()` them
         // to drop the subscription
         let label: Arc<str> = Arc::from(label.as_ref());
-        tokio::spawn(async move {
+        let pump = async move {
             loop {
                 match rx.recv().await {
                     Ok(slot) => {
@@ -129,11 +130,12 @@ impl SchedulerBuilder {
                         // delay later slots for this subscriber.
                         let fut = f(&slot);
                         let label = Arc::clone(&label);
-                        tokio::spawn(async move {
+                        let emit = async move {
                             if let Err(err) = fut.await {
                                 tracing::error!(err = ?err, slot = %slot.slot, label = &*label, "Emit scheduled slot event");
                             }
-                        });
+                        };
+                        tokio::spawn(emit.instrument(sched_span()));
                     }
                     // NOTE: Handlers are spawned per event above, so the
                     // receive loop drains immediately. Lag therefore no longer
@@ -157,7 +159,8 @@ impl SchedulerBuilder {
                     Err(sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
+        };
+        tokio::spawn(pump.instrument(sched_span()));
     }
 
     /// Subscribes a callback function for triggered duties.
@@ -170,7 +173,7 @@ impl SchedulerBuilder {
         let mut rx = self.duty_broadcast.subscribe();
 
         let label: Arc<str> = Arc::from(label.as_ref());
-        tokio::spawn(async move {
+        let pump = async move {
             loop {
                 match rx.recv().await {
                     Ok((duty, set)) => {
@@ -181,11 +184,12 @@ impl SchedulerBuilder {
                         // subscriber.
                         let fut = f(&duty, &set);
                         let label = Arc::clone(&label);
-                        tokio::spawn(async move {
+                        let trigger = async move {
                             if let Err(err) = fut.await {
                                 tracing::error!(err = ?err, %duty, label = &*label, "Trigger duty subscriber error");
                             }
-                        });
+                        };
+                        tokio::spawn(trigger.instrument(sched_span()));
                     }
                     // NOTE: Same as in `subscribe_slot`
                     Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -195,7 +199,8 @@ impl SchedulerBuilder {
                     Err(sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
+        };
+        tokio::spawn(pump.instrument(sched_span()));
     }
 
     /// Add a source of chain reorgs to the scheduler.
@@ -295,6 +300,18 @@ impl SchedulerHandle {
 
         rx.await.map_err(|_| SchedulerError::Terminated)?
     }
+}
+
+/// The scheduler's `sched` topic span.
+///
+/// Charon opens it once in `Scheduler.Run` and every goroutine started from
+/// there inherits it through `context.Context`, so subscriber and slot-ticker
+/// errors are all reported under `sched`. `tokio::spawn` starts a task with an
+/// empty span stack instead, and several of these tasks are started from
+/// wiring code rather than from the actor loop, so each opens the span itself
+/// rather than inheriting one.
+fn sched_span() -> tracing::Span {
+    tracing::debug_span!("sched", topic = "sched")
 }
 
 struct SchedulerActor {
@@ -429,23 +446,26 @@ impl SchedulerActor {
             let ct = ct.clone();
             let slot = slot.clone();
             let broadcast = self.duty_broadcast.clone();
-            tokio::spawn(async move {
-                if delay_slot_offset(&slot, &duty)
-                    .with_cancellation_token_owned(ct)
-                    .await
-                    .is_none()
-                {
-                    // Cancelled early
-                    return;
+            tokio::spawn(
+                async move {
+                    if delay_slot_offset(&slot, &duty)
+                        .with_cancellation_token_owned(ct)
+                        .await
+                        .is_none()
+                    {
+                        // Cancelled early
+                        return;
+                    }
+
+                    SCHEDULER_METRICS.duty_total[&duty.duty_type.to_string()]
+                        .inc_by(def_set.len() as u64);
+
+                    // NOTE: Ignore send errors, it means that there are no
+                    // subscribers.
+                    let _ = broadcast.send((duty.clone(), def_set.clone()));
                 }
-
-                SCHEDULER_METRICS.duty_total[&duty.duty_type.to_string()]
-                    .inc_by(def_set.len() as u64);
-
-                // NOTE: Ignore send errors, it means that there are no
-                // subscribers.
-                let _ = broadcast.send((duty.clone(), def_set.clone()));
-            });
+                .instrument(sched_span()),
+            );
         }
 
         if slot.last_in_epoch()
@@ -657,7 +677,7 @@ async fn new_slot_ticker(
     };
 
     let (tx, rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
-    tokio::spawn(async move {
+    let ticker = async move {
         let mut slot = current_slot();
 
         loop {
@@ -695,7 +715,8 @@ async fn new_slot_ticker(
 
             slot = next_slot;
         }
-    });
+    };
+    tokio::spawn(ticker.instrument(sched_span()));
 
     Ok(rx)
 }
