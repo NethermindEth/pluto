@@ -31,16 +31,24 @@ fn tcp_port(addr: &Multiaddr) -> Option<u16> {
     })
 }
 
-/// Drives `node` until it has reported `want` listen addresses.
-async fn listen_addrs(node: &mut ClientNode, want: usize) -> Vec<Multiaddr> {
+/// Drives `node` until it has reported both a direct and a relayed listen
+/// address, and returns the direct one.
+async fn direct_listen_addr(node: &mut ClientNode) -> Multiaddr {
     timeout(TEST_TIMEOUT, async {
-        let mut addrs = Vec::with_capacity(want);
-        while addrs.len() < want {
+        let mut direct = None;
+        let mut relayed = false;
+        loop {
             if let SwarmEvent::NewListenAddr { address, .. } = node.select_next_some().await {
-                addrs.push(address);
+                if is_relay_addr(&address) {
+                    relayed = true;
+                } else {
+                    direct = Some(address);
+                }
+                if relayed && let Some(addr) = &direct {
+                    return addr.clone();
+                }
             }
         }
-        addrs
     })
     .await
     .expect("timed out waiting for the listen addresses")
@@ -88,11 +96,7 @@ async fn advertises_own_bound_ports_only() {
     )
     .expect("build node B");
 
-    let bound = listen_addrs(&mut node_a, 2)
-        .await
-        .into_iter()
-        .find(|addr| !is_relay_addr(addr))
-        .expect("A must report its TCP listen address");
+    let bound = direct_listen_addr(&mut node_a).await;
     let bound_port = tcp_port(&bound).expect("bound TCP port");
     assert!(bound_port != 0, "kernel must have assigned a port");
 
@@ -128,8 +132,6 @@ async fn advertises_own_bound_ports_only() {
         "external address {external} missing from {advertised:?}",
     );
 
-    // Neither the configured port 0 nor the relay's port may appear: every
-    // non-circuit address carries the port A actually bound.
     assert!(
         advertised
             .iter()
