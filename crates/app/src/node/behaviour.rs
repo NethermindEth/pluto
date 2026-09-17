@@ -214,7 +214,7 @@ pub(crate) async fn wire_p2p(
     // checker observes the same shared peer/connection state the swarm updates.
     let p2p_context_for_handle = p2p_context.clone();
 
-    // Charon's `wireP2P` picks the node type off the same flag.
+    // Mirrors Charon's `wireP2P`.
     let node_type = if feature_set.enabled(pluto_featureset::Feature::Quic) {
         NodeType::QUIC
     } else {
