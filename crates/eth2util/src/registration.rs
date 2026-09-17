@@ -15,6 +15,7 @@ pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 const REGISTRATION_DOMAIN_TYPE: DomainType = [0x00, 0x00, 0x00, 0x01];
 
 /// Registration error.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {
     /// Invalid fee recipient address.
@@ -94,9 +95,7 @@ mod tests {
         let result = new_message(pubkey, fee_recipient, gas_limit, timestamp);
         assert!(matches!(
             result,
-            Err(RegistrationError::InvalidAddress(
-                crate::helpers::HelperError::InvalidAddress(_)
-            ))
+            Err(RegistrationError::InvalidAddress(ref e)) if matches!(**e, crate::helpers::HelperError::InvalidAddress(_))
         ));
     }
 

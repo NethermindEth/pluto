@@ -10,6 +10,7 @@ use tracing_subscriber::{
 use crate::{config::TracingConfig, layers::metrics::MetricsLayer};
 
 /// Error type for tracing initialization errors.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to initialize tracing subscriber.

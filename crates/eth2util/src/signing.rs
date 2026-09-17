@@ -79,6 +79,7 @@ impl DomainName {
 }
 
 /// Signing error.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Beacon-node domain lookup failed.

@@ -1057,7 +1057,7 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::Transport)?;
+        .map_err(|e| pluto_eth2api::EthBeaconNodeApiClientError::Transport(e.into()))?;
     Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
         base_url, http,
     )?)

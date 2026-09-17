@@ -227,7 +227,9 @@ fn load_or_create_key(
                 let err = pluto_p2p::k1::K1Error::K1UtilError(
                     pluto_k1util::K1UtilError::FailedToReadFile(io_err),
                 );
-                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err).into());
+                return Err(
+                    pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err.into()).into(),
+                );
             }
 
             let path = k1::key_path(&config.data_dir);

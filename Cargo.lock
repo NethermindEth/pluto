@@ -1303,6 +1303,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "backerror"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "548b52e69629fd3a4cf198bbc661b3bede7489d97b506c69cd562cf15c5bc22b"
+dependencies = [
+ "backerror-macros",
+]
+
+[[package]]
+name = "backerror-macros"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca830ea0fe6f85b117409852dfe0e590af30245b28a1c0e3ad2191bae1bf154b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "backon"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5381,6 +5401,7 @@ name = "pluto-eth1wrap"
 version = "1.7.1"
 dependencies = [
  "alloy",
+ "backerror",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -5392,6 +5413,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "async-trait",
+ "backerror",
  "chrono",
  "ethereum_ssz",
  "ethereum_ssz_derive",
@@ -5422,6 +5444,7 @@ dependencies = [
  "aes",
  "alloy",
  "assert-json-diff",
+ "backerror",
  "base64 0.22.1",
  "chrono",
  "cipher",
@@ -5471,6 +5494,7 @@ dependencies = [
 name = "pluto-frost"
 version = "1.7.1"
 dependencies = [
+ "backerror",
  "blst",
  "hex",
  "rand 0.8.8",
@@ -5508,6 +5532,7 @@ dependencies = [
 name = "pluto-k1util"
 version = "1.7.1"
 dependencies = [
+ "backerror",
  "criterion",
  "hex",
  "k256",
@@ -5589,6 +5614,7 @@ name = "pluto-peerinfo"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "backerror",
  "chrono",
  "clap",
  "futures",
@@ -5657,6 +5683,7 @@ name = "pluto-relay-server"
 version = "1.7.1"
 dependencies = [
  "axum",
+ "backerror",
  "bon",
  "futures",
  "k256",
@@ -5680,6 +5707,7 @@ dependencies = [
 name = "pluto-ssz"
 version = "1.7.1"
 dependencies = [
+ "backerror",
  "ethereum_ssz",
  "hex",
  "k256",
@@ -5739,6 +5767,7 @@ dependencies = [
 name = "pluto-tracing"
 version = "1.7.1"
 dependencies = [
+ "backerror",
  "base64 0.22.1",
  "bon",
  "percent-encoding",

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pluto_eth2api::valcache::{ValidatorCache, ValidatorCacheError};
+use pluto_eth2api::valcache::ValidatorCache;
 
 use crate::{
     bcast::{
@@ -100,10 +100,7 @@ impl Recaster {
         let active_validators: HashSet<PubKey> = self
             .validator_cache
             .get_by_head()
-            .await
-            .map_err(|ValidatorCacheError::EthBeaconNodeApiClientError(source)| {
-                Error::Client(source)
-            })?
+            .await?
             .0
             .pubkeys()
             .map(|pubkey| PubKey::from(*pubkey))

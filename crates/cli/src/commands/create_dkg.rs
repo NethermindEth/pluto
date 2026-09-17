@@ -701,7 +701,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_dkg_invalid(args: CreateDkgArgs, expected_err: &str) {
         let err = run_create_dkg(args).await.unwrap_err();
-        assert_eq!(err.to_string(), expected_err);
+        assert!(err.to_string().starts_with(expected_err), "{err}");
     }
 
     #[test_case(

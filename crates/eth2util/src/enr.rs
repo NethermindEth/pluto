@@ -24,6 +24,7 @@ pub const KEY_TCP: &str = "tcp";
 pub const KEY_UDP: &str = "udp";
 
 /// An error that can occur when parsing an ENR record.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     /// The format of the record is invalid.
@@ -217,7 +218,7 @@ impl TryFrom<&str> for Record {
     fn try_from(enr_str: &str) -> Result<Self, Self::Error> {
         if !enr_str.starts_with("enr:") {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::DoesNotStartWithEnr,
+                InvalidFormatError::DoesNotStartWithEnr.into(),
             ));
         }
 
@@ -230,7 +231,7 @@ impl TryFrom<&str> for Record {
         let base64_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let raw = base64_engine
             .decode(enr_str)
-            .map_err(RecordError::FailedToDecodeBase64)?;
+            .map_err(|e| RecordError::FailedToDecodeBase64(e.into()))?;
 
         let elements = decode_bytes_list(&raw)?;
 
@@ -243,7 +244,7 @@ impl TryFrom<&str> for Record {
 
         if elements.len() % 2 != 0 {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::OddNumberOfElements,
+                InvalidFormatError::OddNumberOfElements.into(),
             ));
         }
 
@@ -268,14 +269,15 @@ impl TryFrom<&str> for Record {
             match key.as_str() {
                 KEY_SECP256K1 => {
                     record.public_key = Some(
-                        PublicKey::from_sec1_bytes(value).map_err(RecordError::Secp256k1Error)?,
+                        PublicKey::from_sec1_bytes(value)
+                            .map_err(|e| RecordError::Secp256k1Error(e.into()))?,
                     );
                 }
                 KEY_ID => {
                     let value_str = String::from_utf8_lossy(value).to_string();
                     if value_str != VAL_ID {
                         return Err(RecordError::InvalidFormat(
-                            InvalidFormatError::NonV4IdentitySchemeNotSupported,
+                            InvalidFormatError::NonV4IdentitySchemeNotSupported.into(),
                         ));
                     }
                 }
@@ -285,7 +287,7 @@ impl TryFrom<&str> for Record {
 
         let Some(public_key) = record.public_key else {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::PublicKeyNotSet,
+                InvalidFormatError::PublicKeyNotSet.into(),
             ));
         };
 

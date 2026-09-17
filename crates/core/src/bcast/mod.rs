@@ -28,6 +28,10 @@ pub enum Error {
     #[error(transparent)]
     Client(#[from] EthBeaconNodeApiClientError),
 
+    /// Validator cache error.
+    #[error(transparent)]
+    ValidatorCache(#[from] ValidatorCacheError),
+
     /// Signed-data conversion error.
     #[error("{context}: {source}")]
     SignedData {
@@ -591,9 +595,7 @@ async fn resolve_active_validators_indices(
     validator_cache: &ValidatorCache,
     epoch: phase0::Epoch,
 ) -> Result<Vec<phase0::ValidatorIndex>> {
-    let (_, validators) = validator_cache.get_by_head().await.map_err(
-        |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client(source),
-    )?;
+    let (_, validators) = validator_cache.get_by_head().await?;
     let mut indices = Vec::new();
 
     for (index, validator) in validators.iter() {
