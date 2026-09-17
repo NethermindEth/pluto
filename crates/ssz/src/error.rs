@@ -47,3 +47,33 @@ pub enum HexDecodeError {
 
 /// Result type used by SSZ helper functions.
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
+
+#[cfg(test)]
+mod tests {
+    use super::HexDecodeError;
+
+    fn decode_hex(input: &str) -> std::result::Result<Vec<u8>, HexDecodeError> {
+        Ok(hex::decode(input)?)
+    }
+
+    #[test]
+    fn located_from_conversion_keeps_message_and_carries_a_trace() {
+        let err = decode_hex("zz").expect_err("`zz` is not valid hex");
+
+        let display = err.to_string();
+        assert!(
+            display.contains("invalid hex string:"),
+            "Display lost the variant message: {display}"
+        );
+        assert!(
+            display.contains(file!()),
+            "Display lost the raise location: {display}"
+        );
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("FromHexError"),
+            "Debug lost the captured trace: {debug}"
+        );
+    }
+}

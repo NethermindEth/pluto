@@ -45,6 +45,14 @@ pluto/
 
 - Default to **functional equivalence** with the Go implementation.
 
+### Error types
+
+A `thiserror` type with an unnamed `#[from]` field carries `#[backerror::backerror]` as its outermost attribute, so the raise location and a stack trace are captured on conversion.
+
+- The field's type becomes `backerror::LocatedError<T>`: build it with `.into()` and match through it with `**`.
+- Generic error types cannot take the attribute.
+- `error!` renders an error with `?err` where it is dropped and with `%err` where it is propagated, so a trace is printed once.
+
 ## Tooling / Quality Gates
 
 Environment:

@@ -194,7 +194,7 @@ async fn resolve_relay(
         {
             Ok(addrs) => addrs,
             Err(e) => {
-                tracing::error!(err = %e, url = %relay_url, "Failed resolving relay addresses from URL");
+                tracing::error!(err = ?e, url = %relay_url, "Failed resolving relay addresses from URL");
                 return;
             }
         };
@@ -225,7 +225,7 @@ async fn resolve_relay(
                     mutable.set(peer);
                 }
                 Err(e) => {
-                    tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");
+                    tracing::error!(err = ?e, addrs = ?addrs, "Failed resolving relay ID from addresses");
                 }
             }
         }

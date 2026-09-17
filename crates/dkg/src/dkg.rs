@@ -906,7 +906,7 @@ async fn start_sync_protocol(
             if let Err(error) = client.run(client_ct).await
                 && !matches!(error, crate::sync::Error::Canceled)
             {
-                error!(%error, "Sync failed to peer");
+                error!(?error, "Sync failed to peer");
                 cancel_on_error.cancel();
             }
         }));

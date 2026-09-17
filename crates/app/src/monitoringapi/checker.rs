@@ -91,7 +91,7 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
     let version = match fetch_node_version(beacon_node).await {
         Ok(version) => version,
         Err(error) => {
-            error!(%error, "Failed to get beacon node version");
+            error!(?error, "Failed to get beacon node version");
             return;
         }
     };
@@ -155,7 +155,7 @@ async fn run_ready_checker(
     } {
         Ok(config) => config,
         Err(error) => {
-            error!(%error, "Failed to initialise ready checker");
+            error!(?error, "Failed to initialise ready checker");
             return;
         }
     };

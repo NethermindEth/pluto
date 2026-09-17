@@ -136,7 +136,7 @@ impl Recaster {
                 };
 
                 if let Err(error) = sub(duty.clone(), set_for_sub).await {
-                    tracing::error!(%error, %duty, "Rebroadcast duty error (will retry next epoch)");
+                    tracing::error!(?error, %duty, "Rebroadcast duty error (will retry next epoch)");
                     instrument_recast_error(&duty);
                 }
 
