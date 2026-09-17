@@ -229,11 +229,10 @@ impl QuicUpgradeBehaviour {
                     "already has direct QUIC connection to peer"
                 );
 
+                // Relayed TCP connections are redundant too, as in Charon.
                 let tcp_conn_ids: Vec<_> = conns
                     .iter()
-                    .filter(|c| {
-                        utils::is_tcp_addr(&c.remote_addr) && !utils::is_relay_addr(&c.remote_addr)
-                    })
+                    .filter(|c| utils::is_tcp_addr(&c.remote_addr))
                     .map(|c| c.connection_id)
                     .collect();
 
@@ -549,10 +548,12 @@ mod tests {
 
         behaviour.run_upgrade_logic();
 
+        let mut closed = closed(&behaviour);
+        closed.sort();
         assert_eq!(
-            closed(&behaviour),
-            vec![ConnectionId::new_unchecked(1)],
-            "only the direct TCP connection is redundant"
+            closed,
+            [1, 3].map(ConnectionId::new_unchecked),
+            "every TCP connection is redundant, relayed ones included"
         );
         assert!(dialed(&behaviour).is_empty());
         assert!(behaviour.pending_upgrades.is_empty());
