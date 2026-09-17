@@ -19,6 +19,7 @@ pub type DutyGaterFn = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
 const DEFAULT_ALLOWED_FUTURE_EPOCHS: u64 = 2;
 
 /// Errors returned while constructing a [`DutyGater`].
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum GaterError {
     /// Failed to fetch beacon node configuration.

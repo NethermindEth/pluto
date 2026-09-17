@@ -120,6 +120,7 @@ where
 }
 
 /// Error type for the memory ParSigDB.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum MemDBError {
     /// Mismatching partial signed data.
@@ -418,7 +419,7 @@ fn get_threshold_matching(
         let root = sig
             .signed_data
             .message_root()
-            .map_err(MemDBError::SignedDataError)?;
+            .map_err(|e| MemDBError::SignedDataError(e.into()))?;
         sigs_by_msg_root.entry(root).or_default().push(sig.clone());
     }
 

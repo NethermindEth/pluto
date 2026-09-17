@@ -2405,7 +2405,7 @@ mod tests {
     #[test_case::test_case(
         None, 0, 0,
         Some(CliError::CreateClusterError(CreateClusterError::DefinitionError(
-            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet)
+            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet.into())
         )))
         ; "no target gas limit with default version"
     )]
@@ -2461,7 +2461,7 @@ mod tests {
                         CliError::CreateClusterError(CreateClusterError::DefinitionError(
                             DefinitionError::InvalidTargetGasLimit(b)
                         )),
-                    ) if a == b
+                    ) if **a == **b
                 ),
                 "expected {expected:?}, got {actual:?}"
             );

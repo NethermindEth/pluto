@@ -14,6 +14,7 @@ use crate::{
 };
 
 /// Error type for sigagg.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum SigAggError {
     /// Threshold must be a positive integer.

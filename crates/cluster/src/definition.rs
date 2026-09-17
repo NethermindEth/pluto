@@ -234,6 +234,7 @@ impl<'de> Deserialize<'de> for Definition {
 }
 
 /// DefinitionError is an error type for definition errors.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum DefinitionError {
     /// Multiple withdrawal or fee recipient addresses found
@@ -517,7 +518,7 @@ impl Definition {
         }
 
         let timestamp = serde_json::from_str::<DateTime<Utc>>(&self.timestamp)
-            .map_err(DefinitionError::FailedToConvertTimestamp)?;
+            .map_err(|e| DefinitionError::FailedToConvertTimestamp(e.into()))?;
 
         Ok(Some(timestamp))
     }
@@ -735,13 +736,13 @@ impl Definition {
 
     /// Sets the definition hashes.
     pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
-        let config_hash =
-            ssz::hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let config_hash = ssz::hash_definition(self, true)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         self.config_hash = config_hash.to_vec();
 
         let definition_hash = ssz::hash_definition(self, false)
-            .map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         self.definition_hash = definition_hash.to_vec();
 
@@ -751,8 +752,8 @@ impl Definition {
     /// `verify_hashes` returns an error if hashes populated from json object
     /// doesn't matches actual hashes.
     pub fn verify_hashes(&self) -> Result<(), DefinitionError> {
-        let config_hash =
-            ssz::hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let config_hash = ssz::hash_definition(self, true)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         if config_hash != self.config_hash.as_slice() {
             return Err(DefinitionError::InvalidConfigHash {
@@ -762,7 +763,7 @@ impl Definition {
         }
 
         let definition_hash = ssz::hash_definition(self, false)
-            .map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         if definition_hash != self.definition_hash.as_slice() {
             return Err(DefinitionError::InvalidDefinitionHash {
@@ -803,7 +804,7 @@ impl Definition {
 
         eth1.verify_smart_contract_based_signature(contract_address, digest_hash, sig)
             .await
-            .map_err(DefinitionError::FailedToVerifyContractSignature)
+            .map_err(|e| DefinitionError::FailedToVerifyContractSignature(e.into()))
     }
 
     /// Returns true if the provided definition version supports partial
@@ -1942,9 +1943,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(DefinitionError::InvalidTargetGasLimit(
-                InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit
-            ))
+            Err(DefinitionError::InvalidTargetGasLimit(ref e)) if matches!(**e, InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit)
         ));
     }
 
@@ -1959,9 +1958,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(DefinitionError::InvalidTargetGasLimit(
-                InvalidGasLimitError::GasLimitNotSet
-            ))
+            Err(DefinitionError::InvalidTargetGasLimit(ref e)) if matches!(**e, InvalidGasLimitError::GasLimitNotSet)
         ));
     }
 

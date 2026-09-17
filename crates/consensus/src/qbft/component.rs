@@ -114,6 +114,7 @@ pub(crate) enum DecodedValue {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Component construction and inbound admission errors.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Peer order did not fit the wire index type.
@@ -1046,7 +1047,11 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err.to_string(), "value hash not found in values");
+        assert!(
+            err.to_string()
+                .starts_with("value hash not found in values"),
+            "{err}"
+        );
     }
 
     // Parity with charon core/consensus/qbft/msg.go newMsg @ v1.7.1: an
@@ -1117,7 +1122,11 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err.to_string(), "prepared value hash not found in values");
+        assert!(
+            err.to_string()
+                .starts_with("prepared value hash not found in values"),
+            "{err}"
+        );
     }
 
     #[test_case(vec![] ; "empty")]

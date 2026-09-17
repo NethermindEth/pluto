@@ -16,6 +16,7 @@ use pluto_ssz::HashRoot;
 use crate::types::{ParSignedData, Signature};
 
 /// Error type for signed data operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum SignedDataError {
     /// JSON error.

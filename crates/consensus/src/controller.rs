@@ -18,6 +18,7 @@ use crate::{
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Consensus controller error.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to construct the default QBFT consensus implementation.

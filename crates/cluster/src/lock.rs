@@ -28,6 +28,7 @@ const EMPTY_VALIDATOR_PUBKEY: pluto_eth2api::spec::phase0::BLSPubKey = [0; 48];
 const EMPTY_SIGNATURE: pluto_eth2api::spec::phase0::BLSSignature = [0; 96];
 
 /// LockError is the error type for Lock errors.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     /// Unexpected validator registration
@@ -340,7 +341,7 @@ impl Lock {
         // Verify the node signatures
         for idx in 0..self.operators.len() {
             let record = Record::try_from(self.operators[idx].enr.as_str())
-                .map_err(LockError::FailedToParseENR)?;
+                .map_err(|e| LockError::FailedToParseENR(e.into()))?;
 
             let pub_key = record
                 .public_key

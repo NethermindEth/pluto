@@ -22,6 +22,7 @@ use crate::types::{Duty, DutyType, PubKey, SignedData, SignedDataSet};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Broadcaster error.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Beacon node client error.
@@ -312,7 +313,7 @@ impl Broadcaster {
             {
                 Ok(())
             }
-            Err(source) => Err(Error::Client(source)),
+            Err(source) => Err(Error::Client(source.into())),
         }?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestations to beacon node");
@@ -384,7 +385,7 @@ impl Broadcaster {
         }
 
         if let Some(source) = last_error {
-            return Err(Error::Client(source));
+            return Err(Error::Client(source.into()));
         }
 
         Ok(())

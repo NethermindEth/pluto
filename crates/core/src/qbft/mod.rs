@@ -49,6 +49,7 @@ pub trait QbftTypes: 'static {
 }
 
 /// Errors returned by the QBFT core.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     /// Round timer expired before compare completed.
@@ -866,7 +867,7 @@ fn compare<T: QbftTypes>(
             recv(timer_chan) -> msg => {
                 compare_cts.cancel();
                 if let Err(err) = msg {
-                    return (result, Err(QbftError::ChannelError(err)));
+                    return (result, Err(QbftError::ChannelError(err.into())));
                 }
 
                 return (result, Err(QbftError::TimeoutError));

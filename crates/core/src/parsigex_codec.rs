@@ -21,6 +21,7 @@ use crate::{
 };
 
 /// Error type for partial signature exchange codec operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum ParSigExCodecError {
     /// Missing duty or data set fields.

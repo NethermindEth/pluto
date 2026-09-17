@@ -185,9 +185,12 @@ impl Exchanger {
                     let sig_type = duty.slot.inner();
                     handle.broadcast_and_wait(duty, set).await.map_err(|e| {
                         warn!(sig_type, error = %e, "Failed to broadcast parsigex data during DKG");
-                        MemDBError::InternalSubscriber(InternalSubscriberError::ParsigexBroadcast {
-                            source: Box::new(e),
-                        })
+                        MemDBError::InternalSubscriber(
+                            InternalSubscriberError::ParsigexBroadcast {
+                                source: Box::new(e),
+                            }
+                            .into(),
+                        )
                     })?;
                     Ok(())
                 }

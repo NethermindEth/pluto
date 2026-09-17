@@ -5220,6 +5220,7 @@ dependencies = [
 name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
+ "backerror",
  "bon",
  "chrono",
  "hex",
@@ -5255,6 +5256,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "backerror",
  "cancellation",
  "chrono",
  "clap",
@@ -5294,6 +5296,7 @@ dependencies = [
  "alloy",
  "async-trait",
  "axum",
+ "backerror",
  "backon",
  "base64 0.22.1",
  "bon",
@@ -5587,6 +5590,7 @@ name = "pluto-parsigex"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "backerror",
  "clap",
  "either",
  "futures",

@@ -26,6 +26,7 @@ use crate::{
 
 /// Error returned while resolving the signing epoch for, or verifying, an
 /// [`Eth2SignedData`].
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Eth2SignedDataError {
     /// Failure while extracting the message root or epoch from the payload.
@@ -483,7 +484,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            Eth2SignedDataError::Signing(SigningError::ZeroSignature)
+            Eth2SignedDataError::Signing(ref e) if matches!(**e, SigningError::ZeroSignature)
         ));
     }
 

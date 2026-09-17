@@ -817,6 +817,7 @@ impl Component {
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
@@ -1220,7 +1221,7 @@ impl Handler for Component {
                     .await
                     .map_err(|err| {
                         signing_error_to_api_error(
-                            err,
+                            err.into(),
                             "aggregate selection proof verification failed",
                         )
                     })?;
@@ -1740,7 +1741,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    signing_error_to_api_error(err, "invalid sync committee selection proof")
+                    signing_error_to_api_error(err.into(), "invalid sync committee selection proof")
                 })?;
             }
 
@@ -2118,15 +2119,18 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 /// with `invalid_msg`; anything else — e.g. a public key from the cluster
 /// lock or validator cache that is not a valid BLS point — is server-side
 /// state, so 500.
-fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+fn signing_error_to_api_error(
+    err: backerror::LocatedError<SigningError>,
+    invalid_msg: impl Into<String>,
+) -> ApiError {
     use pluto_crypto::types::Error as CryptoError;
 
-    let beacon_node_failure = match &err {
+    let beacon_node_failure = match &*err {
         SigningError::BeaconNode(_) => true,
         SigningError::Helper(e) => matches!(**e, HelperError::GettingSpec(_)),
         _ => false,
     };
-    let invalid_signature = match &err {
+    let invalid_signature = match &*err {
         SigningError::ZeroSignature | SigningError::UnknownAggregateAndProofVersion => true,
         SigningError::Verification(e) => matches!(
             **e,
@@ -3546,7 +3550,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+                VerifyPartialSigError::Signing(ref e) if matches!(**e, SigningError::BeaconNode(_))
             ),
             "expected upstream signing error, got {err:?}"
         );
@@ -3559,7 +3563,7 @@ mod tests {
     /// Genuine signature failures keep mapping to 400.
     #[test]
     fn verify_partial_sig_error_maps_signature_failures_to_400() {
-        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature.into());
         assert_eq!(
             verify_partial_sig_error(err).status_code,
             StatusCode::BAD_REQUEST
