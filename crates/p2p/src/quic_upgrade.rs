@@ -429,10 +429,50 @@ impl NetworkBehaviour for QuicUpgradeBehaviour {
 
 #[cfg(test)]
 mod tests {
+    use libp2p::swarm::CloseConnection;
+
     use super::*;
+    use crate::p2p_context::Peer;
+
+    const RELAY_ID: &str = "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT";
+    const TCP: &str = "/ip4/10.0.0.2/tcp/3610";
+    const QUIC: &str = "/ip4/10.0.0.2/udp/3630/quic-v1";
 
     fn behaviour() -> QuicUpgradeBehaviour {
         QuicUpgradeBehaviour::new(P2PContext::default(), PeerId::random(), true)
+    }
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    fn relayed(transport: &str) -> Multiaddr {
+        addr(&format!("{transport}/p2p/{RELAY_ID}/p2p-circuit"))
+    }
+
+    /// A behaviour that knows `peer`, holds the given `(connection id, remote
+    /// address)` connections to it, and has learned `addrs` for it via
+    /// identify.
+    fn connected(
+        quic_enabled: bool,
+        peer: PeerId,
+        conns: &[(usize, Multiaddr)],
+        addrs: &[Multiaddr],
+    ) -> QuicUpgradeBehaviour {
+        let local = PeerId::random();
+        let ctx = P2PContext::new([local, peer]);
+        {
+            let mut store = ctx.peer_store_write_lock();
+            for (id, remote_addr) in conns {
+                store.add_peer(Peer {
+                    id: peer,
+                    connection_id: ConnectionId::new_unchecked(*id),
+                    remote_addr: remote_addr.clone(),
+                });
+            }
+            store.set_peer_addresses(peer, addrs.to_vec());
+        }
+        QuicUpgradeBehaviour::new(ctx, local, quic_enabled)
     }
 
     /// The reason carried by the queued `UpgradeFailed` event for `peer`.
@@ -447,6 +487,201 @@ mod tests {
                 }) if failed == peer => Some(reason.clone()),
                 _ => None,
             })
+    }
+
+    /// Peers the queued `Dial` events target.
+    fn dialed(behaviour: &QuicUpgradeBehaviour) -> Vec<PeerId> {
+        behaviour
+            .pending_events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::Dial { opts } => opts.get_peer_id(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Connections the queued `CloseConnection` events close.
+    fn closed(behaviour: &QuicUpgradeBehaviour) -> Vec<ConnectionId> {
+        behaviour
+            .pending_events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::CloseConnection {
+                    connection: CloseConnection::One(id),
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Peers the queued `Upgraded` events report.
+    fn upgraded(behaviour: &QuicUpgradeBehaviour) -> Vec<PeerId> {
+        behaviour
+            .pending_events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::GenerateEvent(QuicUpgradeEvent::Upgraded { peer }) => Some(*peer),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn tick_dials_the_quic_addrs_of_a_tcp_connected_peer() {
+        let peer = PeerId::random();
+        let mut behaviour = connected(
+            true,
+            peer,
+            &[(1, addr(TCP))],
+            &[addr(TCP), addr(QUIC), relayed(QUIC)],
+        );
+
+        behaviour.run_upgrade_logic();
+
+        assert_eq!(dialed(&behaviour), vec![peer]);
+        assert!(
+            closed(&behaviour).is_empty(),
+            "TCP stays up until QUIC is established"
+        );
+        let Some(UpgradeState::DialingQuic { tcp_conn_ids }) =
+            behaviour.pending_upgrades.get(&peer)
+        else {
+            panic!("upgrade must be armed for {peer}");
+        };
+        assert_eq!(tcp_conn_ids, &[ConnectionId::new_unchecked(1)]);
+
+        // An armed upgrade is not dialed again on the next tick.
+        behaviour.run_upgrade_logic();
+        assert_eq!(dialed(&behaviour).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tick_is_a_noop_on_a_tcp_only_node() {
+        let peer = PeerId::random();
+        let mut behaviour = connected(false, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+
+        behaviour.run_upgrade_logic();
+
+        assert!(behaviour.pending_events.is_empty());
+        assert!(behaviour.pending_upgrades.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tick_skips_peers_that_cannot_be_upgraded() {
+        let peer = PeerId::random();
+        let cases = [
+            ("no connection", vec![], vec![addr(QUIC)]),
+            (
+                "only a relayed TCP connection",
+                vec![(1, relayed(TCP))],
+                vec![addr(QUIC)],
+            ),
+            (
+                "no direct QUIC address",
+                vec![(1, addr(TCP))],
+                vec![addr(TCP), relayed(QUIC)],
+            ),
+        ];
+
+        for (case, conns, addrs) in cases {
+            let mut behaviour = connected(true, peer, &conns, &addrs);
+
+            behaviour.run_upgrade_logic();
+
+            assert!(behaviour.pending_events.is_empty(), "{case}");
+            assert!(behaviour.pending_upgrades.is_empty(), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tick_closes_redundant_tcp_once_direct_quic_exists() {
+        let peer = PeerId::random();
+        let mut behaviour = connected(
+            true,
+            peer,
+            &[(1, addr(TCP)), (2, addr(QUIC)), (3, relayed(TCP))],
+            &[addr(QUIC)],
+        );
+
+        behaviour.run_upgrade_logic();
+
+        assert_eq!(
+            closed(&behaviour),
+            vec![ConnectionId::new_unchecked(1)],
+            "only the direct TCP connection is redundant"
+        );
+        assert!(dialed(&behaviour).is_empty());
+        assert!(behaviour.pending_upgrades.is_empty());
+    }
+
+    #[tokio::test]
+    async fn quic_connection_completes_the_upgrade() {
+        let peer = PeerId::random();
+        let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+        // An elapsed backoff left over from an earlier failure.
+        behaviour.backoffs.insert(
+            peer,
+            QuicUpgradeBackoff {
+                tickers_remaining: 0,
+                backoff_duration: 4,
+            },
+        );
+        behaviour.run_upgrade_logic();
+        assert_eq!(dialed(&behaviour), vec![peer]);
+
+        behaviour.handle_connection_established(peer, &addr(QUIC));
+
+        assert_eq!(upgraded(&behaviour), vec![peer]);
+        assert_eq!(closed(&behaviour), vec![ConnectionId::new_unchecked(1)]);
+        assert!(behaviour.pending_upgrades.is_empty());
+        assert!(
+            !behaviour.backoffs.contains_key(&peer),
+            "success clears the backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_quic_connection_during_upgrade_records_a_failure() {
+        let peer = PeerId::random();
+        let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+        behaviour.run_upgrade_logic();
+
+        behaviour.handle_connection_established(peer, &addr(TCP));
+
+        assert!(upgraded(&behaviour).is_empty());
+        assert!(closed(&behaviour).is_empty(), "the TCP connection is kept");
+        assert_eq!(
+            failure_reason(&behaviour, &peer).as_deref(),
+            Some("connected via non-direct address instead of direct QUIC")
+        );
+        assert!(behaviour.pending_upgrades.is_empty());
+        assert!(behaviour.should_skip(&peer), "failure arms the backoff");
+    }
+
+    #[tokio::test]
+    async fn dial_failure_during_upgrade_records_a_failure() {
+        let peer = PeerId::random();
+        let other = PeerId::random();
+        let mut behaviour = connected(true, peer, &[(1, addr(TCP))], &[addr(QUIC)]);
+        behaviour.run_upgrade_logic();
+
+        // Dial failures for peers with no armed upgrade are not this
+        // behaviour's.
+        behaviour.handle_dial_failure(Some(other));
+        behaviour.handle_dial_failure(None);
+        assert!(failure_reason(&behaviour, &other).is_none());
+
+        behaviour.handle_dial_failure(Some(peer));
+
+        assert_eq!(
+            failure_reason(&behaviour, &peer).as_deref(),
+            Some("dial failed")
+        );
+        assert!(closed(&behaviour).is_empty(), "the TCP connection is kept");
+        assert!(behaviour.pending_upgrades.is_empty());
+        assert!(behaviour.should_skip(&peer), "failure arms the backoff");
     }
 
     #[test]
