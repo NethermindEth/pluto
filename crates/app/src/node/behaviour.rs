@@ -96,8 +96,7 @@ pub(crate) struct WireP2PParams {
 }
 
 /// Composes the core behaviours and builds the libp2p [`Node`].
-// TODO(#402 part B): QUIC transport (featureset-gated off at v1.7.1) and
-// bandwidth metrics.
+// TODO(#402 part B): bandwidth metrics.
 pub(crate) async fn wire_p2p(
     params: WireP2PParams,
 ) -> Result<(Node<CoreBehaviour>, CoreHandles), AppError> {
@@ -215,10 +214,19 @@ pub(crate) async fn wire_p2p(
     // checker observes the same shared peer/connection state the swarm updates.
     let p2p_context_for_handle = p2p_context.clone();
 
+    // A QUIC node listens on the configured UDP addresses alongside TCP and
+    // upgrades direct TCP connections to QUIC (Charon's `wireP2P` picks
+    // `NodeTypeQUIC` off the same featureset flag).
+    let node_type = if feature_set.enabled(pluto_featureset::Feature::Quic) {
+        NodeType::QUIC
+    } else {
+        NodeType::TCP
+    };
+
     let node = Node::new(
         p2p_config,
         key,
-        NodeType::TCP,
+        node_type,
         false,
         p2p_context,
         |builder, _keypair, relay_client| {
