@@ -16,6 +16,7 @@ const STALE_DURATION: Duration = Duration::from_secs(5);
 const UPDATE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Error type for private key lock operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum PrivKeyLockError {
     /// I/O error on the private key lock file.

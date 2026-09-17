@@ -26,6 +26,7 @@ const NODE_SIG_MSG_ID: &str = "/charon/dkg/node_sig";
 const NONE_DATA: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
 /// Error returned by [`NodeSigBcast`] operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Signing the lock hash with the local K1 key failed.
@@ -485,7 +486,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             error,
-            Error::Broadcast(bcast::Error::BroadcastFailed(_))
+            Error::Broadcast(ref e) if matches!(**e, bcast::Error::BroadcastFailed(_))
         ));
 
         let _ = stop_tx.send(());

@@ -525,7 +525,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
     def.operators = ops;
     def.set_definition_hashes()
-        .map_err(CreateClusterError::DefinitionError)?;
+        .map_err(|e| CreateClusterError::DefinitionError(e.into()))?;
 
     let keys_to_disk = args.keymanager_addrs.is_empty();
 
@@ -586,8 +586,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     lock.signature_aggregate = agg_sign(&share_sets, &lock.lock_hash)?;
 
     for op_key in &node_keys {
-        let node_sig =
-            pluto_k1util::sign(op_key, &lock.lock_hash).map_err(CreateClusterError::K1UtilError)?;
+        let node_sig = pluto_k1util::sign(op_key, &lock.lock_hash)
+            .map_err(|e| CreateClusterError::K1UtilError(e.into()))?;
         lock.node_signatures.push(node_sig.to_vec());
     }
 
@@ -605,7 +605,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
     if args.zipped {
         app_utils::bundle_output(&args.cluster_dir, "cluster.tar.gz")
-            .map_err(CreateClusterError::BundleOutputError)?;
+            .map_err(|e| CreateClusterError::BundleOutputError(e.into()))?;
     }
 
     if args.split_keys {
@@ -633,16 +633,16 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
 async fn write_lock_to_api(publish_addr: &str, lock: &Lock) -> Result<String> {
     let client = obolapi::Client::new(publish_addr, obolapi::ClientOptions::default())
-        .map_err(CreateClusterError::ObolApiError)?;
+        .map_err(|e| CreateClusterError::ObolApiError(e.into()))?;
     match client.publish_lock(lock.clone()).await {
         Ok(()) => {
             info!(addr = publish_addr, "Published lock file");
             match client.launchpad_url_for_lock(lock) {
                 Ok(url) => Ok(url),
-                Err(err) => Err(CreateClusterError::ObolApiError(err)),
+                Err(err) => Err(CreateClusterError::ObolApiError(err.into())),
             }
         }
-        Err(err) => Err(CreateClusterError::ObolApiError(err)),
+        Err(err) => Err(CreateClusterError::ObolApiError(err.into())),
     }
 }
 
@@ -1104,8 +1104,8 @@ fn validate_create_config(args: &CreateClusterArgs) -> Result<()> {
     }
 
     for addr in &args.keymanager_addrs {
-        let keymanager_url =
-            url::Url::parse(addr).map_err(CreateClusterError::InvalidKeymanagerUrl)?;
+        let keymanager_url = url::Url::parse(addr)
+            .map_err(|e| CreateClusterError::InvalidKeymanagerUrl(e.into()))?;
 
         if keymanager_url.scheme() == HTTP_SCHEME {
             warn!(addr, "Keymanager URL does not use https protocol");
@@ -2390,6 +2390,20 @@ mod tests {
         "/../cluster/src/examples/cluster-definition-005.json"
     );
 
+    /// The target-gas-limit failure nested inside `err`, if that is what it is.
+    fn invalid_target_gas_limit(err: &CliError) -> Option<&InvalidGasLimitError> {
+        let CliError::CreateClusterError(err) = err else {
+            return None;
+        };
+        let CreateClusterError::DefinitionError(err) = &**err else {
+            return None;
+        };
+        let DefinitionError::InvalidTargetGasLimit(err) = &**err else {
+            return None;
+        };
+        Some(err)
+    }
+
     #[test_case::test_case(
         Some(DEF_PATH_005), 0, 0, None
         ; "target gas limit from unsupported version"
@@ -2405,8 +2419,8 @@ mod tests {
     #[test_case::test_case(
         None, 0, 0,
         Some(CliError::CreateClusterError(CreateClusterError::DefinitionError(
-            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet.into())
-        )))
+            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet.into()).into()
+        ).into()))
         ; "no target gas limit with default version"
     )]
     #[tokio::test]
@@ -2451,18 +2465,10 @@ mod tests {
 
         if let Some(expected) = expected_err {
             let actual = result.unwrap_err();
+            let actual_gas_limit = invalid_target_gas_limit(&actual);
             assert!(
-                matches!(
-                    (&actual, &expected),
-                    (
-                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
-                            DefinitionError::InvalidTargetGasLimit(a)
-                        )),
-                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
-                            DefinitionError::InvalidTargetGasLimit(b)
-                        )),
-                    ) if **a == **b
-                ),
+                actual_gas_limit.is_some()
+                    && actual_gas_limit == invalid_target_gas_limit(&expected),
                 "expected {expected:?}, got {actual:?}"
             );
             return;

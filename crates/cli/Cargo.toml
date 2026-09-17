@@ -11,6 +11,7 @@ name = "pluto"
 path = "src/main.rs"
 
 [dependencies]
+backerror.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 thiserror.workspace = true

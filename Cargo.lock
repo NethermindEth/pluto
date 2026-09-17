@@ -5116,6 +5116,7 @@ name = "pluto-app"
 version = "1.7.1"
 dependencies = [
  "axum",
+ "backerror",
  "backon",
  "bon",
  "chrono",
@@ -5175,6 +5176,7 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "async-trait",
+ "backerror",
  "bytes",
  "chrono",
  "clap",
@@ -5358,6 +5360,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "backerror",
  "bon",
  "chrono",
  "clap",
@@ -5551,6 +5554,7 @@ name = "pluto-p2p"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "backerror",
  "backon",
  "bon",
  "chrono",
@@ -5747,6 +5751,7 @@ version = "1.7.1"
 dependencies = [
  "assert-json-diff",
  "async-trait",
+ "backerror",
  "bon",
  "chrono",
  "hex",

@@ -1,6 +1,7 @@
 use std::{fs, io, path};
 
 /// Error type for util operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum UtilsError {
     /// Underlying IO error occurred.

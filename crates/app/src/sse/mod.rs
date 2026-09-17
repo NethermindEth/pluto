@@ -46,6 +46,7 @@ const TOPICS: [EventTopic; 4] = [
 ];
 
 /// Errors that can occur while setting up or running the SSE listener.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum SseListenerError {
     /// Beacon Node API client error.

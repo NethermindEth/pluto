@@ -7,6 +7,7 @@ use std::{
 use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum DiskError {
     /// Invalid URL.
@@ -124,7 +125,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition hashes verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionError(error));
+            return Err(DiskError::ClusterDefinitionError(error.into()));
         }
     }
     if let Err(error) = def.verify_signatures(eth1cl).await {
@@ -134,7 +135,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition signature verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionError(error));
+            return Err(DiskError::ClusterDefinitionError(error.into()));
         }
     }
 
@@ -247,7 +248,7 @@ pub async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()
             return Err(DiskError::DataDirNotFound(path));
         }
         Err(e) => {
-            return Err(DiskError::IoError(e));
+            return Err(DiskError::IoError(e.into()));
         }
         Ok(meta) if !meta.is_dir() => {
             return Err(DiskError::DataDirIsFile(path));

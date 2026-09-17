@@ -11,6 +11,7 @@ const KEY_BACKUP_DIR: &str = "charon-enr-private-key-backups";
 type Result<T> = std::result::Result<T, K1Error>;
 
 /// An error that can occur when loading a private key.
+#[backerror::backerror]
 #[derive(Debug, thiserror::Error)]
 pub enum K1Error {
     /// K1 utility error.
@@ -33,7 +34,7 @@ pub fn key_path(data_dir: &Path) -> PathBuf {
 
 /// Loads the private key from the data dir.
 pub fn load_priv_key(data_dir: &Path) -> Result<SecretKey> {
-    pluto_k1util::load(key_path(data_dir)).map_err(K1Error::K1UtilError)
+    pluto_k1util::load(key_path(data_dir)).map_err(|e| K1Error::K1UtilError(e.into()))
 }
 
 /// Generates a new private key and saves it to the data dir.
@@ -44,7 +45,7 @@ pub fn new_saved_priv_key(data_dir: &Path) -> Result<SecretKey> {
 
     let key = SecretKey::random(&mut OsRng);
 
-    pluto_k1util::save(&key, key_path(data_dir)).map_err(K1Error::K1UtilError)?;
+    pluto_k1util::save(&key, key_path(data_dir)).map_err(|e| K1Error::K1UtilError(e.into()))?;
 
     Ok(key)
 }
@@ -68,7 +69,7 @@ fn backup_priv_key(data_dir: &Path) -> Result<()> {
         current_time.format("%Y-%m-%d_%H-%M-%S_%f"),
         nonce
     ));
-    std::fs::create_dir_all(&backup_dir).map_err(K1Error::IoError)?;
+    std::fs::create_dir_all(&backup_dir).map_err(|e| K1Error::IoError(e.into()))?;
     copy_backup(&key_path, &backup_path)
 }
 
@@ -78,7 +79,7 @@ fn copy_backup(key_path: &Path, backup_path: &Path) -> Result<()> {
     if backup_path.is_dir() {
         return Err(K1Error::BackupPathIsDir(backup_path.to_path_buf()));
     }
-    std::fs::copy(key_path, backup_path).map_err(K1Error::IoError)?;
+    std::fs::copy(key_path, backup_path).map_err(|e| K1Error::IoError(e.into()))?;
     Ok(())
 }
 

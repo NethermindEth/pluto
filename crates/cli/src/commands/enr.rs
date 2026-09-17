@@ -35,15 +35,19 @@ pub fn run(args: EnrArgs) -> Result<()> {
 
     let key = match k1::load_priv_key(&args.data_dir) {
         Ok(key) => key,
-        Err(k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(io_err)))
-            if io_err.kind() == std::io::ErrorKind::NotFound =>
+        Err(k1::K1Error::K1UtilError(ref e))
+            if matches!(
+                &**e,
+                pluto_k1util::K1UtilError::FailedToReadFile(io_err)
+                    if io_err.kind() == std::io::ErrorKind::NotFound
+            ) =>
         {
             // File not found
             let enr_path = k1::key_path(&args.data_dir);
             return Err(CliError::PrivateKeyNotFound { enr_path });
         }
         Err(e) => {
-            return Err(CliError::KeyLoadError(e));
+            return Err(CliError::KeyLoadError(e.into()));
         }
     };
 
