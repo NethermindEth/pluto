@@ -38,21 +38,6 @@
         exec ${rustToolchain}/bin/cargo "$@"
       '';
 
-      oas3-gen = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
-        pname = "oas3-gen";
-        version = "0.24.0";
-
-        src = pkgs.fetchCrate {
-          inherit (finalAttrs) pname version;
-          hash = "sha256-Hui8hGTAIqTBanObEDWZP9ZbGknu3zKyd2zd2DiseX0=";
-        };
-
-        cargoHash = "sha256-mGIQ7L5hm+2/bVndLVqSosSUmvPBfDi+LUYrvAanNdQ=";
-        cargoDepsName = finalAttrs.pname;
-
-        buildInputs = [ pkgs.openssl ];
-        nativeBuildInputs = [ pkgs.pkg-config ];
-      });
     in
     {
       devShells.default = pkgs.mkShell {
@@ -65,7 +50,6 @@
           cargo-llvm-cov
           cargo-machete
           protobuf
-          oas3-gen
           go
           gopls
           delve

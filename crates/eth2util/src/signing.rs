@@ -3,8 +3,8 @@ use pluto_crypto::{
     types::{PublicKey, Signature},
 };
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
-    spec::phase0::{Domain, Epoch, Root, SigningData},
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, Spec,
+    spec::phase0::{Domain, DomainType, Epoch, Root, SigningData},
     versioned::VersionedSignedAggregateAndProof,
 };
 use tree_hash::TreeHash;
@@ -34,8 +34,6 @@ pub enum DomainName {
     ContributionAndProof,
     /// `DOMAIN_DEPOSIT`
     Deposit,
-    /// `DOMAIN_BLOB_SIDECAR`
-    BlobSidecar,
 }
 
 impl std::fmt::Display for DomainName {
@@ -59,7 +57,23 @@ impl DomainName {
             Self::SyncCommitteeSelectionProof => "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF",
             Self::ContributionAndProof => "DOMAIN_CONTRIBUTION_AND_PROOF",
             Self::Deposit => "DOMAIN_DEPOSIT",
-            Self::BlobSidecar => "DOMAIN_BLOB_SIDECAR",
+        }
+    }
+
+    /// Returns the domain type `spec` assigns to this domain.
+    pub const fn domain_type(self, spec: &Spec) -> DomainType {
+        match self {
+            Self::BeaconProposer => spec.domain_beacon_proposer,
+            Self::BeaconAttester => spec.domain_beacon_attester,
+            Self::Randao => spec.domain_randao,
+            Self::VoluntaryExit => spec.domain_voluntary_exit,
+            Self::ApplicationBuilder => spec.domain_application_builder,
+            Self::SelectionProof => spec.domain_selection_proof,
+            Self::AggregateAndProof => spec.domain_aggregate_and_proof,
+            Self::SyncCommittee => spec.domain_sync_committee,
+            Self::SyncCommitteeSelectionProof => spec.domain_sync_committee_selection_proof,
+            Self::ContributionAndProof => spec.domain_contribution_and_proof,
+            Self::Deposit => spec.domain_deposit,
         }
     }
 }
@@ -106,7 +120,8 @@ pub async fn get_domain(
     name: DomainName,
     epoch: Epoch,
 ) -> Result<Domain> {
-    let domain_type = client.fetch_domain_type(name.as_spec_key()).await?;
+    let spec = client.fetch_spec().await?;
+    let domain_type = name.domain_type(&spec);
 
     if name == DomainName::ApplicationBuilder {
         return Ok(client.fetch_genesis_domain(domain_type).await?);
@@ -219,7 +234,7 @@ mod tests {
     }
 
     fn spec_fixture() -> serde_json::Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
             "DOMAIN_APPLICATION_BUILDER": "0x00000001",
@@ -235,7 +250,7 @@ mod tests {
             "ELECTRA_FORK_EPOCH": "50",
             "FULU_FORK_VERSION": "0x06070809",
             "FULU_FORK_EPOCH": "60"
-        })
+        }))
     }
 
     async fn mock_beacon_client() -> BeaconMock {

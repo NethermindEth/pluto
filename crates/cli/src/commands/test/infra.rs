@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
 use clap::Args;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -61,11 +62,7 @@ struct FioResultSingle {
     bw: f64,
 }
 
-// `expect` cannot be used here: the lint does not fire under the current
-// toolchain, so it would be flagged as an unfulfilled expectation. Kept as
-// `allow` for forward compatibility. Reason: internal trait not part of the
-// public API; no need for the `Send` bound the lint guards against.
-#[allow(async_fn_in_trait)]
+#[async_trait]
 trait DiskTestTool {
     async fn check_availability(&self) -> Result<()>;
     async fn write_speed(&self, path: &Path, block_size_kb: i32) -> Result<f64>;
@@ -76,6 +73,7 @@ trait DiskTestTool {
 
 struct FioTestTool;
 
+#[async_trait]
 impl DiskTestTool for FioTestTool {
     async fn check_availability(&self) -> Result<()> {
         let result = tokio::process::Command::new("fio")
