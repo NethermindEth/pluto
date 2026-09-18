@@ -27,6 +27,7 @@ pluto/
     p2p/                   # P2P networking (libp2p)
     peerinfo/              # Peer info utilities
     relay-server/          # Relay server implementation
+    test-compose/          # Docker-compose smoke-test harness (test infrastructure, not shipped)
     testutil/              # Test helpers/fixtures (workspace-internal)
     tracing/               # Observability/tracing utilities
   test-infra/              # Docker-compose and local infra for integration testing/observability
@@ -56,6 +57,7 @@ Commands (run from `pluto/`):
 ```bash
 cargo +nightly fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo test --workspace --features pluto-eth2api/integration
+# Smoke tests are opt-in (--features smoke); see crates/test-compose/README.md.
 cargo deny check --hide-inclusion-graph
 ```

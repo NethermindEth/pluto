@@ -50,9 +50,6 @@
           cargo-llvm-cov
           cargo-machete
           protobuf
-          go
-          gopls
-          delve
         ];
 
         shellHook = ''
