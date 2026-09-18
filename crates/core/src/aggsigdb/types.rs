@@ -34,5 +34,5 @@ pub trait AggSigDB {
         &self,
         duty: types::Duty,
         pub_key: types::PubKey,
-    ) -> Result<Box<dyn types::SignedData>, Error>;
+    ) -> Result<types::SignedData, Error>;
 }

@@ -21,7 +21,7 @@ type RecastSubscriber = Arc<dyn Fn(Duty, SignedDataSet) -> RecastFuture + Send +
 #[derive(Clone)]
 struct RecastTuple {
     duty: Duty,
-    agg_data: Box<dyn SignedData>,
+    agg_data: SignedData,
 }
 
 #[derive(Default)]
@@ -66,13 +66,13 @@ impl Recaster {
         }
 
         for (pubkey, agg_data) in set {
-            self.store_one(duty.clone(), *pubkey, agg_data.as_ref())?;
+            self.store_one(duty.clone(), *pubkey, agg_data)?;
         }
 
         Ok(())
     }
 
-    fn store_one(&self, duty: Duty, pubkey: PubKey, agg_data: &dyn SignedData) -> Result<()> {
+    fn store_one(&self, duty: Duty, pubkey: PubKey, agg_data: &SignedData) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -84,7 +84,7 @@ impl Recaster {
             return Ok(());
         }
 
-        let agg_data = dyn_clone::clone_box(agg_data);
+        let agg_data = agg_data.clone();
         state.tuples.insert(pubkey, RecastTuple { duty, agg_data });
         instrument_recast_registration(pubkey);
 

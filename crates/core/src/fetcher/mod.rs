@@ -19,8 +19,7 @@ use tree_hash::TreeHash;
 
 use crate::{
     signeddata::{
-        AttestationData, BeaconCommitteeSelection, ProposalBlock, SignedDataError,
-        SignedSyncMessage, SyncCommitteeSelection, SyncContribution,
+        AttestationData, ProposalBlock, SignedDataError, SyncContribution,
         VersionedAggregatedAttestation, VersionedProposal,
     },
     types::{Duty, DutyDefinition, DutyDefinitionSet, DutyType, PubKey, SignedData},
@@ -37,8 +36,7 @@ type CallbackFuture<T> = Pin<Box<dyn Future<Output = std::result::Result<T, BoxE
 pub type Subscriber = Arc<dyn Fn(Duty, UnsignedDataSet) -> CallbackFuture<()> + Send + Sync>;
 
 /// AggSigDB callback: resolves aggregated signed data for a duty/pubkey.
-pub type AggSigDbFunc =
-    Arc<dyn Fn(Duty, PubKey) -> CallbackFuture<Box<dyn SignedData>> + Send + Sync>;
+pub type AggSigDbFunc = Arc<dyn Fn(Duty, PubKey) -> CallbackFuture<SignedData> + Send + Sync>;
 
 /// DutyDB callback: resolves attestation data for a `(slot, committee index)`.
 pub type AwaitAttDataFunc =
@@ -263,8 +261,9 @@ impl Fetcher {
             let prep_agg_data = self
                 .query_agg_sig_db(Duty::new_prepare_aggregator_duty(slot.into()), *pubkey)
                 .await?;
-            let selection = downcast::<BeaconCommitteeSelection>(prep_agg_data.as_ref())
-                .ok_or(FetcherError::InvalidBeaconCommitteeSelection)?;
+            let SignedData::BeaconCommitteeSelection(selection) = &prep_agg_data else {
+                return Err(FetcherError::InvalidBeaconCommitteeSelection);
+            };
 
             let is_aggregator = eth2exp::is_att_aggregator(
                 &self.eth2_cl,
@@ -374,8 +373,9 @@ impl Fetcher {
                     *pubkey,
                 )
                 .await?;
-            let selection = downcast::<SyncCommitteeSelection>(selection_data.as_ref())
-                .ok_or(FetcherError::InvalidSyncCommitteeSelection)?;
+            let SignedData::SyncCommitteeSelection(selection) = &selection_data else {
+                return Err(FetcherError::InvalidSyncCommitteeSelection);
+            };
 
             let subcomm_idx = selection.0.subcommittee_index;
 
@@ -392,8 +392,9 @@ impl Fetcher {
             let sync_msg_data = self
                 .query_agg_sig_db(Duty::new_sync_message_duty(slot.into()), *pubkey)
                 .await?;
-            let msg = downcast::<SignedSyncMessage>(sync_msg_data.as_ref())
-                .ok_or(FetcherError::InvalidSyncCommitteeMessage)?;
+            let SignedData::SignedSyncMessage(msg) = &sync_msg_data else {
+                return Err(FetcherError::InvalidSyncCommitteeMessage);
+            };
 
             let block_root = msg.0.beacon_block_root;
 
@@ -463,7 +464,7 @@ impl Fetcher {
     }
 
     /// Invokes the AggSigDB resolver.
-    async fn query_agg_sig_db(&self, duty: Duty, pubkey: PubKey) -> Result<Box<dyn SignedData>> {
+    async fn query_agg_sig_db(&self, duty: Duty, pubkey: PubKey) -> Result<SignedData> {
         (self.agg_sig_db)(duty, pubkey)
             .await
             .map_err(FetcherError::Callback)
@@ -484,11 +485,6 @@ fn wrap(context: &'static str) -> impl Fn(FetcherError) -> FetcherError {
         context,
         source: Box::new(source),
     }
-}
-
-/// Downcasts a `&dyn SignedData` to a concrete signed-data type.
-fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
-    (data as &dyn std::any::Any).downcast_ref::<T>()
 }
 
 /// Logs a warning when the fee recipient is not correctly populated in the
@@ -596,7 +592,10 @@ mod tests {
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::types::SlotNumber;
+    use crate::{
+        signeddata::{BeaconCommitteeSelection, SignedSyncMessage, SyncCommitteeSelection},
+        types::SlotNumber,
+    };
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
     const PK_LEN: usize = 48;
@@ -914,7 +913,7 @@ mod tests {
         let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, pubkey: PubKey| {
             let sig = randaos[&pubkey];
             Box::pin(async move {
-                let data: Box<dyn SignedData> = Box::new(sig);
+                let data = SignedData::from(sig);
                 Ok(data)
             })
         });
@@ -1143,7 +1142,7 @@ mod tests {
                     validator_index: 0,
                     selection_proof: [0u8; 96],
                 });
-                let data: Box<dyn SignedData> = Box::new(selection);
+                let data = SignedData::from(selection);
                 Ok(data)
             })
         });
@@ -1477,9 +1476,9 @@ mod tests {
             let sels = sels.clone();
             let msgs = msgs.clone();
             Box::pin(async move {
-                let data: Box<dyn SignedData> = match duty.duty_type {
-                    DutyType::PrepareSyncContribution => Box::new(sels[&pubkey].clone()),
-                    DutyType::SyncMessage => Box::new(msgs[&pubkey].clone()),
+                let data: SignedData = match duty.duty_type {
+                    DutyType::PrepareSyncContribution => sels[&pubkey].clone().into(),
+                    DutyType::SyncMessage => msgs[&pubkey].clone().into(),
                     _ => return Err("unsupported duty".into()),
                 };
                 Ok(data)
@@ -1552,23 +1551,23 @@ mod tests {
 
         let agg_sig_db: AggSigDbFunc = Arc::new(move |duty: Duty, _pubkey: PubKey| {
             Box::pin(async move {
-                let data: Box<dyn SignedData> = match duty.duty_type {
+                let data: SignedData = match duty.duty_type {
                     DutyType::PrepareSyncContribution => {
-                        Box::new(SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
+                        SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
                             slot: SLOT,
                             validator_index: 2,
                             subcommittee_index: 4,
                             selection_proof: bls_sig(SYNC_AGG_SIG_A),
-                        }))
+                        })
+                        .into()
                     }
-                    DutyType::SyncMessage => {
-                        Box::new(SignedSyncMessage::new(altair::SyncCommitteeMessage {
-                            slot: SLOT,
-                            beacon_block_root: [10u8; 32],
-                            validator_index: 2,
-                            signature: [0u8; 96],
-                        }))
-                    }
+                    DutyType::SyncMessage => SignedSyncMessage::new(altair::SyncCommitteeMessage {
+                        slot: SLOT,
+                        beacon_block_root: [10u8; 32],
+                        validator_index: 2,
+                        signature: [0u8; 96],
+                    })
+                    .into(),
                     _ => return Err("unsupported duty".into()),
                 };
                 Ok(data)
@@ -1634,7 +1633,7 @@ mod tests {
                         subcommittee_index: 0,
                         selection_proof: bls_sig(SYNC_NON_AGG_SIG),
                     });
-                    let data: Box<dyn SignedData> = Box::new(selection);
+                    let data = SignedData::from(selection);
                     return Ok(data);
                 }
                 Err("unsupported duty".into())
