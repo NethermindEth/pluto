@@ -11,10 +11,13 @@ use std::{
     sync::Arc,
 };
 
-use crate::stacktrace::StackTrace;
+use crate::stacktrace::{self, Frame};
 
-/// Prefix of a `Debug` cause block, matching the `anyhow`/`eyre` convention.
+/// Prefix of a cause line.
 const CAUSED_BY: &str = "Caused by: ";
+
+/// Prefix of a frame line.
+const AT: &str = "\tat ";
 
 /// An error paired with the location it was converted at and the stack trace
 /// captured there.
@@ -29,56 +32,82 @@ pub struct LocatedError<E: Error> {
 
 impl<E: Error> LocatedError<E> {
     /// Renders the inner error's `Debug` output with this error's cause block
-    /// spliced in.
-    fn fmt_stacktrace(&self, stacktrace: &StackTrace, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner_debug = format!("{:?}", self.inner);
+    /// spliced in ahead of the causes it already carries.
+    fn fmt_stacktrace(&self, frames: &[Frame], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cause = format!(
+            "{CAUSED_BY}{}: {} ({})",
+            type_name::<E>(),
+            self.inner,
+            self.location
+        );
+        let at: Vec<String> = frames.iter().map(frame_line).collect();
+        let inner = format!("{:?}", self.inner);
+
         let mut output: Vec<Cow<'_, str>> = Vec::new();
         let mut spliced = false;
 
-        for line in inner_debug.lines() {
+        for line in inner.lines() {
             if spliced {
-                let line = Cow::Borrowed(line);
-                if !output.contains(&line) {
-                    output.push(line);
+                match repeated_frame_tail(&at, line) {
+                    Some(tail) => append(&mut output, tail),
+                    None => output.push(Cow::Borrowed(line)),
                 }
             } else {
                 if line.starts_with(CAUSED_BY) {
                     spliced = true;
-                    self.push_cause(stacktrace, &mut output);
+                    output.push(Cow::Borrowed(&cause));
+                    output.extend(at.iter().map(|line| Cow::Borrowed(line.as_str())));
                 }
                 output.push(Cow::Borrowed(line));
             }
         }
 
         if !spliced {
-            self.push_cause(stacktrace, &mut output);
+            output.push(Cow::Borrowed(&cause));
+            output.extend(at.iter().map(|line| Cow::Borrowed(line.as_str())));
         }
 
-        for line in output {
-            writeln!(f, "{line}")?;
-        }
+        f.write_str(&output.join("\n"))
+    }
+}
 
-        Ok(())
+/// Puts closing delimiters back on the line they were glued to.
+fn append<'a>(output: &mut Vec<Cow<'a, str>>, tail: &'a str) {
+    if tail.is_empty() {
+        return;
     }
 
-    /// Appends this error's cause line followed by one `\tat` line per frame.
-    fn push_cause<'a>(&self, stacktrace: &StackTrace, output: &mut Vec<Cow<'a, str>>) {
-        output.push(Cow::Owned(format!(
-            "{CAUSED_BY}{}: {} ({})",
-            type_name::<E>(),
-            self.inner,
-            self.location
-        )));
-
-        for frame in &stacktrace.frames {
-            let line = if frame.file.is_empty() {
-                format!("\tat {}", frame.func)
-            } else {
-                format!("\tat {} ({}:{})", frame.func, frame.file, frame.line)
-            };
-            output.push(Cow::Owned(line));
-        }
+    match output.last_mut() {
+        Some(last) => *last = Cow::Owned(format!("{last}{tail}")),
+        None => output.push(Cow::Borrowed(tail)),
     }
+}
+
+/// Renders one `\tat` line.
+fn frame_line(frame: &Frame) -> String {
+    if frame.file.is_empty() {
+        format!("{AT}{}", frame.func)
+    } else {
+        format!("{AT}{} ({}:{})", frame.func, frame.file, frame.line)
+    }
+}
+
+/// Matches `line` against a frame this error already printed, yielding the
+/// closing delimiters an enclosing `Debug` glued onto it.
+///
+/// A capture taken deeper in the stack ends in the same frames as this one, so
+/// its cause block repeats them verbatim.
+fn repeated_frame_tail<'a>(at: &[String], line: &'a str) -> Option<&'a str> {
+    if !line.starts_with(AT) {
+        return None;
+    }
+
+    at.iter().find_map(|frame| {
+        let tail = line.strip_prefix(frame.as_str())?;
+        tail.chars()
+            .all(|ch| matches!(ch, ')' | '}' | ']' | ',' | ' '))
+            .then_some(tail)
+    })
 }
 
 impl<E: Error> Error for LocatedError<E> {
@@ -95,8 +124,8 @@ impl<E: Error> fmt::Display for LocatedError<E> {
 
 impl<E: Error> fmt::Debug for LocatedError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match StackTrace::parse(&self.backtrace) {
-            Some(stacktrace) => self.fmt_stacktrace(&stacktrace, f),
+        match stacktrace::parse(&self.backtrace) {
+            Some(frames) => self.fmt_stacktrace(&frames, f),
             None => write!(
                 f,
                 "{:?} at ({}) by {}",

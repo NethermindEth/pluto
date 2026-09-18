@@ -4,7 +4,8 @@
 //! [`LocatedError<T>`] and gives the type a `#[track_caller]` `From<T>`, so a
 //! `?` conversion records where it happened and what the stack looked like
 //! there. The wrapper's `Display` is the inner error's message unchanged; its
-//! `Debug` adds a Java-style `Caused by:` block with one `\tat` line per frame.
+//! `Debug` adds a Java-style `Caused by:` block with one `\tat` line per frame,
+//! outermost cause first.
 //!
 //! ```
 //! #[pluto_stacktrace::located]
@@ -36,7 +37,7 @@ pub use pluto_stacktrace_macros::located;
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{any::type_name, error::Error};
 
     use super::*;
 
@@ -130,5 +131,134 @@ mod tests {
             WalkError::<TestWalker>::Walker(Leaf).to_string(),
             "walker: leaf"
         );
+    }
+
+    #[located]
+    #[derive(Debug, thiserror::Error)]
+    enum One {
+        #[error("one: {0}")]
+        Leaf(#[from] Leaf),
+    }
+
+    #[located]
+    #[derive(Debug, thiserror::Error)]
+    enum Two {
+        #[error("two: {0}")]
+        One(#[from] One),
+    }
+
+    #[located]
+    #[derive(Debug, thiserror::Error)]
+    enum Three {
+        #[error("three: {0}")]
+        Two(#[from] Two),
+    }
+
+    fn raise_one() -> Result<(), One> {
+        Err(Leaf)?;
+        Ok(())
+    }
+
+    fn raise_two() -> Result<(), Two> {
+        raise_one()?;
+        Ok(())
+    }
+
+    fn raise_three() -> Result<(), Three> {
+        raise_two()?;
+        Ok(())
+    }
+
+    /// The `Caused by:` header of each block and the symbols printed under it.
+    fn cause_blocks(rendered: &str) -> Vec<(&str, Vec<&str>)> {
+        let mut blocks: Vec<(&str, Vec<&str>)> = Vec::new();
+
+        for line in rendered.lines() {
+            if let Some(header) = line.strip_prefix("Caused by: ") {
+                blocks.push((header, Vec::new()));
+            } else if let Some(frame) = line.strip_prefix("\tat ")
+                && let Some((_, funcs)) = blocks.last_mut()
+            {
+                funcs.push(frame.split_once(" (").map_or(frame, |(func, _)| func));
+            }
+        }
+
+        blocks
+    }
+
+    /// Asserts the invariants a `Debug` rendering must hold at any nesting
+    /// depth.
+    fn assert_well_formed(rendered: &str) {
+        assert!(!rendered.ends_with('\n'), "{rendered}");
+
+        let mut depth: isize = 0;
+        for ch in rendered.chars() {
+            match ch {
+                '(' => depth = depth.saturating_add(1),
+                ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            assert!(depth >= 0, "{rendered}");
+        }
+        assert_eq!(depth, 0, "{rendered}");
+
+        for line in rendered.lines().skip(1) {
+            assert!(
+                line.starts_with("Caused by: ") || line.starts_with("\tat "),
+                "{line}\n\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_a_two_level_nest() {
+        let rendered = format!("{:?}", raise_two().expect_err("raise_one fails"));
+        assert_well_formed(&rendered);
+
+        assert_eq!(rendered.lines().next(), Some("One(Leaf(Leaf"), "{rendered}");
+        let last = rendered.lines().last().expect("a last line");
+        assert!(
+            last.starts_with("\tat ") && last.ends_with("))"),
+            "{rendered}"
+        );
+
+        let blocks = cause_blocks(&rendered);
+        assert_eq!(blocks.len(), 2, "{rendered}");
+        assert!(blocks[0].0.starts_with(type_name::<One>()), "{rendered}");
+        assert_eq!(
+            blocks[0].1.first(),
+            Some(&"pluto_stacktrace::tests::raise_two")
+        );
+        assert!(blocks[1].0.starts_with(type_name::<Leaf>()), "{rendered}");
+        assert_eq!(blocks[1].1, ["pluto_stacktrace::tests::raise_one"]);
+    }
+
+    #[test]
+    fn renders_a_three_level_nest() {
+        let rendered = format!("{:?}", raise_three().expect_err("raise_one fails"));
+        assert_well_formed(&rendered);
+
+        assert_eq!(
+            rendered.lines().next(),
+            Some("Two(One(Leaf(Leaf"),
+            "{rendered}"
+        );
+        let last = rendered.lines().last().expect("a last line");
+        assert!(
+            last.starts_with("\tat ") && last.ends_with(")))"),
+            "{rendered}"
+        );
+
+        let blocks = cause_blocks(&rendered);
+        assert_eq!(blocks.len(), 3, "{rendered}");
+        assert!(blocks[0].0.starts_with(type_name::<Two>()), "{rendered}");
+        assert_eq!(
+            blocks[0].1.first(),
+            Some(&"pluto_stacktrace::tests::raise_three")
+        );
+        assert!(blocks[1].0.starts_with(type_name::<One>()), "{rendered}");
+        assert_eq!(blocks[1].1, ["pluto_stacktrace::tests::raise_two"]);
+        assert!(blocks[2].0.starts_with(type_name::<Leaf>()), "{rendered}");
+        assert_eq!(blocks[2].1, ["pluto_stacktrace::tests::raise_one"]);
     }
 }

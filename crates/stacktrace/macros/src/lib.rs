@@ -2,9 +2,9 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{ToTokens, quote};
+use quote::quote;
 use syn::{
-    Attribute, Error, Fields, Generics, Ident, Item, ItemEnum, ItemStruct, Meta, Token, Type,
+    Attribute, Data, DeriveInput, Error, Fields, Generics, Ident, Meta, Token, Type,
     parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned,
 };
 
@@ -13,7 +13,7 @@ use syn::{
 /// `From<T>` impl for it.
 #[proc_macro_attribute]
 pub fn located(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(input as Item);
+    let item = parse_macro_input!(input as DeriveInput);
 
     match expand(item) {
         Ok(tokens) => tokens.into(),
@@ -21,37 +21,24 @@ pub fn located(_args: TokenStream, input: TokenStream) -> TokenStream {
     }
 }
 
-fn expand(item: Item) -> Result<TokenStream2, Error> {
-    match item {
-        Item::Enum(item) => expand_enum(item),
-        Item::Struct(item) => expand_struct(item),
-        other => Err(Error::new(
-            other.span(),
-            "`located` applies to enums and structs deriving `thiserror::Error`",
-        )),
-    }
-}
-
-fn expand_enum(mut item: ItemEnum) -> Result<TokenStream2, Error> {
+fn expand(mut item: DeriveInput) -> Result<TokenStream2, Error> {
     require_thiserror(&item.attrs, &item.ident)?;
 
     let mut sources = Vec::new();
-    for variant in &mut item.variants {
-        collect_sources(&mut variant.fields, &mut sources)?;
+    match &mut item.data {
+        Data::Enum(data) => {
+            for variant in &mut data.variants {
+                collect_sources(&mut variant.fields, &mut sources)?;
+            }
+        }
+        Data::Struct(data) => collect_sources(&mut data.fields, &mut sources)?,
+        Data::Union(data) => {
+            return Err(Error::new(
+                data.union_token.span(),
+                "`located` applies to enums and structs deriving `thiserror::Error`",
+            ));
+        }
     }
-
-    let impls = from_impls(&item.ident, &item.generics, &sources)?;
-    Ok(quote! {
-        #item
-        #impls
-    })
-}
-
-fn expand_struct(mut item: ItemStruct) -> Result<TokenStream2, Error> {
-    require_thiserror(&item.attrs, &item.ident)?;
-
-    let mut sources = Vec::new();
-    collect_sources(&mut item.fields, &mut sources)?;
 
     let impls = from_impls(&item.ident, &item.generics, &sources)?;
     Ok(quote! {
@@ -116,7 +103,7 @@ fn from_impls(ident: &Ident, generics: &Generics, sources: &[Type]) -> Result<To
     Ok(quote! { #(#impls)* })
 }
 
-/// Accepts `#[derive(Error)]` and `#[derive(thiserror::Error)]`.
+/// Accepts any derive whose path ends in `Error`.
 fn require_thiserror(attrs: &[Attribute], ident: &Ident) -> Result<(), Error> {
     let derives_error = attrs
         .iter()
@@ -127,12 +114,10 @@ fn require_thiserror(attrs: &[Attribute], ident: &Ident) -> Result<(), Error> {
         })
         .flatten()
         .any(|meta| match meta {
-            Meta::Path(path) => {
-                path.is_ident("Error") || {
-                    let path = path.into_token_stream().to_string();
-                    path.contains("thiserror") && path.contains("Error")
-                }
-            }
+            Meta::Path(path) => path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Error"),
             Meta::List(_) | Meta::NameValue(_) => false,
         });
 
@@ -148,4 +133,118 @@ fn require_thiserror(attrs: &[Attribute], ident: &Ident) -> Result<(), Error> {
 
 fn has_from(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("from"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand_err(item: DeriveInput) -> String {
+        expand(item).expect_err("expansion rejected").to_string()
+    }
+
+    #[test]
+    fn accepts_every_spelling_of_the_thiserror_derive() {
+        for derive in ["Error", "thiserror::Error", "::thiserror::Error"] {
+            let path: syn::Path = syn::parse_str(derive).expect("a derive path");
+            let item: DeriveInput = parse_quote! {
+                #[derive(Debug, #path)]
+                struct Wrapper(#[from] Leaf);
+            };
+
+            assert!(expand(item).is_ok(), "{derive}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_derive_that_only_looks_like_thiserror() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(my_thiserror::NotAnError)]
+            struct Wrapper(#[from] Leaf);
+        };
+
+        assert!(expand_err(item).contains("requires `#[derive(thiserror::Error)]`"));
+    }
+
+    #[test]
+    fn rejects_an_item_without_the_thiserror_derive() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(Debug)]
+            struct Wrapper(#[from] Leaf);
+        };
+
+        assert!(expand_err(item).contains("requires `#[derive(thiserror::Error)]`"));
+    }
+
+    #[test]
+    fn rejects_a_named_from_field() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(thiserror::Error)]
+            struct Wrapper {
+                #[from]
+                source: Leaf,
+            }
+        };
+
+        assert!(expand_err(item).contains("only instruments unnamed `#[from]` fields"));
+    }
+
+    #[test]
+    fn rejects_an_item_without_any_from_field() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(thiserror::Error)]
+            enum Wrapper {
+                Leaf(Leaf),
+            }
+        };
+
+        assert!(expand_err(item).contains("requires at least one unnamed `#[from]` field"));
+    }
+
+    #[test]
+    fn rejects_a_union() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(thiserror::Error)]
+            union Wrapper {
+                leaf: u32,
+            }
+        };
+
+        assert!(expand_err(item).contains("applies to enums and structs"));
+    }
+
+    #[test]
+    fn carries_the_generics_onto_the_from_impl() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(thiserror::Error)]
+            enum WalkError<H: HashWalker> where H: Send {
+                Leaf(#[from] Leaf),
+            }
+        };
+        let tokens = expand(item).expect("expansion succeeded").to_string();
+
+        assert!(
+            tokens.contains(
+                "impl < H : HashWalker > :: core :: convert :: From < Leaf > for WalkError < H > \
+                 where H : Send"
+            ),
+            "{tokens}"
+        );
+    }
+
+    #[test]
+    fn rewrites_the_from_field_to_a_located_error() {
+        let item: DeriveInput = parse_quote! {
+            #[derive(thiserror::Error)]
+            enum Wrapper {
+                Leaf(#[from] Leaf),
+            }
+        };
+        let tokens = expand(item).expect("expansion succeeded").to_string();
+
+        assert!(
+            tokens.contains(":: pluto_stacktrace :: LocatedError < Leaf >"),
+            "{tokens}"
+        );
+    }
 }

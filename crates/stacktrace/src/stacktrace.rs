@@ -3,101 +3,86 @@
 
 use std::backtrace::{Backtrace, BacktraceStatus};
 
-/// Frames of a captured backtrace, innermost first.
-#[derive(Debug)]
-pub struct StackTrace {
-    /// Parsed frames.
-    pub frames: Vec<StackTraceFrame>,
-}
-
 /// One resolved backtrace frame.
-#[derive(Debug)]
-pub struct StackTraceFrame {
+pub(crate) struct Frame {
     /// Demangled symbol name.
-    pub func: String,
+    pub(crate) func: String,
     /// Source file, empty when the frame carries no debug info.
-    pub file: String,
+    pub(crate) file: String,
     /// Source line, `0` when the frame carries no debug info.
-    pub line: u32,
+    pub(crate) line: u32,
 }
 
-impl StackTrace {
-    /// Parses a captured backtrace, yielding `None` when nothing was captured.
-    pub fn parse(backtrace: &Backtrace) -> Option<Self> {
-        if backtrace.status() != BacktraceStatus::Captured {
-            return None;
-        }
-
-        let mut stacktrace = Self::parse_debug_str(&format!("{backtrace:?}"))?;
-        stacktrace.normalize();
-        Some(stacktrace)
+/// Parses a captured backtrace, yielding `None` when nothing was captured.
+pub(crate) fn parse(backtrace: &Backtrace) -> Option<Vec<Frame>> {
+    if backtrace.status() != BacktraceStatus::Captured {
+        return None;
     }
 
-    /// Parses the `Backtrace [{ fn: …, file: …, line: … }, …]` rendering.
-    pub fn parse_debug_str(debug: &str) -> Option<Self> {
-        const LEADING: &str = "Backtrace ";
+    let mut frames = parse_debug_str(&format!("{backtrace:?}"))?;
+    normalize(&mut frames);
+    Some(frames)
+}
 
-        let frames_part = debug.trim().strip_prefix(LEADING)?.trim();
-        let content = frames_part.strip_prefix('[')?.strip_suffix(']')?;
+/// Parses the `Backtrace [{ fn: …, file: …, line: … }, …]` rendering.
+fn parse_debug_str(debug: &str) -> Option<Vec<Frame>> {
+    const LEADING: &str = "Backtrace ";
 
-        let mut frames = Vec::new();
-        let mut depth: usize = 0;
-        let mut frame_start = None;
+    let frames_part = debug.trim().strip_prefix(LEADING)?.trim();
+    let content = frames_part.strip_prefix('[')?.strip_suffix(']')?;
 
-        for (index, ch) in content.char_indices() {
-            match ch {
-                '{' => {
-                    if depth == 0 {
-                        frame_start = Some(index);
-                    }
-                    depth = depth.saturating_add(1);
+    let mut frames = Vec::new();
+    let mut depth: usize = 0;
+    let mut frame_start = None;
+
+    for (index, ch) in content.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    frame_start = Some(index);
                 }
-                '}' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0
-                        && let Some(start) = frame_start.take()
-                        && let Some(frame) = content.get(start..=index).and_then(parse_frame)
-                    {
-                        frames.push(frame);
-                    }
-                }
-                _ => {}
+                depth = depth.saturating_add(1);
             }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(start) = frame_start.take()
+                    && let Some(frame) = content.get(start..=index).and_then(parse_frame)
+                {
+                    frames.push(frame);
+                }
+            }
+            _ => {}
         }
-
-        (!frames.is_empty()).then_some(StackTrace { frames })
     }
 
-    /// Drops leading conversion machinery, everything from the first runtime or
-    /// harness boundary onwards, and trailing call shims.
-    ///
-    /// A step that would leave no frames at all is skipped.
-    fn normalize(&mut self) {
-        let genuine = self
-            .frames
-            .iter()
-            .position(|frame| !is_conversion_machinery(&frame.func));
-        if let Some(genuine) = genuine {
-            self.frames.drain(..genuine);
-        }
+    (!frames.is_empty()).then_some(frames)
+}
 
-        let boundary = self
-            .frames
-            .iter()
-            .position(|frame| is_runtime_boundary(&frame.func));
-        if let Some(boundary) = boundary
-            && boundary > 0
-        {
-            self.frames.truncate(boundary);
-        }
+/// Drops leading conversion machinery, everything from the first runtime or
+/// harness boundary onwards, and trailing call shims.
+///
+/// A step that would leave no frames at all is skipped.
+fn normalize(frames: &mut Vec<Frame>) {
+    let genuine = frames
+        .iter()
+        .position(|frame| !is_conversion_machinery(&frame.func));
+    if let Some(genuine) = genuine {
+        frames.drain(..genuine);
+    }
 
-        let last = self
-            .frames
-            .iter()
-            .rposition(|frame| !is_call_shim(&frame.func));
-        if let Some(last) = last {
-            self.frames.truncate(last.saturating_add(1));
-        }
+    let boundary = frames
+        .iter()
+        .position(|frame| is_runtime_boundary(&frame.func));
+    if let Some(boundary) = boundary
+        && boundary > 0
+    {
+        frames.truncate(boundary);
+    }
+
+    let last = frames.iter().rposition(|frame| !is_call_shim(&frame.func));
+    if let Some(last) = last {
+        frames.truncate(last.saturating_add(1));
     }
 }
 
@@ -117,7 +102,6 @@ fn is_conversion_machinery(func: &str) -> bool {
         || (func.contains("as core::convert::From<") && func.ends_with(">::from"))
         || (func.contains("as core::convert::Into<") && func.ends_with(">::into"))
         || func.ends_with("::from_residual")
-        || func.starts_with("std::backtrace")
 }
 
 /// Frames where an async runtime or a test harness takes over from the caller.
@@ -133,148 +117,43 @@ fn is_call_shim(func: &str) -> bool {
         || matches!(crate_root(func), "core" | "std" | "alloc")
 }
 
-/// Parses `{ fn: "…", file: "…", line: 123 }`.
-fn parse_frame(frame: &str) -> Option<StackTraceFrame> {
-    let inner = frame.trim().strip_prefix('{')?.strip_suffix('}')?;
+/// Parses `{ fn: "…", file: "…", line: 123 }`, where `file` and `line` may be
+/// absent.
+fn parse_frame(frame: &str) -> Option<Frame> {
+    let body = frame.trim().strip_prefix('{')?.strip_suffix('}')?;
 
-    Some(StackTraceFrame {
-        func: find_value(inner, "fn:")?,
-        file: find_value(inner, "file:").unwrap_or_default(),
-        line: find_value(inner, "line:")
-            .and_then(|line| line.parse().ok())
-            .unwrap_or_default(),
+    let (func, body) = take_field(body, "fn:")?;
+    let (file, body) = take_field(body, "file:").unwrap_or(("", body));
+    let line = take_field(body, "line:")
+        .and_then(|(line, _)| line.parse().ok())
+        .unwrap_or_default();
+
+    Some(Frame {
+        func: func.to_owned(),
+        file: file.to_owned(),
+        line,
     })
 }
 
-/// Reads the value of `key` from a `key: "value"` or `key: 123` sequence.
-fn find_value(input: &str, key: &str) -> Option<String> {
-    let rest = input.split_once(key)?.1.trim_start();
+/// Takes `key` and its `"quoted"` or bare value off the front of `body`,
+/// yielding the value and what follows it.
+fn take_field<'a>(body: &'a str, key: &str) -> Option<(&'a str, &'a str)> {
+    let rest = body.trim_start();
+    let rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
+    let rest = rest.strip_prefix(key)?.trim_start();
 
-    let Some(quoted) = rest.strip_prefix('"') else {
-        let end = rest.find([',', '}']).unwrap_or(rest.len());
-        let value = rest.get(..end)?.trim();
-        return (!value.is_empty()).then(|| value.to_owned());
-    };
-
-    let mut escaped = false;
-    for (index, ch) in quoted.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '"' {
-            return quoted.get(..index).map(str::to_owned);
-        }
+    match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"'),
+        None => Some(match rest.split_once(',') {
+            Some((value, tail)) => (value.trim_end(), tail),
+            None => (rest.trim_end(), ""),
+        }),
     }
-
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Frames libtest and `std` push below every `#[test]` body.
-    const LIBTEST_TAIL: &[&str] = &[
-        "test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>",
-        "test::run_test_in_process::{closure#0}",
-        "<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once",
-        "std::panicking::catch_unwind::do_call::<...>",
-        "std::panicking::catch_unwind::<...>",
-        "std::panic::catch_unwind::<...>",
-        "test::run_test_in_process",
-        "test::run_test::{closure#0}",
-        "test::run_test::{closure#1}",
-        "std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>",
-        "std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}",
-        "<core::panic::unwind_safe::AssertUnwindSafe<...> as core::ops::function::FnOnce<()>>::call_once",
-        "std::panicking::catch_unwind::do_call::<...>",
-        "std::panicking::catch_unwind::<...>",
-        "std::panic::catch_unwind::<...>",
-        "std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}",
-        "<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}",
-        "<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once",
-        "<std::sys::thread::unix::Thread>::new::thread_start",
-        "start_thread",
-        "__GI___clone3",
-    ];
-
-    /// `?` inside `hop1`, called straight from a `#[test]` body, debug profile.
-    const PLAIN_TEST_HEAD: &[&str] = &[
-        "<pluto_stacktrace::located_error::LocatedError<measured::Leaf> as core::convert::From<measured::Leaf>>::from",
-        "<measured::Wrapper as core::convert::From<measured::Leaf>>::from",
-        "<core::result::Result<(), measured::Wrapper> as core::ops::try_trait::FromResidual<core::result::Result<core::convert::Infallible, measured::Leaf>>>::from_residual",
-        "measured::hop1",
-        "measured::plain_test",
-        "measured::plain_test::{closure#0}",
-        "<measured::plain_test::{closure#0} as core::ops::function::FnOnce<()>>::call_once",
-        "<fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once",
-    ];
-
-    /// The same raise under `#[tokio::test(flavor = "multi_thread")]`, debug
-    /// profile.
-    const TOKIO_TEST_HEAD: &[&str] = &[
-        "<pluto_stacktrace::located_error::LocatedError<measured::Leaf> as core::convert::From<measured::Leaf>>::from",
-        "<measured::Wrapper as core::convert::From<measured::Leaf>>::from",
-        "<core::result::Result<(), measured::Wrapper> as core::ops::try_trait::FromResidual<core::result::Result<core::convert::Infallible, measured::Leaf>>>::from_residual",
-        "measured::hop1",
-        "measured::tokio_multi_thread_test::{closure#0}",
-        "<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll",
-        "<tokio::runtime::park::CachedParkThread>::block_on::<...>::{closure#0}",
-        "tokio::task::coop::with_budget::<...>",
-        "tokio::task::coop::budget::<...>",
-        "<tokio::runtime::park::CachedParkThread>::block_on::<...>",
-        "<tokio::runtime::context::blocking::BlockingRegionGuard>::block_on::<...>",
-        "<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<...>::{closure#0}",
-        "tokio::runtime::context::runtime::enter_runtime::<...>",
-        "<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<...>",
-        "<tokio::runtime::runtime::Runtime>::block_on_inner::<...>",
-        "<tokio::runtime::runtime::Runtime>::block_on::<...>",
-        "measured::tokio_multi_thread_test",
-        "measured::tokio_multi_thread_test::{closure#0}",
-        "<measured::tokio_multi_thread_test::{closure#0} as core::ops::function::FnOnce<()>>::call_once",
-        "<fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once",
-    ];
-
-    /// `Runtime::block_on` driving a bare `futures_util` combinator chain, so
-    /// no workspace frame survives the runtime cut. Debug profile.
-    const FUTURES_ONLY_HEAD: &[&str] = &[
-        "<pluto_stacktrace::located_error::LocatedError<measured::Leaf> as core::convert::From<measured::Leaf>>::from",
-        "<measured::Wrapper as core::convert::From<measured::Leaf>>::from",
-        "<measured::Leaf as core::convert::Into<measured::Wrapper>>::into",
-        "<futures_util::fns::IntoFn<measured::Wrapper> as futures_util::fns::FnOnce1<measured::Leaf>>::call_once",
-        "<futures_util::fns::MapErrFn<futures_util::fns::IntoFn<measured::Wrapper>> as futures_util::fns::FnOnce1<core::result::Result<(), measured::Leaf>>>::call_once::{closure#0}",
-        "<core::result::Result<(), measured::Leaf>>::map_err::<measured::Wrapper, ...>",
-        "<futures_util::fns::MapErrFn<futures_util::fns::IntoFn<measured::Wrapper>> as futures_util::fns::FnOnce1<core::result::Result<(), measured::Leaf>>>::call_once",
-        "<futures_util::future::future::map::Map<...> as core::future::future::Future>::poll",
-        "<futures_util::future::future::Map<...> as core::future::future::Future>::poll",
-        "<futures_util::future::try_future::MapErr<...> as core::future::future::Future>::poll",
-        "<futures_util::future::try_future::ErrInto<...> as core::future::future::Future>::poll",
-        "<core::pin::Pin<&mut futures_util::future::try_future::ErrInto<...>> as core::future::future::Future>::poll",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<...>::{closure#0}::{closure#0}::{closure#0}",
-        "tokio::task::coop::with_budget::<...>",
-        "tokio::task::coop::budget::<...>",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<...>::{closure#0}::{closure#0}",
-        "<tokio::runtime::scheduler::current_thread::Context>::enter::<...>",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<...>::{closure#0}",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<...>::{closure#0}",
-        "<tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<...>",
-        "tokio::runtime::context::set_scheduler::<...>::{closure#0}",
-        "<std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<...>",
-        "<std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<...>",
-        "tokio::runtime::context::set_scheduler::<...>",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<...>",
-        "<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<...>",
-        "<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<...>::{closure#0}",
-        "tokio::runtime::context::runtime::enter_runtime::<...>",
-        "<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<...>",
-        "<tokio::runtime::runtime::Runtime>::block_on_inner::<...>",
-        "<tokio::runtime::runtime::Runtime>::block_on::<...>",
-        "measured::futures_only",
-        "measured::futures_only::{closure#0}",
-        "<measured::futures_only::{closure#0} as core::ops::function::FnOnce<()>>::call_once",
-        "<fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once",
-    ];
 
     /// `pluto enr` failing on the main thread, debug profile.
     const CLI_MAIN_THREAD: &[&str] = &[
@@ -314,8 +193,8 @@ mod tests {
         "_start",
     ];
 
-    /// The same `pluto enr` failure built with `--release`: no `.debug_*`
-    /// sections, so every frame carries an empty file and line `0`.
+    /// The same `pluto enr` failure built with `--release`, where inlining
+    /// collapses the runtime into `pluto::main`.
     const CLI_RELEASE: &[&str] = &[
         "<pluto_stacktrace::located_error::LocatedError<pluto_p2p::k1::K1Error> as core::convert::From<pluto_p2p::k1::K1Error>>::from",
         "pluto::commands::enr::run",
@@ -331,76 +210,55 @@ mod tests {
         "_start",
     ];
 
-    /// The plain `#[test]` raise built with `--release`, where inlining leaves
-    /// a single call shim above the harness.
-    const RELEASE_PLAIN_TEST: &[&str] = &[
-        "<measured::plain_test::{closure#0} as core::ops::function::FnOnce<()>>::call_once",
-        "test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>",
+    /// `?` in a workspace function called straight from a `#[test]` body.
+    const TEST_CAPTURE: &[&str] = &[
+        "<pluto_stacktrace::located_error::LocatedError<app::Leaf> as core::convert::From<app::Leaf>>::from",
+        "<app::Wrapper as core::convert::From<app::Leaf>>::from",
+        "<core::result::Result<(), app::Wrapper> as core::ops::try_trait::FromResidual<...>>::from_residual",
+        "app::hop",
+        "app::a_test",
+        "<app::a_test as core::ops::function::FnOnce<()>>::call_once",
+        "test::__rust_begin_short_backtrace::<...>",
         "test::run_test::{closure#0}",
-        "std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>",
-        "<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}",
         "<std::sys::thread::unix::Thread>::new::thread_start",
-        "start_thread",
-        "__GI___clone3",
     ];
 
-    fn frames(funcs: &[&str]) -> Vec<StackTraceFrame> {
-        funcs
+    /// A raise whose only genuine frames are already inside the runtime.
+    const RUNTIME_ONLY: &[&str] = &[
+        "<pluto_stacktrace::located_error::LocatedError<app::Leaf> as core::convert::From<app::Leaf>>::from",
+        "<app::Leaf as core::convert::Into<app::Wrapper>>::into",
+        "tokio::task::coop::budget::<...>",
+        "<tokio::runtime::runtime::Runtime>::block_on::<...>",
+    ];
+
+    /// A `--release` capture where inlining leaves a single call shim above the
+    /// harness.
+    const INLINED_RELEASE: &[&str] = &[
+        "<app::a_test as core::ops::function::FnOnce<()>>::call_once",
+        "test::__rust_begin_short_backtrace::<...>",
+    ];
+
+    fn trim(funcs: &[&str]) -> Vec<String> {
+        let mut frames: Vec<Frame> = funcs
             .iter()
-            .map(|func| StackTraceFrame {
+            .map(|func| Frame {
                 func: (*func).to_owned(),
                 file: String::new(),
                 line: 0,
             })
-            .collect()
-    }
+            .collect();
+        normalize(&mut frames);
 
-    fn trim(funcs: &[&str]) -> Vec<String> {
-        let mut stacktrace = StackTrace {
-            frames: frames(funcs),
-        };
-        stacktrace.normalize();
-
-        stacktrace
-            .frames
-            .into_iter()
-            .map(|frame| frame.func)
-            .collect()
+        frames.into_iter().map(|frame| frame.func).collect()
     }
 
     #[test]
-    fn trims_a_plain_test_capture_to_the_raising_body() {
-        let capture = [PLAIN_TEST_HEAD, LIBTEST_TAIL].concat();
-        assert_eq!(capture.len(), 29);
-
-        assert_eq!(
-            trim(&capture),
-            [
-                "measured::hop1",
-                "measured::plain_test",
-                "measured::plain_test::{closure#0}",
-            ]
-        );
-    }
-
-    #[test]
-    fn trims_a_tokio_test_capture_at_the_runtime_boundary() {
-        let capture = [TOKIO_TEST_HEAD, LIBTEST_TAIL].concat();
-        assert_eq!(capture.len(), 41);
-
-        assert_eq!(
-            trim(&capture),
-            [
-                "measured::hop1",
-                "measured::tokio_multi_thread_test::{closure#0}",
-            ]
-        );
+    fn trims_conversion_machinery_the_harness_and_call_shims() {
+        assert_eq!(trim(TEST_CAPTURE), ["app::hop", "app::a_test"]);
     }
 
     #[test]
     fn cli_capture_keeps_the_task_body_and_drops_pluto_main_below_the_runtime() {
-        assert_eq!(CLI_MAIN_THREAD.len(), 34);
-
         assert_eq!(
             trim(CLI_MAIN_THREAD),
             [
@@ -412,24 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn trims_a_release_capture_that_carries_no_debug_info() {
-        let mut stacktrace = StackTrace {
-            frames: frames(CLI_RELEASE),
-        };
-        stacktrace.normalize();
-
-        assert!(
-            stacktrace
-                .frames
-                .iter()
-                .all(|frame| frame.file.is_empty() && frame.line == 0)
-        );
+    fn release_cli_capture_keeps_main_above_the_runtime_start() {
         assert_eq!(
-            stacktrace
-                .frames
-                .iter()
-                .map(|frame| frame.func.as_str())
-                .collect::<Vec<_>>(),
+            trim(CLI_RELEASE),
             [
                 "pluto::commands::enr::run",
                 "pluto::run::{closure#0}",
@@ -440,82 +283,92 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_combinator_chain_when_no_workspace_frame_precedes_the_runtime() {
-        let capture = [FUTURES_ONLY_HEAD, LIBTEST_TAIL].concat();
-        assert_eq!(capture.len(), 56);
-
+    fn keeps_the_runtime_frames_when_no_caller_precedes_them() {
         assert_eq!(
-            trim(&capture),
+            trim(RUNTIME_ONLY),
             [
-                "<futures_util::fns::IntoFn<measured::Wrapper> as futures_util::fns::FnOnce1<measured::Leaf>>::call_once",
-                "<futures_util::fns::MapErrFn<futures_util::fns::IntoFn<measured::Wrapper>> as futures_util::fns::FnOnce1<core::result::Result<(), measured::Leaf>>>::call_once::{closure#0}",
-                "<core::result::Result<(), measured::Leaf>>::map_err::<measured::Wrapper, ...>",
-                "<futures_util::fns::MapErrFn<futures_util::fns::IntoFn<measured::Wrapper>> as futures_util::fns::FnOnce1<core::result::Result<(), measured::Leaf>>>::call_once",
-                "<futures_util::future::future::map::Map<...> as core::future::future::Future>::poll",
-                "<futures_util::future::future::Map<...> as core::future::future::Future>::poll",
-                "<futures_util::future::try_future::MapErr<...> as core::future::future::Future>::poll",
-                "<futures_util::future::try_future::ErrInto<...> as core::future::future::Future>::poll",
+                "tokio::task::coop::budget::<...>",
+                "<tokio::runtime::runtime::Runtime>::block_on::<...>",
             ]
         );
     }
 
     #[test]
-    fn keeps_the_last_non_empty_result_when_a_step_would_drop_every_frame() {
+    fn keeps_a_lone_call_shim_when_trimming_would_drop_every_frame() {
         assert_eq!(
-            trim(RELEASE_PLAIN_TEST),
-            ["<measured::plain_test::{closure#0} as core::ops::function::FnOnce<()>>::call_once"]
+            trim(INLINED_RELEASE),
+            ["<app::a_test as core::ops::function::FnOnce<()>>::call_once"]
         );
-
-        let runtime_only = &CLI_MAIN_THREAD[6..17];
-        assert_eq!(trim(runtime_only), runtime_only);
     }
 
     #[test]
     fn parses_a_real_capture() {
         let backtrace = Backtrace::force_capture();
-        let stacktrace = StackTrace::parse(&backtrace).expect("force_capture is always captured");
+        let frames = parse(&backtrace).expect("force_capture is always captured");
 
-        assert!(!stacktrace.frames.is_empty());
-        assert!(
-            stacktrace
-                .frames
-                .iter()
-                .any(|frame| frame.func.contains("parses_a_real_capture"))
-        );
+        let here = frames
+            .iter()
+            .find(|frame| frame.func.contains("parses_a_real_capture"))
+            .expect("the capturing frame");
+
+        assert!(here.file.ends_with("src/stacktrace.rs"), "{}", here.file);
+        assert!(here.line > 0);
     }
 
     #[test]
     fn parses_frames_with_braces_in_the_symbol_name() {
         let debug =
             r#"Backtrace [{ fn: "a::b::{{closure}}", file: "src/a.rs", line: 7 }, { fn: "c::d" }]"#;
-        let stacktrace = StackTrace::parse_debug_str(debug).expect("two frames");
+        let frames = parse_debug_str(debug).expect("two frames");
 
-        assert_eq!(stacktrace.frames.len(), 2);
-        assert_eq!(stacktrace.frames[0].func, "a::b::{{closure}}");
-        assert_eq!(stacktrace.frames[0].file, "src/a.rs");
-        assert_eq!(stacktrace.frames[0].line, 7);
-        assert_eq!(stacktrace.frames[1].func, "c::d");
-        assert_eq!(stacktrace.frames[1].file, "");
-        assert_eq!(stacktrace.frames[1].line, 0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].func, "a::b::{{closure}}");
+        assert_eq!(frames[0].file, "src/a.rs");
+        assert_eq!(frames[0].line, 7);
+        assert_eq!(frames[1].func, "c::d");
+        assert_eq!(frames[1].file, "");
+        assert_eq!(frames[1].line, 0);
+    }
+
+    #[test]
+    fn parses_symbols_that_contain_a_field_key() {
+        let debug = concat!(
+            r#"Backtrace [{ fn: "pluto_core::deadline::sleep", file: "crates/core/src/deadline.rs", line: 42 }, "#,
+            r#"{ fn: "pluto_app::profile::Profile::new", file: "crates/app/src/profile.rs", line: 7 }]"#
+        );
+        let frames = parse_debug_str(debug).expect("two frames");
+
+        assert_eq!(frames[0].func, "pluto_core::deadline::sleep");
+        assert_eq!(frames[0].file, "crates/core/src/deadline.rs");
+        assert_eq!(frames[0].line, 42);
+        assert_eq!(frames[1].func, "pluto_app::profile::Profile::new");
+        assert_eq!(frames[1].file, "crates/app/src/profile.rs");
+        assert_eq!(frames[1].line, 7);
+    }
+
+    #[test]
+    fn parses_a_frame_whose_symbol_is_unresolved() {
+        let frames = parse_debug_str(r#"Backtrace [{ fn: <unknown> }]"#).expect("one frame");
+
+        assert_eq!(frames[0].func, "<unknown>");
     }
 
     #[test]
     fn normalize_drops_capture_machinery_frames() {
         let debug = concat!(
-            r#"Backtrace [{ fn: "std::backtrace::Backtrace::create", file: "b.rs", line: 1 }, "#,
-            r#"{ fn: "pluto_stacktrace::located_error::x", file: "l.rs", line: 2 }, "#,
+            r#"Backtrace [{ fn: "<pluto_stacktrace::located_error::LocatedError<app::Leaf> as core::convert::From<app::Leaf>>::from", file: "l.rs", line: 2 }, "#,
             r#"{ fn: "app::main", file: "m.rs", line: 3 }]"#
         );
-        let mut stacktrace = StackTrace::parse_debug_str(debug).expect("three frames");
-        stacktrace.normalize();
+        let mut frames = parse_debug_str(debug).expect("two frames");
+        normalize(&mut frames);
 
-        assert_eq!(stacktrace.frames.len(), 1);
-        assert_eq!(stacktrace.frames[0].func, "app::main");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].func, "app::main");
     }
 
     #[test]
     fn rejects_input_that_is_not_a_backtrace_rendering() {
-        assert!(StackTrace::parse_debug_str("<disabled>").is_none());
-        assert!(StackTrace::parse_debug_str("Backtrace []").is_none());
+        assert!(parse_debug_str("<disabled>").is_none());
+        assert!(parse_debug_str("Backtrace []").is_none());
     }
 }
