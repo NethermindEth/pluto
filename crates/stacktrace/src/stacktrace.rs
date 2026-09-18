@@ -97,9 +97,13 @@ fn crate_root(func: &str) -> &str {
     symbol.get(..end).unwrap_or_default()
 }
 
-/// Frames the `?` conversion itself pushes above the raise site.
+/// Frames the capture and the `?` conversion push above the raise site.
+///
+/// Whether the unwinder's own frames are rendered depends on the target, so
+/// `std::backtrace` and `std::backtrace_rs` are matched anywhere in the symbol.
 fn is_conversion_machinery(func: &str) -> bool {
-    func.contains("pluto_stacktrace::located_error")
+    func.contains("std::backtrace")
+        || func.contains("pluto_stacktrace::located_error")
         || (func.contains("as core::convert::From<") && func.ends_with(">::from"))
         || (func.contains("as core::convert::Into<") && func.ends_with(">::into"))
         || func.ends_with("::from_residual")
@@ -232,6 +236,19 @@ mod tests {
         "<tokio::runtime::runtime::Runtime>::block_on::<...>",
     ];
 
+    /// An `aarch64` capture, where the unwinder renders its own frames above
+    /// the wrapper.
+    const UNWINDER_FRAMES: &[&str] = &[
+        "std::backtrace_rs::backtrace::libunwind::trace",
+        "std::backtrace_rs::backtrace::trace_unsynchronized::<<std::backtrace::Backtrace>::create::{closure#0}>",
+        "<std::backtrace::Backtrace>::create",
+        "<pluto_stacktrace::located_error::LocatedError<E> as core::convert::From<E>>::from",
+        "<app::Wrapper as core::convert::From<app::Leaf>>::from",
+        "<core::result::Result<T,F> as core::ops::try_trait::FromResidual<...>>::from_residual",
+        "app::hop",
+        "app::a_test",
+    ];
+
     /// A `--release` capture where inlining leaves a single call shim above the
     /// harness.
     const INLINED_RELEASE: &[&str] = &[
@@ -256,6 +273,11 @@ mod tests {
     #[test]
     fn trims_conversion_machinery_the_harness_and_call_shims() {
         assert_eq!(trim(TEST_CAPTURE), ["app::hop", "app::a_test"]);
+    }
+
+    #[test]
+    fn trims_the_unwinder_frames_some_targets_render() {
+        assert_eq!(trim(UNWINDER_FRAMES), ["app::hop", "app::a_test"]);
     }
 
     #[test]
