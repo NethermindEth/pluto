@@ -15,9 +15,7 @@ alerts. Nodes are charon or pluto per `node_impls`; key generation follows
 `tests/smoke.rs` holds one test per scenario, named `scenario::<name>`, gated
 behind the `smoke` feature so a plain `cargo test --workspace` never builds or
 runs them. Each stands up a cluster for two minutes and fails on any firing
-alert. Prerequisites: docker with compose v2, and `oas3-gen` from
-`CONTRIBUTING.md` (the harness links `pluto-eth2util`, whose API types are
-generated at build time).
+alert. Prerequisite: docker with compose v2.
 
 ```bash
 # one or more scenarios
