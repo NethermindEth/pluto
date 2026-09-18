@@ -92,6 +92,7 @@ impl Recaster {
     }
 
     /// Called when new slots tick.
+    #[tracing::instrument(name = "bcast", level = "debug", skip_all, fields(topic = "bcast"))]
     pub async fn slot_ticked(&self, slot: Slot) -> Result<()> {
         if !slot.first_in_epoch() {
             return Ok(());

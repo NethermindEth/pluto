@@ -6,7 +6,7 @@ use backon::Retryable;
 use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{Instrument as _, info, warn};
 use url::Url;
 
 use crate::{
@@ -127,9 +127,13 @@ pub async fn new_relays(
                 let mutable_clone = mutable.clone();
                 let cancel_clone = cancel.child_token();
 
-                tokio::spawn(async move {
-                    resolve_relay(cancel_clone, url, hash, mutable_clone).await;
-                });
+                let span = tracing::debug_span!("relay", topic = "relay");
+                tokio::spawn(
+                    async move {
+                        resolve_relay(cancel_clone, url, hash, mutable_clone).await;
+                    }
+                    .instrument(span),
+                );
 
                 resp.push(mutable);
             }

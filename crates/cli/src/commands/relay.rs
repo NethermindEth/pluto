@@ -196,6 +196,7 @@ pub struct RelayP2PArgs {
     pub disable_reuseport: bool,
 }
 
+#[tracing::instrument(name = "relay", level = "debug", skip_all, fields(topic = "relay"))]
 pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,

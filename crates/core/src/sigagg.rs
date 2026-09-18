@@ -143,6 +143,7 @@ impl Aggregator {
     ///
     /// If aggregation fails for any validator the entire call returns that
     /// error immediately — no partial results are emitted.
+    #[tracing::instrument(name = "sigagg", level = "debug", skip_all, fields(topic = "sigagg"))]
     pub async fn aggregate(
         &self,
         duty: &Duty,
