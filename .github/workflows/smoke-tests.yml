@@ -1,7 +1,8 @@
 name: Compose smoke tests
 
-# Manual only: each scenario runs a full docker-compose cluster for two
-# minutes, too heavy for push or pull_request. very_large stays local-only.
+# Manual dispatch, or called by publish-dockerhub.yml's release gate: each
+# scenario runs a full docker-compose cluster for two minutes, too heavy for
+# push or pull_request. very_large stays local-only.
 on:
   workflow_dispatch:
     inputs:
@@ -13,9 +14,19 @@ on:
         description: "Minutes allowed for the smoke run itself (image and harness builds are separate steps). Must exceed the sum of the selected scenarios' windows."
         type: number
         default: 50
+  workflow_call:
+    inputs:
+      scenarios:
+        description: "Space-separated scenario names (e.g. `default_alpha pluto_dkg`). Empty runs the CI matrix; very_large is always excluded."
+        type: string
+        default: ""
+      smoke_timeout:
+        description: "Minutes allowed for the smoke run itself (image and harness builds are separate steps). Must exceed the sum of the selected scenarios' windows."
+        type: number
+        default: 50
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: compose-smoke-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -39,9 +50,6 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - name: Install `oas3-gen`
-        run: cargo install oas3-gen@0.24.0 --locked
 
       - name: Build pluto image
         # Built in its own step so the release compile is not charged to the smoke
