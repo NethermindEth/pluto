@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, PoisonError, RwLock},
 };
 
-use futures::future::BoxFuture;
+use async_trait::async_trait;
 use pluto_core::{corepb::v1::core as pbcore, types::Duty};
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +30,7 @@ pub type Subscriber =
     Box<dyn Fn(Duty, pbcore::UnsignedDataSet) -> SubscriberResult + Send + Sync + 'static>;
 
 /// Consensus implementation interface.
+#[async_trait]
 pub trait Consensus: Send + Sync {
     /// Returns the consensus protocol ID.
     fn protocol_id(&self) -> String;
@@ -38,15 +39,15 @@ pub trait Consensus: Send + Sync {
     fn start(&self, ct: CancellationToken);
 
     /// Starts participating in a consensus instance.
-    fn participate(&self, ct: CancellationToken, duty: Duty) -> BoxFuture<'_, Result<()>>;
+    async fn participate(&self, ct: CancellationToken, duty: Duty) -> Result<()>;
 
     /// Proposes unsigned duty data for a consensus instance.
-    fn propose(
+    async fn propose(
         &self,
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'_, Result<()>>;
+    ) -> Result<()>;
 
     /// Registers a callback for decided unsigned duty data.
     fn subscribe(&self, subscriber: Subscriber);
@@ -115,7 +116,6 @@ impl ConsensusWrapper {
 mod tests {
     use std::sync::Mutex;
 
-    use futures::FutureExt as _;
     use pluto_core::{
         corepb::v1::core as pbcore,
         types::{Duty, SlotNumber},
@@ -202,6 +202,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Consensus for TestConsensus {
         fn protocol_id(&self) -> String {
             self.protocol_id.clone()
@@ -211,19 +212,19 @@ mod tests {
             self.record("start");
         }
 
-        fn participate(&self, _ct: CancellationToken, _duty: Duty) -> BoxFuture<'_, Result<()>> {
+        async fn participate(&self, _ct: CancellationToken, _duty: Duty) -> Result<()> {
             self.record("participate");
-            async { Ok(()) }.boxed()
+            Ok(())
         }
 
-        fn propose(
+        async fn propose(
             &self,
             _ct: CancellationToken,
             _duty: Duty,
             _value: pbcore::UnsignedDataSet,
-        ) -> BoxFuture<'_, Result<()>> {
+        ) -> Result<()> {
             self.record("propose");
-            async { Ok(()) }.boxed()
+            Ok(())
         }
 
         fn subscribe(&self, subscriber: Subscriber) {

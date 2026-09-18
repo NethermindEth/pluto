@@ -23,7 +23,7 @@ pub use config::AppConfig;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -126,7 +126,7 @@ pub enum AppError {
     #[error("priority: {0}")]
     Priority(#[from] pluto_priority::Error),
 
-    /// A beacon node API request failed.
+    /// Building the beacon node API client or a request through it failed.
     #[error("beacon node api: {0}")]
     BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
@@ -152,10 +152,6 @@ pub enum AppError {
         /// hex representation if it matches no known network).
         beacon_node_network: String,
     },
-
-    /// Beacon node client construction failed.
-    #[error("beacon client: {0}")]
-    BeaconClient(#[source] anyhow::Error),
 
     /// Duty gater construction failed.
     #[error("duty gater: {0}")]
@@ -380,7 +376,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     }
 
     // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_client = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -416,7 +412,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
-        .get(&pluto_eth2api::ConsensusVersion::Electra)
+        .get(&pluto_eth2api::spec::DataVersion::Electra)
         .map(|schedule| schedule.epoch)
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);
@@ -425,30 +421,20 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // ---- Consensus (controller-owned) ----
     //
-    // Resolve the broadcaster<->behaviour construction cycle with the
-    // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
+    // Break the broadcaster<->behaviour construction cycle by creating the
+    // QBFT broadcast channel first: `Consensus` needs a broadcaster, the
+    // broadcaster is backed by the qbft p2p `Handle`, and the p2p behaviour
+    // needs the `Arc<Consensus>`. The channel exists before either component,
+    // so anything broadcast before the swarm is running queues instead of
+    // hitting an uninitialized handle.
     let (cons_deadliner, cons_expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
         "consensus.qbft",
         Arc::clone(&deadline_calc),
     );
 
-    // TODO: the `Arc<OnceLock<Handle>>` pattern is awkward; explore
-    // alternatives.
-    let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
-    let broadcaster: qbft::Broadcaster = {
-        let handle_slot = Arc::clone(&handle_slot);
-        Arc::new(move |_ct, msg| {
-            let handle_slot = Arc::clone(&handle_slot);
-            Box::pin(async move {
-                let handle = handle_slot
-                    .get()
-                    .expect("qbft p2p handle initialized before broadcast")
-                    .clone();
-                handle.broadcast(msg).await
-            })
-        })
-    };
+    let (qbft_handle, qbft_broadcast_queue) = qbft::p2p::broadcast_channel();
+    let broadcaster: qbft::Broadcaster = qbft_handle.broadcaster();
 
     // The controller owns the default QBFT impl and the swappable wrapper the
     // duty path runs through. QBFTv2 is the only protocol today, so no swap
@@ -481,6 +467,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         p2p_config: config.p2p.clone(),
         peers,
         consensus: consensus_controller.default_qbft(),
+        consensus_broadcast_queue: qbft_broadcast_queue,
         // Priority quorum = cluster signing threshold (Charon's
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
@@ -495,10 +482,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         cancellation: ct.clone(),
     })
     .await?;
-    // Complete the broadcaster<->behaviour cycle.
-    handle_slot
-        .set(handles.consensus.clone())
-        .map_err(|_| AppError::ConsensusP2P(qbft::p2p::Error::BehaviourClosed))?;
 
     // ---- Wire the core workflow ----
     let upstream_url = reqwest::Url::parse(&beacon_node_addr)?;
@@ -507,7 +490,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Aggregated-signature verifier: verifies the reconstructed group signature
     // against the beacon-node signing domain.
-    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     // The readiness checker uses its own beacon-client clone, taken before
     // `eth2_cl` is moved into the workflow inputs below.
@@ -539,7 +522,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             threshold,
             share_idx,
             eth2_cl,
-            submission_api,
+            submission_client,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
@@ -1074,9 +1057,10 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| AppError::BeaconClient(e.into()))?;
-    pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
-        .map_err(AppError::BeaconClient)
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::Transport)?;
+    Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
+        base_url, http,
+    )?)
 }
 
 /// Adapts the simnet validator mock into the abstract [`wire::SlotTickFn`] seam

@@ -756,13 +756,14 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::{DateTime, Utc};
+    use pluto_eth2api::v1;
     use tokio::sync::mpsc::{Receiver, channel};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
         deadline::{self, DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
-        signeddata::{AttesterDuty, ProposalBlock},
+        signeddata::ProposalBlock,
         testutils::random_core_pub_key,
         types::{DutyType, SlotNumber},
     };
@@ -817,7 +818,8 @@ mod tests {
                 source: phase0::Checkpoint::default(),
                 target: phase0::Checkpoint::default(),
             },
-            duty: AttesterDuty {
+            duty: v1::AttesterDuty {
+                pubkey: [0u8; 48],
                 slot,
                 validator_index,
                 committee_index,

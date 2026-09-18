@@ -153,25 +153,37 @@ impl PartialEq for P2PConfigError {
 type Result<T> = std::result::Result<T, P2PConfigError>;
 
 /// P2P configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, bon::Builder)]
 pub struct P2PConfig {
     /// Defines the libp2p relay multiaddrs or URLs.
+    #[builder(default, name = with_relays)]
     pub relays: Vec<RelayAddr>,
 
     /// The external IP address of the node.
+    #[builder(name = with_external_ip)]
     pub external_ip: Option<String>,
 
     /// The external host of the node.
+    #[builder(name = with_external_host)]
     pub external_host: Option<String>,
 
     /// The TCP addresses of the node.
+    #[builder(default, name = with_tcp_addrs)]
     pub tcp_addrs: Vec<String>,
 
     /// The UDP addresses of the node.
+    #[builder(default, name = with_udp_addrs)]
     pub udp_addrs: Vec<String>,
 
     /// Whether to disable the reuse port.
+    #[builder(default, name = with_disable_reuse_port)]
     pub disable_reuse_port: bool,
+}
+
+impl Default for P2PConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
 }
 
 impl P2PConfig {
@@ -195,11 +207,6 @@ impl P2PConfig {
             .map(|addr| multi_addr_from_socket_addr(addr, proto))
             .collect()
     }
-
-    /// Returns a new builder for configuring a P2P configuration.
-    pub fn builder() -> P2PConfigBuilder {
-        P2PConfigBuilder::new()
-    }
 }
 
 /// Returns the default relay endpoints parsed as [`RelayAddr`]s.
@@ -208,62 +215,6 @@ pub fn default_relays() -> Vec<RelayAddr> {
         .iter()
         .map(|relay| relay.parse().expect("default relay should parse"))
         .collect()
-}
-
-/// Builder for [`P2PConfig`].
-#[derive(Default, Debug, Clone)]
-pub struct P2PConfigBuilder {
-    config: P2PConfig,
-}
-
-impl P2PConfigBuilder {
-    /// Creates a new builder with default configuration.
-    pub fn new() -> Self {
-        Self {
-            config: P2PConfig::default(),
-        }
-    }
-
-    /// Sets the relay multiaddrs.
-    pub fn with_relays(mut self, relays: Vec<RelayAddr>) -> Self {
-        self.config.relays = relays;
-        self
-    }
-
-    /// Sets the external IP address.
-    pub fn with_external_ip(mut self, external_ip: String) -> Self {
-        self.config.external_ip = Some(external_ip);
-        self
-    }
-
-    /// Sets the external host.
-    pub fn with_external_host(mut self, external_host: String) -> Self {
-        self.config.external_host = Some(external_host);
-        self
-    }
-
-    /// Sets the TCP addresses.
-    pub fn with_tcp_addrs(mut self, tcp_addrs: Vec<String>) -> Self {
-        self.config.tcp_addrs = tcp_addrs;
-        self
-    }
-
-    /// Sets the UDP addresses.
-    pub fn with_udp_addrs(mut self, udp_addrs: Vec<String>) -> Self {
-        self.config.udp_addrs = udp_addrs;
-        self
-    }
-
-    /// Sets whether to disable the reuse port.
-    pub fn with_disable_reuse_port(mut self, disable_reuse_port: bool) -> Self {
-        self.config.disable_reuse_port = disable_reuse_port;
-        self
-    }
-
-    /// Builds the [`P2PConfig`].
-    pub fn build(self) -> P2PConfig {
-        self.config
-    }
 }
 
 /// The default ping interval.

@@ -2,6 +2,7 @@ use crate::{
     aggsigdb::types::{AggSigDB, Error},
     deadline, types,
 };
+use async_trait::async_trait;
 use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync;
 use tokio_util::sync::CancellationToken;
@@ -168,7 +169,7 @@ impl MemoryDBHandle {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl AggSigDB for MemoryDBHandle {
     async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
         let (response_tx, response_rx) = sync::oneshot::channel();

@@ -9,8 +9,6 @@ use tree_hash_derive::TreeHash;
 
 pub use pluto_ssz::{BitList, SszList, SszVector};
 
-use crate::spec::serde_utils::{ConversionError, decode_hex_fixed, decode_hex_var, parse_u64};
-
 /// Fork version length in bytes.
 pub const VERSION_LEN: usize = 4;
 /// Signature domain length in bytes.
@@ -338,19 +336,6 @@ pub struct Checkpoint {
     pub root: Root,
 }
 
-impl TryFrom<&crate::AltairBeaconStateCurrentJustifiedCheckpoint> for Checkpoint {
-    type Error = ConversionError;
-
-    fn try_from(
-        value: &crate::AltairBeaconStateCurrentJustifiedCheckpoint,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            epoch: parse_u64(&value.epoch, "checkpoint.epoch")?,
-            root: decode_hex_fixed(&value.root, "checkpoint.root")?,
-        })
-    }
-}
-
 /// Attestation data.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestationdata>
@@ -372,23 +357,6 @@ pub struct AttestationData {
     pub target: Checkpoint,
 }
 
-impl TryFrom<&crate::Data> for AttestationData {
-    type Error = ConversionError;
-
-    fn try_from(value: &crate::Data) -> Result<Self, Self::Error> {
-        Ok(Self {
-            slot: parse_u64(&value.slot, "attestation_data.slot")?,
-            index: parse_u64(&value.index, "attestation_data.index")?,
-            beacon_block_root: decode_hex_fixed(
-                &value.beacon_block_root,
-                "attestation_data.beacon_block_root",
-            )?,
-            source: Checkpoint::try_from(&value.source)?,
-            target: Checkpoint::try_from(&value.target)?,
-        })
-    }
-}
-
 /// Attestation object.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestation>
@@ -402,28 +370,6 @@ pub struct Attestation {
     /// Aggregate signature.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
-}
-
-impl TryFrom<&crate::GetBlockAttestationsV2ResponseResponseDataArray2> for Attestation {
-    type Error = ConversionError;
-
-    fn try_from(
-        value: &crate::GetBlockAttestationsV2ResponseResponseDataArray2,
-    ) -> Result<Self, Self::Error> {
-        const AGGREGATION_BITS_FIELD: &str = "attestation.aggregation_bits";
-        let aggregation_bits = BitList::from_ssz_bytes(decode_hex_var(
-            &value.aggregation_bits,
-            AGGREGATION_BITS_FIELD,
-        )?)
-        .map_err(|_| ConversionError::DecodeHex {
-            field: AGGREGATION_BITS_FIELD,
-        })?;
-        Ok(Self {
-            aggregation_bits,
-            data: AttestationData::try_from(&value.data)?,
-            signature: decode_hex_fixed(&value.signature, "attestation.signature")?,
-        })
-    }
 }
 
 /// Aggregate-and-proof payload.
@@ -480,6 +426,54 @@ pub struct SignedVoluntaryExit {
     /// Signature of the message.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
+}
+
+/// Fork schedule entry.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#fork>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
+pub struct Fork {
+    /// Version of the preceding fork.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub previous_version: Version,
+    /// Version of this fork.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub current_version: Version,
+    /// Epoch at which this fork activates.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub epoch: Epoch,
+}
+
+/// Validator registry entry.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#validator>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
+pub struct Validator {
+    /// BLS public key.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub pubkey: BLSPubKey,
+    /// Withdrawal credentials.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub withdrawal_credentials: WithdrawalCredentials,
+    /// Effective balance in Gwei.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub effective_balance: Gwei,
+    /// Whether the validator has been slashed.
+    pub slashed: bool,
+    /// Epoch when the validator became eligible for activation.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub activation_eligibility_epoch: Epoch,
+    /// Epoch when the validator was activated.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub activation_epoch: Epoch,
+    /// Epoch when the validator exited.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub exit_epoch: Epoch,
+    /// Epoch when the validator can withdraw.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub withdrawable_epoch: Epoch,
 }
 
 #[cfg(test)]
@@ -740,85 +734,59 @@ mod tests {
         assert_eq!(roundtrip.attesting_indices.0, vec![11, 12]);
     }
 
-    /// Wire-format JSON for an attestation-data object, as returned by the
-    /// beacon node.
-    fn attestation_data_wire() -> serde_json::Value {
-        serde_json::json!({
+    #[test]
+    fn attestation_data_json_uses_wire_encoding() {
+        let wire = serde_json::json!({
             "slot": "42",
             "index": "3",
             "beacon_block_root": format!("0x{}", "11".repeat(32)),
             "source": { "epoch": "5", "root": format!("0x{}", "22".repeat(32)) },
             "target": { "epoch": "6", "root": format!("0x{}", "33".repeat(32)) },
-        })
-    }
+        });
 
-    #[test]
-    fn attestation_data_try_from_matches_json_roundtrip() {
-        let wire = attestation_data_wire();
-        let generated: crate::Data =
-            serde_json::from_value(wire.clone()).expect("deserialize generated Data");
-
-        // Direct conversion must equal the loosely-typed JSON round-trip it
-        // replaces.
-        let direct = AttestationData::try_from(&generated).expect("convert");
-        let via_json: AttestationData = serde_json::from_value(wire).expect("json round-trip");
-        assert_eq!(direct, via_json);
-
-        assert_eq!(direct.slot, 42);
-        assert_eq!(direct.index, 3);
-        assert_eq!(direct.beacon_block_root, [0x11; 32]);
+        let data: AttestationData = serde_json::from_value(wire.clone()).expect("deserialize");
+        assert_eq!(data.slot, 42);
+        assert_eq!(data.index, 3);
+        assert_eq!(data.beacon_block_root, [0x11; 32]);
         assert_eq!(
-            direct.source,
+            data.source,
             Checkpoint {
                 epoch: 5,
                 root: [0x22; 32]
             }
         );
-        assert_eq!(
-            direct.target,
-            Checkpoint {
-                epoch: 6,
-                root: [0x33; 32]
-            }
-        );
+        assert_eq!(serde_json::to_value(&data).expect("serialize"), wire);
     }
 
     #[test]
-    fn attestation_data_try_from_rejects_bad_fields() {
-        let mut wire = attestation_data_wire();
-        wire["slot"] = serde_json::json!("not-a-number");
-        let generated: crate::Data = serde_json::from_value(wire).expect("deserialize");
-        assert!(matches!(
-            AttestationData::try_from(&generated),
-            Err(ConversionError::ParseInt {
-                field: "attestation_data.slot"
-            })
-        ));
-
-        let mut wire = attestation_data_wire();
-        wire["beacon_block_root"] = serde_json::json!("0xZZ");
-        let generated: crate::Data = serde_json::from_value(wire).expect("deserialize");
-        assert!(matches!(
-            AttestationData::try_from(&generated),
-            Err(ConversionError::DecodeHex {
-                field: "attestation_data.beacon_block_root"
-            })
-        ));
-    }
-
-    #[test]
-    fn attestation_try_from_matches_json_roundtrip() {
-        let wire = serde_json::json!({
-            "aggregation_bits": "0x0102",
-            "data": attestation_data_wire(),
-            "signature": format!("0x{}", "44".repeat(96)),
+    fn fork_and_validator_json_use_wire_encoding() {
+        let fork_wire = serde_json::json!({
+            "previous_version": "0x00000000",
+            "current_version": "0x01000000",
+            "epoch": "74240",
         });
-        let generated: crate::GetBlockAttestationsV2ResponseResponseDataArray2 =
-            serde_json::from_value(wire.clone()).expect("deserialize generated attestation");
+        let fork: Fork = serde_json::from_value(fork_wire.clone()).expect("deserialize fork");
+        assert_eq!(fork.current_version, [1, 0, 0, 0]);
+        assert_eq!(fork.epoch, 74240);
+        assert_eq!(serde_json::to_value(&fork).expect("serialize"), fork_wire);
 
-        let direct = Attestation::try_from(&generated).expect("convert");
-        let via_json: Attestation = serde_json::from_value(wire).expect("json round-trip");
-        assert_eq!(direct, via_json);
-        assert_eq!(direct.signature, [0x44; 96]);
+        let validator_wire = serde_json::json!({
+            "pubkey": format!("0x{}", "ab".repeat(48)),
+            "withdrawal_credentials": format!("0x{}", "00".repeat(32)),
+            "effective_balance": "32000000000",
+            "slashed": false,
+            "activation_eligibility_epoch": "0",
+            "activation_epoch": "0",
+            "exit_epoch": "18446744073709551615",
+            "withdrawable_epoch": "18446744073709551615",
+        });
+        let validator: Validator =
+            serde_json::from_value(validator_wire.clone()).expect("deserialize validator");
+        assert_eq!(validator.pubkey, [0xab; 48]);
+        assert_eq!(validator.exit_epoch, u64::MAX);
+        assert_eq!(
+            serde_json::to_value(&validator).expect("serialize"),
+            validator_wire
+        );
     }
 }

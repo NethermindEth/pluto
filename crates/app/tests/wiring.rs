@@ -40,14 +40,15 @@ use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
     types::{
-        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet,
-        ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
+        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey,
+        SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
 use pluto_crypto::tbls;
 use pluto_eth2api::{
     EthBeaconNodeApiClient,
     spec::{altair, phase0},
+    v1,
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
@@ -196,15 +197,13 @@ fn wire_inputs_with(
         fee_recipient: [0u8; 20],
     }];
 
-    // The broadcaster's constructor performs beacon-node calls, so the
-    // submission API must point at the mock too.
-    let submission_api = eth2_cl.clone();
-
     WireInputs {
         threshold,
         share_idx: 1,
+        // The broadcaster's constructor performs beacon-node calls, so the
+        // submission client must point at the mock too.
+        submission_client: eth2_cl.clone(),
         eth2_cl,
-        submission_api,
         validators,
         consensus,
         builder_enabled: false,
@@ -279,7 +278,8 @@ async fn wiring_exercises_fetcher_back_edges() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let eth2_cl = mock.client().clone();
-    let pubkey = PubKey::new([2u8; PK_LEN]);
+    let pubkey_bytes = [2u8; PK_LEN];
+    let pubkey = PubKey::new(pubkey_bytes);
     let consensus = build_consensus(&ct);
 
     let wired = tokio::time::timeout(
@@ -297,10 +297,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     const SLOT: u64 = 1;
     let proposer_def = DutyDefinitionSet::from([(
         pubkey,
-        DutyDefinition::Proposer(ProposerDutyDefinition {
-            pubkey,
-            v_idx: 2,
-            slot: SlotNumber::new(SLOT),
+        DutyDefinition::Proposer(v1::ProposerDuty {
+            pubkey: pubkey_bytes,
+            validator_index: 2,
+            slot: SLOT,
         }),
     )]);
     let proposer_duty = Duty::new_proposer_duty(SlotNumber::new(SLOT));
@@ -671,7 +671,7 @@ async fn wiring_rejects_bad_partial_signature() {
 
     // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
     // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
-    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     const THRESHOLD: u64 = 2;
     let inputs = wire_inputs_with(eth2_cl, pubkey, consensus, THRESHOLD, verifier);
