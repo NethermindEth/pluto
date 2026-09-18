@@ -361,11 +361,11 @@ mod tests {
     }
 
     // The descending set is the row that matters:
-    // `compute_lagrange_coefficients` negates in the scalar field when
-    // x_j < x_i instead of subtracting in the integers.
+    // `compute_lagrange_coefficients` subtracts modulo the field order, so
+    // x_j < x_i wraps rather than underflowing.
     #[test_case(&[1, 2, 3] ; "contiguous ascending")]
     #[test_case(&[2, 4, 5] ; "non-contiguous")]
-    #[test_case(&[5, 4, 2] ; "descending, driving the scalar_negate branch")]
+    #[test_case(&[5, 4, 2] ; "descending, driving the negative-difference branch")]
     fn lagrange_interpolate_secret_recovers_constant_term(indices: &[Index]) {
         let recovered = lagrange_interpolate_secret(indices, &shares_at(indices)).unwrap();
 
@@ -488,45 +488,42 @@ mod tests {
         assert_eq!(agg.to_bytes(), sk(7).sk_to_pk().to_bytes());
     }
 
+    /// The BLS12-381 scalar-field order minus 3, big-endian. Written from the
+    /// published curve order, not read off this implementation.
+    const R_MINUS_3: [u8; 32] = [
+        0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8,
+        0x05, 0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff,
+        0xff, 0xfe,
+    ];
+
+    /// The big-endian bytes of an fr value.
+    fn fr_be_bytes(fr: &blst::blst_fr) -> [u8; 32] {
+        let mut bytes = scalar_from_fr(fr).b;
+        // `blst_scalar` is little-endian; the expectations are big-endian.
+        bytes.reverse();
+        bytes
+    }
+
+    // The coefficients themselves, by hand, so the two arithmetic steps the
+    // fr domain took over from the old `scalar_negate`/`scalar_div` helpers
+    // are pinned directly: λ₁ = (2/1)·(3/2) = 3, λ₂ = (1/−1)·(3/1) = −3,
+    // λ₃ = (1/−2)·(2/−1) = 1. The negative denominators exercise the
+    // subtraction modulo r, and the halves exercise the modular inverse.
     #[test]
-    fn scalar_div_rejects_zero_denominator() {
+    fn compute_lagrange_coefficients_matches_hand_computed_values() {
+        let coeffs = compute_lagrange_coefficients(&[1, 2, 3]).unwrap();
+
+        assert_eq!(coeffs.len(), 3);
+        assert_eq!(fr_be_bytes(&coeffs[0]), be_bytes(3), "λ₁ = 3");
+        assert_eq!(fr_be_bytes(&coeffs[1]), R_MINUS_3, "λ₂ = −3 = r − 3");
+        assert_eq!(fr_be_bytes(&coeffs[2]), be_bytes(1), "λ₃ = 1");
+    }
+
+    #[test]
+    fn compute_lagrange_coefficients_rejects_duplicate_indices() {
         assert!(matches!(
-            scalar_div(&scalar_from_u64(42), &scalar_from_u64(0)),
-            Err(Error::DivisionByZero)
+            compute_lagrange_coefficients(&[1, 2, 2]),
+            Err(Error::IndicesNotUnique)
         ));
-    }
-
-    #[test]
-    fn scalar_div_multiplies_by_modular_inverse() {
-        let quotient = scalar_div(&scalar_from_u64(42), &scalar_from_u64(6)).unwrap();
-
-        assert_eq!(
-            quotient.b,
-            scalar_from_u64(7).b,
-            "42 / 6 = 7 in the scalar field"
-        );
-    }
-
-    // Negating zero, −19 == r − 19, and involution.
-    #[test]
-    fn scalar_negate_computes_additive_inverse() {
-        assert_eq!(
-            scalar_negate(&scalar_from_u64(0)).unwrap().b,
-            scalar_from_u64(0).b,
-            "the additive inverse of zero is zero"
-        );
-
-        let negative_19 = scalar_negate(&scalar_from_u64(19)).unwrap();
-
-        // `blst_scalar` is little-endian; `R_MINUS_19` is written big-endian.
-        let mut expected = R_MINUS_19;
-        expected.reverse();
-        assert_eq!(negative_19.b, expected, "−19 must be r − 19");
-
-        assert_eq!(
-            scalar_negate(&negative_19).unwrap().b,
-            scalar_from_u64(19).b,
-            "negation must be an involution"
-        );
     }
 }
