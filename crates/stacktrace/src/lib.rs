@@ -169,7 +169,7 @@ mod tests {
         Ok(())
     }
 
-    /// The `Caused by:` header of each block and the symbols printed under it.
+    /// The `Caused by:` header of each block and the frame lines under it.
     fn cause_blocks(rendered: &str) -> Vec<(&str, Vec<&str>)> {
         let mut blocks: Vec<(&str, Vec<&str>)> = Vec::new();
 
@@ -177,13 +177,26 @@ mod tests {
             if let Some(header) = line.strip_prefix("Caused by: ") {
                 blocks.push((header, Vec::new()));
             } else if let Some(frame) = line.strip_prefix("\tat ")
-                && let Some((_, funcs)) = blocks.last_mut()
+                && let Some((_, frames)) = blocks.last_mut()
             {
-                funcs.push(frame.split_once(" (").map_or(frame, |(func, _)| func));
+                frames.push(frame);
             }
         }
 
         blocks
+    }
+
+    /// Asserts each frame line names the expected symbol.
+    ///
+    /// A frame line carries a `(file:line)` suffix only where the build has
+    /// debug info, and the last one of a block also carries the delimiters an
+    /// enclosing `Debug` glued onto it.
+    fn assert_frames(frames: &[&str], symbols: &[&str]) {
+        assert_eq!(frames.len(), symbols.len(), "{frames:?}");
+
+        for (frame, symbol) in frames.iter().zip(symbols) {
+            assert!(frame.starts_with(symbol), "{frame} does not name {symbol}");
+        }
     }
 
     /// Asserts the invariants a `Debug` rendering must hold at any nesting
@@ -225,12 +238,12 @@ mod tests {
         let blocks = cause_blocks(&rendered);
         assert_eq!(blocks.len(), 2, "{rendered}");
         assert!(blocks[0].0.starts_with(type_name::<One>()), "{rendered}");
-        assert_eq!(
-            blocks[0].1.first(),
-            Some(&"pluto_stacktrace::tests::raise_two")
+        assert!(
+            blocks[0].1[0].starts_with("pluto_stacktrace::tests::raise_two"),
+            "{rendered}"
         );
         assert!(blocks[1].0.starts_with(type_name::<Leaf>()), "{rendered}");
-        assert_eq!(blocks[1].1, ["pluto_stacktrace::tests::raise_one"]);
+        assert_frames(&blocks[1].1, &["pluto_stacktrace::tests::raise_one"]);
     }
 
     #[test]
@@ -252,13 +265,13 @@ mod tests {
         let blocks = cause_blocks(&rendered);
         assert_eq!(blocks.len(), 3, "{rendered}");
         assert!(blocks[0].0.starts_with(type_name::<Two>()), "{rendered}");
-        assert_eq!(
-            blocks[0].1.first(),
-            Some(&"pluto_stacktrace::tests::raise_three")
+        assert!(
+            blocks[0].1[0].starts_with("pluto_stacktrace::tests::raise_three"),
+            "{rendered}"
         );
         assert!(blocks[1].0.starts_with(type_name::<One>()), "{rendered}");
-        assert_eq!(blocks[1].1, ["pluto_stacktrace::tests::raise_two"]);
+        assert_frames(&blocks[1].1, &["pluto_stacktrace::tests::raise_two"]);
         assert!(blocks[2].0.starts_with(type_name::<Leaf>()), "{rendered}");
-        assert_eq!(blocks[2].1, ["pluto_stacktrace::tests::raise_one"]);
+        assert_frames(&blocks[2].1, &["pluto_stacktrace::tests::raise_one"]);
     }
 }

@@ -4,6 +4,7 @@
 use std::backtrace::{Backtrace, BacktraceStatus};
 
 /// One resolved backtrace frame.
+#[derive(Debug)]
 pub(crate) struct Frame {
     /// Demangled symbol name.
     pub(crate) func: String,
@@ -301,18 +302,19 @@ mod tests {
         );
     }
 
+    /// A build without debug info yields frames carrying only a symbol, so this
+    /// asserts nothing about `file` or `line`.
     #[test]
     fn parses_a_real_capture() {
         let backtrace = Backtrace::force_capture();
         let frames = parse(&backtrace).expect("force_capture is always captured");
 
-        let here = frames
-            .iter()
-            .find(|frame| frame.func.contains("parses_a_real_capture"))
-            .expect("the capturing frame");
-
-        assert!(here.file.ends_with("src/stacktrace.rs"), "{}", here.file);
-        assert!(here.line > 0);
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.func.contains("parses_a_real_capture")),
+            "{frames:?}"
+        );
     }
 
     #[test]
