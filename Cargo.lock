@@ -5727,6 +5727,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-stacktrace"
+version = "1.7.1"
+dependencies = [
+ "pluto-stacktrace-macros",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "pluto-stacktrace-macros"
+version = "1.7.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "pluto-test-compose"
 version = "1.7.1"
 dependencies = [

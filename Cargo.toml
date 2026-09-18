@@ -18,6 +18,8 @@ members = [
     "crates/relay-server",
     "crates/p2p",
     "crates/ssz",
+    "crates/stacktrace",
+    "crates/stacktrace/macros",
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
@@ -60,9 +62,11 @@ backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"
 nix = { version = "0.30", features = ["user"] }
+proc-macro2 = "1.0"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
+quote = "1.0"
 # Deliberately pinned to 0.8/0.6: rand 0.9 and rand_core 0.9 are already in the
 # graph, but the old generation is held there by the entire libp2p, alloy, and
 # k256/elliptic-curve stack (which still depend on rand 0.8 / rand_core 0.6).
@@ -75,6 +79,7 @@ regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 serde_path_to_error = "0.1"
+syn = { version = "3.0", features = ["full"] }
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -165,6 +170,8 @@ pluto-featureset = { path = "crates/featureset" }
 pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-ssz = { path = "crates/ssz" }
+pluto-stacktrace = { path = "crates/stacktrace" }
+pluto-stacktrace-macros = { path = "crates/stacktrace/macros" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
