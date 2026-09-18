@@ -32,7 +32,7 @@ const RELAY_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_MAX_BODY: usize = 1024 * 1024;
 
 /// Bootnode error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum BootnodeError {
     /// Failed to get peer from multiaddr.

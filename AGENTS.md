@@ -47,10 +47,11 @@ pluto/
 
 ### Error types
 
-A `thiserror` type with an unnamed `#[from]` field carries `#[backerror::backerror]` as its outermost attribute, so the raise location and a stack trace are captured on conversion.
+A `thiserror` type with an unnamed `#[from]` field carries `#[pluto_stacktrace::located]` as its outermost attribute, so the raise location and a stack trace are captured on conversion.
 
-- The field's type becomes `backerror::LocatedError<T>`: build it with `.into()` and match through it with `**`.
-- Generic error types cannot take the attribute.
+- The field's type becomes `pluto_stacktrace::LocatedError<T>`: build it with `.into()` and match through it with `**`.
+- `Display` is the plain `thiserror` message; the location and the trace are reachable only through `Debug`.
+- The attribute rejects a type with no unnamed `#[from]` field.
 - Write the conversion as `?`, a closure (`.map_err(|e| e.into())`), or an explicit `.into()`; passing `Into::into` or `Type::from` as a function value captures the location of a `core` shim.
 - `error!` renders an error with `?err` where it is dropped and with `%err` where it is propagated, so a trace is printed once.
 

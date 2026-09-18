@@ -44,7 +44,7 @@ pub(crate) struct BroadcastRequest {
 }
 
 /// Errors returned by the QBFT consensus transport.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// Hash was not available in the value cache.

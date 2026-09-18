@@ -101,7 +101,7 @@ impl Default for DataByPubkey {
 }
 
 /// Errors returned by exchanger operations.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ExchangerError {
     /// The cancellation token was triggered while waiting.

@@ -22,7 +22,7 @@ use crate::types::{Duty, DutyType, PubKey, SignedData, SignedDataSet};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Broadcaster error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Beacon node client error.

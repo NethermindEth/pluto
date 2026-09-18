@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use crate::name;
 
 /// Peer error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {
     /// Failed to parse public key.

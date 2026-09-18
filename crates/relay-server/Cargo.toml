@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-backerror.workspace = true
 axum.workspace = true
 bon.workspace = true
 futures.workspace = true
@@ -23,6 +22,7 @@ rand.workspace = true
 tracing.workspace = true
 pluto-p2p.workspace = true
 pluto-core.workspace = true
+pluto-stacktrace.workspace = true
 
 [dev-dependencies]
 reqwest = { workspace = true }

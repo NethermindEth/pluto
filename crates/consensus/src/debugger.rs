@@ -75,7 +75,7 @@ struct State {
 }
 
 /// Debugger serialization error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Protobuf encoding failed.

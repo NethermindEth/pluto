@@ -6,7 +6,7 @@ use reqwest::{Method, StatusCode};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Error type for Obol API client operations.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// No exit found for the given validator public key (HTTP 404).

@@ -10,7 +10,7 @@ use pluto_core::{
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Handler-to-behaviour failure.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// Stream negotiation or operation timed out.
@@ -73,7 +73,7 @@ pub enum VerifyError {
 }
 
 /// Error type for partial signature exchange operations.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Message conversion failed.

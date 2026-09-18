@@ -28,7 +28,7 @@ const EMPTY_VALIDATOR_PUBKEY: pluto_eth2api::spec::phase0::BLSPubKey = [0; 48];
 const EMPTY_SIGNATURE: pluto_eth2api::spec::phase0::BLSSignature = [0; 96];
 
 /// LockError is the error type for Lock errors.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     /// Unexpected validator registration

@@ -57,7 +57,6 @@ either = "1.13"
 eventsource-stream = "0.2"
 futures = "0.3"
 futures-timer = "3.0"
-backerror = { version = "0.1.8", default-features = false, features = ["force_backtrace"] }
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"

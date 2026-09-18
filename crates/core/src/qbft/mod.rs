@@ -49,7 +49,7 @@ pub trait QbftTypes: 'static {
 }
 
 /// Errors returned by the QBFT core.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     /// Round timer expired before compare completed.

@@ -8,7 +8,7 @@ use tracing::debug;
 pub type Result<T> = std::result::Result<T, PublishError>;
 
 /// Error type for DKG publish helpers.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {
     /// Failed to create or use the Obol API client.

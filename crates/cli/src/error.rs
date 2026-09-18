@@ -8,7 +8,7 @@ use crate::commands::constants::{MIN_NODES, MIN_THRESHOLD};
 pub type Result<T> = std::result::Result<T, CliError>;
 
 /// Errors that can occur in the Pluto CLI.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(thiserror::Error, Debug)]
 pub enum CliError {
     /// Private key file not found.
@@ -207,7 +207,7 @@ pub enum MevTestError {
     UnsupportedVersionOrMissingHeader(String),
 }
 
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(thiserror::Error, Debug)]
 pub enum CreateClusterError {
     /// Invalid threshold.
@@ -463,7 +463,7 @@ pub enum ThresholdError {
     },
 }
 
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(thiserror::Error, Debug)]
 pub enum InvalidNetworkConfigError {
     /// Invalid network name.

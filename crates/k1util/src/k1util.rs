@@ -28,7 +28,7 @@ pub const SIGNATURE_LEN_WITHOUT_V: usize = SIGNATURE_LEN - 1;
 pub const K1_REC_IDX: usize = 64;
 
 /// An error that can occur when verifying a secp256k1 signature.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum K1UtilError {
     /// The signature length is invalid.

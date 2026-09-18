@@ -14,7 +14,7 @@ use crate::{
 pub use pluto_ssz::{HexDecodeError, from_0x_hex_str, left_pad, to_0x_hex};
 
 /// Error type returned by `verify_sig`.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifySigError {
     /// Invalid expected Ethereum address.
@@ -45,7 +45,7 @@ pub fn verify_sig(
 const DEFINITION_MAX_BODY: usize = 16 * 1024 * 1024;
 
 /// Error type returned by `fetch_definition`.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     /// Timeout while fetching the definition.

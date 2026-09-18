@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-backerror.workspace = true
 either.workspace = true
 futures.workspace = true
 libp2p.workspace = true
@@ -19,6 +18,7 @@ pluto-core.workspace = true
 pluto-crypto.workspace = true
 pluto-eth2api.workspace = true
 pluto-p2p.workspace = true
+pluto-stacktrace.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

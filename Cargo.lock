@@ -1303,26 +1303,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backerror"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "548b52e69629fd3a4cf198bbc661b3bede7489d97b506c69cd562cf15c5bc22b"
-dependencies = [
- "backerror-macros",
-]
-
-[[package]]
-name = "backerror-macros"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca830ea0fe6f85b117409852dfe0e590af30245b28a1c0e3ad2191bae1bf154b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "backon"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5116,7 +5096,6 @@ name = "pluto-app"
 version = "1.7.1"
 dependencies = [
  "axum",
- "backerror",
  "backon",
  "bon",
  "chrono",
@@ -5142,6 +5121,7 @@ dependencies = [
  "pluto-priority",
  "pluto-proto",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-testutil",
  "prost-types 0.14.4",
  "rand 0.8.8",
@@ -5176,7 +5156,6 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "async-trait",
- "backerror",
  "bytes",
  "chrono",
  "clap",
@@ -5197,6 +5176,7 @@ dependencies = [
  "pluto-p2p",
  "pluto-relay-server",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-testutil",
  "pluto-tracing",
  "quick-xml",
@@ -5222,7 +5202,6 @@ dependencies = [
 name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
- "backerror",
  "bon",
  "chrono",
  "hex",
@@ -5235,6 +5214,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-testutil",
  "rand 0.8.8",
  "reqwest 0.13.5",
@@ -5258,7 +5238,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "backerror",
  "cancellation",
  "chrono",
  "clap",
@@ -5278,6 +5257,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
@@ -5298,7 +5278,6 @@ dependencies = [
  "alloy",
  "async-trait",
  "axum",
- "backerror",
  "backon",
  "base64 0.22.1",
  "bon",
@@ -5319,6 +5298,7 @@ dependencies = [
  "pluto-featureset",
  "pluto-proto",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
@@ -5360,7 +5340,6 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "backerror",
  "bon",
  "chrono",
  "clap",
@@ -5383,6 +5362,7 @@ dependencies = [
  "pluto-parsigex",
  "pluto-peerinfo",
  "pluto-proto",
+ "pluto-stacktrace",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
@@ -5407,7 +5387,7 @@ name = "pluto-eth1wrap"
 version = "1.7.1"
 dependencies = [
  "alloy",
- "backerror",
+ "pluto-stacktrace",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -5419,13 +5399,13 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "async-trait",
- "backerror",
  "chrono",
  "ethereum_ssz",
  "ethereum_ssz_derive",
  "eventsource-stream",
  "hex",
  "pluto-ssz",
+ "pluto-stacktrace",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -5450,7 +5430,6 @@ dependencies = [
  "aes",
  "alloy",
  "assert-json-diff",
- "backerror",
  "base64 0.22.1",
  "chrono",
  "cipher",
@@ -5462,6 +5441,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-k1util",
  "pluto-ssz",
+ "pluto-stacktrace",
  "pluto-testutil",
  "rand 0.8.8",
  "regex",
@@ -5500,9 +5480,9 @@ dependencies = [
 name = "pluto-frost"
 version = "1.7.1"
 dependencies = [
- "backerror",
  "blst",
  "hex",
+ "pluto-stacktrace",
  "rand 0.8.8",
  "rand_core 0.6.4",
  "serde",
@@ -5538,11 +5518,11 @@ dependencies = [
 name = "pluto-k1util"
 version = "1.7.1"
 dependencies = [
- "backerror",
  "criterion",
  "hex",
  "k256",
  "libp2p",
+ "pluto-stacktrace",
  "tempfile",
  "test-case",
  "thiserror 2.0.20",
@@ -5554,7 +5534,6 @@ name = "pluto-p2p"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "backerror",
  "backon",
  "bon",
  "chrono",
@@ -5569,6 +5548,7 @@ dependencies = [
  "pluto-core",
  "pluto-eth2util",
  "pluto-k1util",
+ "pluto-stacktrace",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
@@ -5594,7 +5574,6 @@ name = "pluto-parsigex"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "backerror",
  "clap",
  "either",
  "futures",
@@ -5607,6 +5586,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-p2p",
+ "pluto-stacktrace",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
@@ -5622,7 +5602,6 @@ name = "pluto-peerinfo"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "backerror",
  "chrono",
  "clap",
  "futures",
@@ -5637,6 +5616,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-p2p",
  "pluto-proto",
+ "pluto-stacktrace",
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
@@ -5691,7 +5671,6 @@ name = "pluto-relay-server"
 version = "1.7.1"
 dependencies = [
  "axum",
- "backerror",
  "bon",
  "futures",
  "k256",
@@ -5699,6 +5678,7 @@ dependencies = [
  "pluto-core",
  "pluto-eth2util",
  "pluto-p2p",
+ "pluto-stacktrace",
  "pluto-tracing",
  "rand 0.8.8",
  "reqwest 0.13.5",
@@ -5715,10 +5695,10 @@ dependencies = [
 name = "pluto-ssz"
 version = "1.7.1"
 dependencies = [
- "backerror",
  "ethereum_ssz",
  "hex",
  "k256",
+ "pluto-stacktrace",
  "serde",
  "serde_json",
  "serde_with",
@@ -5768,7 +5748,6 @@ version = "1.7.1"
 dependencies = [
  "assert-json-diff",
  "async-trait",
- "backerror",
  "bon",
  "chrono",
  "hex",
@@ -5778,6 +5757,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-ssz",
+ "pluto-stacktrace",
  "rand 0.8.8",
  "reqwest 0.13.5",
  "serde_json",
@@ -5793,10 +5773,10 @@ dependencies = [
 name = "pluto-tracing"
 version = "1.7.1"
 dependencies = [
- "backerror",
  "base64 0.22.1",
  "bon",
  "percent-encoding",
+ "pluto-stacktrace",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

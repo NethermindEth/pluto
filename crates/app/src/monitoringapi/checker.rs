@@ -385,7 +385,7 @@ impl ReadyChecker {
     }
 }
 
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum ReadyCheckerError {
     #[error("beacon node request failed: {0}")]

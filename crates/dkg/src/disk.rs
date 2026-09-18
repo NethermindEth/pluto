@@ -7,7 +7,7 @@ use std::{
 use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DiskError {
     /// Invalid URL.

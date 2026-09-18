@@ -120,7 +120,7 @@ where
 }
 
 /// Error type for the memory ParSigDB.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum MemDBError {
     /// Mismatching partial signed data.

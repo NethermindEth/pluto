@@ -113,7 +113,7 @@ impl fmt::Display for RelayAddr {
 }
 
 /// P2P configuration error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum P2PConfigError {
     /// Failed to parse the TCP addresses.

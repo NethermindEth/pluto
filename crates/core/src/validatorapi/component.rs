@@ -817,7 +817,7 @@ impl Component {
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
@@ -2120,7 +2120,7 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 /// lock or validator cache that is not a valid BLS point — is server-side
 /// state, so 500.
 fn signing_error_to_api_error(
-    err: backerror::LocatedError<SigningError>,
+    err: pluto_stacktrace::LocatedError<SigningError>,
     invalid_msg: impl Into<String>,
 ) -> ApiError {
     use pluto_crypto::types::Error as CryptoError;

@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-backerror.workspace = true
 pluto-proto.workspace = true
 prost.workspace = true
 prost-types.workspace = true
@@ -19,6 +18,7 @@ chrono.workspace = true
 vise.workspace = true
 pluto-core.workspace = true
 pluto-p2p.workspace = true
+pluto-stacktrace.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 unsigned-varint.workspace = true

@@ -28,7 +28,7 @@ pub enum Error<E: std::error::Error> {
 }
 
 /// Error type returned when decoding a hex string of an expected byte length.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum HexDecodeError {
     /// The string is not valid hex.
@@ -60,19 +60,22 @@ mod tests {
     fn located_from_conversion_keeps_message_and_carries_a_trace() {
         let err = decode_hex("zz").expect_err("`zz` is not valid hex");
 
-        let display = err.to_string();
-        assert!(
-            display.contains("invalid hex string:"),
-            "Display lost the variant message: {display}"
-        );
-        assert!(
-            display.contains(file!()),
-            "Display lost the raise location: {display}"
+        assert_eq!(
+            err.to_string(),
+            "invalid hex string: Invalid character 'z' at position 0"
         );
 
         let debug = format!("{err:?}");
         assert!(
             debug.contains("FromHexError"),
+            "Debug lost the inner error: {debug}"
+        );
+        assert!(
+            debug.contains(file!()),
+            "Debug lost the raise location: {debug}"
+        );
+        assert!(
+            debug.contains("\tat "),
             "Debug lost the captured trace: {debug}"
         );
     }

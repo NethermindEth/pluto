@@ -234,7 +234,7 @@ impl<'de> Deserialize<'de> for Definition {
 }
 
 /// DefinitionError is an error type for definition errors.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DefinitionError {
     /// Multiple withdrawal or fee recipient addresses found

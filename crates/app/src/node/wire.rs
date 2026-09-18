@@ -1141,7 +1141,7 @@ where
 
 /// Failure driving a duty's consensus instance: either the deadline could not
 /// be computed or the consensus round itself failed.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum DutyConsensusError {
     #[error(transparent)]

@@ -1915,8 +1915,10 @@ mod tests {
     #[test]
     fn build_app_config_rejects_unknown_min_status_verbatim() {
         // Charon's exact error string.
-        let err = app_config_err(&["--feature-set=foo"]);
-        assert!(err.starts_with("unknown min status: foo"), "{err}");
+        assert_eq!(
+            app_config_err(&["--feature-set=foo"]),
+            "unknown min status: foo"
+        );
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub type AwaitAttDataFunc =
 pub type FeeRecipientFunc = Arc<dyn Fn(&PubKey) -> ExecutionAddress + Send + Sync>;
 
 /// Errors returned while fetching duty data.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum FetcherError {
     /// Wraps an inner error with the duty-type context, matching Go's

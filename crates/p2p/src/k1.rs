@@ -11,7 +11,7 @@ const KEY_BACKUP_DIR: &str = "charon-enr-private-key-backups";
 type Result<T> = std::result::Result<T, K1Error>;
 
 /// An error that can occur when loading a private key.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum K1Error {
     /// K1 utility error.

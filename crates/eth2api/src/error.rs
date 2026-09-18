@@ -7,7 +7,7 @@ use crate::{
 
 /// Error that can occur when using the
 /// [`EthBeaconNodeApiClient`](crate::EthBeaconNodeApiClient).
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum EthBeaconNodeApiClientError {
     /// Sending the request, reading the response body or building the HTTP

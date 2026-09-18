@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-backerror.workspace = true
 bon.workspace = true
 chrono.workspace = true
 uuid.workspace = true
@@ -25,6 +24,7 @@ pluto-eth2util.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-k1util.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 k256.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

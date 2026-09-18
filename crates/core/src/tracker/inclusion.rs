@@ -57,7 +57,7 @@ type MissedFn = Box<dyn Fn(&Submission) + Send>;
 type AttIncludedFn = Box<dyn Fn(&Submission, &Block) + Send>;
 
 /// Errors produced while recording or checking duty inclusion.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionError {
     /// Submitted attester duty data was not an attestation.
@@ -726,7 +726,7 @@ impl InclusionChecker {
 /// Errors raised by the networked [`InclusionChecker`] while talking to the
 /// beacon node. Logged and skipped rather than propagated: the slot is just
 /// retried on the next tick.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
     /// The beacon-node request failed.

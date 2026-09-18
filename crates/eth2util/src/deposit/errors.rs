@@ -2,7 +2,7 @@ use super::{constants::MIN_DEPOSIT_AMOUNT, types::Gwei};
 use crate::{helpers, network};
 
 /// Error type for deposit operations
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DepositError {
     // Domain/Address errors

@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
 /// Errors that can occur when interacting with the validator cache.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
     /// Beacon Node API client error.

@@ -26,7 +26,7 @@ use crate::{
 
 /// Error returned while resolving the signing epoch for, or verifying, an
 /// [`Eth2SignedData`].
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Eth2SignedDataError {
     /// Failure while extracting the message root or epoch from the payload.

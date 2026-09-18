@@ -5,7 +5,7 @@ use libp2p::multiaddr;
 use pluto_p2p::p2p::P2PError;
 
 /// Relay P2P error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum RelayP2PError {
     /// Failed to load private key.

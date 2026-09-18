@@ -26,7 +26,7 @@ const NODE_SIG_MSG_ID: &str = "/charon/dkg/node_sig";
 const NONE_DATA: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
 /// Error returned by [`NodeSigBcast`] operations.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Signing the lock hash with the local K1 key failed.

@@ -15,7 +15,7 @@ pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 const REGISTRATION_DOMAIN_TYPE: DomainType = [0x00, 0x00, 0x00, 0x01];
 
 /// Registration error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {
     /// Invalid fee recipient address.

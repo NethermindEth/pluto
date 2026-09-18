@@ -15,7 +15,7 @@ use crate::qbft;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Consensus implementation error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// QBFT consensus failed.

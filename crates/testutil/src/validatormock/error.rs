@@ -11,7 +11,7 @@ use pluto_eth2util::{eth2exp::Eth2ExpError, helpers::HelperError, signing::Signi
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors returned by the validator mock.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Beacon-node API call failed.
@@ -78,7 +78,7 @@ pub enum Error {
 
 /// Signer-specific errors. Wrapped into [`Error::Sign`] when surfaced from the
 /// validator-mock public API.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SignError {
     /// No private key is registered for the requested public key.

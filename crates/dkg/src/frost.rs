@@ -53,7 +53,7 @@ pub(crate) trait FTransport: Send + Sync {
 }
 
 /// FROST DKG orchestration errors.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum FrostError {
     /// Failed to construct a participant.

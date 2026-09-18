@@ -32,7 +32,7 @@ use crate::{
 pub type Result<T> = std::result::Result<T, SigningError>;
 
 /// Error type for DKG signing helpers.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Failed to build a core public key from bytes.

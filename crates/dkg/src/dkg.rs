@@ -44,7 +44,7 @@ const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DkgError {
     /// Shutdown was requested before the DKG entrypoint started.

@@ -128,7 +128,7 @@ fn yamux_config() -> yamux::Config {
 }
 
 /// P2P error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum P2PError {
     /// Failed to convert the secret key to a libp2p keypair.

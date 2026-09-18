@@ -60,7 +60,7 @@ const SIMNET_SYNC_COMM_DUTIES: (u64, u64) = (2, 8);
 const SIMNET_VMOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors raised while constructing or running a distributed-validator node.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// Failed to load or verify the cluster lock.

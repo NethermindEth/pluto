@@ -57,7 +57,7 @@ pub struct SenderPeerMismatch {
 }
 
 /// User-facing reliable-broadcast error.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The message ID was registered more than once.

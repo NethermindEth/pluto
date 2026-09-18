@@ -47,7 +47,7 @@ const BRIDGE_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Runner errors.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Duplicate proposal.

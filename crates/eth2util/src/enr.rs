@@ -24,7 +24,7 @@ pub const KEY_TCP: &str = "tcp";
 pub const KEY_UDP: &str = "udp";
 
 /// An error that can occur when parsing an ENR record.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     /// The format of the record is invalid.

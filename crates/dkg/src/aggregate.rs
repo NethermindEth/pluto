@@ -17,7 +17,7 @@ use crate::share::Share;
 pub type Result<T> = std::result::Result<T, AggregateError>;
 
 /// Error type for DKG aggregation helpers.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum AggregateError {
     /// Failed to convert raw bytes into a threshold signature.

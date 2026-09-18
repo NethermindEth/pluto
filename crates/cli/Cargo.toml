@@ -11,7 +11,6 @@ name = "pluto"
 path = "src/main.rs"
 
 [dependencies]
-backerror.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 thiserror.workspace = true
@@ -32,6 +31,7 @@ pluto-eth2util.workspace = true
 pluto-featureset.workspace = true
 pluto-k1util.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 libp2p.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

@@ -26,7 +26,7 @@ const SCALAR_BYTES: usize = 32;
 const SCALAR_BITS: usize = 255;
 
 /// Errors from the kryptology-compatible FROST protocol.
-#[backerror::backerror]
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum KryptologyError {
     /// Participant ID is zero or out of range.
