@@ -207,7 +207,7 @@ pub async fn run(
 
     pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
-        .map_err(Into::into)
+        .map_err(|e| e.into())
 }
 
 /// Whether the key could not be loaded because its file is absent.
@@ -710,7 +710,7 @@ mod tests {
         let p2p_addrs = bound.p2p_addrs().await;
 
         let serve_ct = ct.child_token();
-        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(Into::into) });
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(|e| e.into()) });
 
         Ok(TestRelay {
             http_addr,

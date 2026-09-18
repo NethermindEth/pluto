@@ -581,7 +581,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         ..Default::default()
     };
 
-    lock.set_lock_hash().map_err(CreateClusterError::from)?;
+    lock.set_lock_hash()
+        .map_err(|e| CreateClusterError::LockError(e.into()))?;
 
     lock.signature_aggregate = agg_sign(&share_sets, &lock.lock_hash)?;
 

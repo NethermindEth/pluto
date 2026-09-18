@@ -64,7 +64,7 @@ async fn write_file(path: &Path, command: &str, now: DateTime<Utc>) -> Result<()
 
     let bytes = serde_json::to_vec(&meta)?;
 
-    tokio::fs::write(path, bytes).await.map_err(Into::into)
+    tokio::fs::write(path, bytes).await.map_err(|e| e.into())
 }
 
 /// Private key locking service.

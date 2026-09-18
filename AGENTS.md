@@ -51,6 +51,7 @@ A `thiserror` type with an unnamed `#[from]` field carries `#[backerror::backerr
 
 - The field's type becomes `backerror::LocatedError<T>`: build it with `.into()` and match through it with `**`.
 - Generic error types cannot take the attribute.
+- Write the conversion as `?`, a closure (`.map_err(|e| e.into())`), or an explicit `.into()`; passing `Into::into` or `Type::from` as a function value captures the location of a `core` shim.
 - `error!` renders an error with `?err` where it is dropped and with `%err` where it is propagated, so a trace is printed once.
 
 ## Tooling / Quality Gates

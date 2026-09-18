@@ -147,7 +147,7 @@ pub(crate) fn deserialize_signed_data(
         ($ty:ty) => {
             serde_json::from_slice::<$ty>(bytes)
                 .map(SignedData::from)
-                .map_err(ParSigExCodecError::from)
+                .map_err(|e| ParSigExCodecError::Serialize(e.into()))
         };
     }
 

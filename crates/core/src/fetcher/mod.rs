@@ -422,7 +422,7 @@ impl Fetcher {
         self.eth2_cl
             .produce_attestation_data(slot, comm_idx)
             .await
-            .map_err(FetcherError::from)
+            .map_err(|err| err.into())
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
