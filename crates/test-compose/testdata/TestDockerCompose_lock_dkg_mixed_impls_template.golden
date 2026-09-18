@@ -26,6 +26,10 @@
      "Value": "0.0.0.0:3610"
     },
     {
+     "Key": "p2p-udp-address",
+     "Value": "0.0.0.0:3630"
+    },
+    {
      "Key": "p2p-relays",
      "Value": "http://relay:3640"
     },
@@ -76,6 +80,10 @@
     {
      "Key": "p2p-tcp-address",
      "Value": "0.0.0.0:3610"
+    },
+    {
+     "Key": "p2p-udp-address",
+     "Value": "0.0.0.0:3630"
     },
     {
      "Key": "p2p-relays",
@@ -130,6 +138,10 @@
      "Value": "0.0.0.0:3610"
     },
     {
+     "Key": "p2p-udp-address",
+     "Value": "0.0.0.0:3630"
+    },
+    {
      "Key": "p2p-relays",
      "Value": "http://relay:3640"
     },
@@ -180,6 +192,10 @@
     {
      "Key": "p2p-tcp-address",
      "Value": "0.0.0.0:3610"
+    },
+    {
+     "Key": "p2p-udp-address",
+     "Value": "0.0.0.0:3630"
     },
     {
      "Key": "p2p-relays",

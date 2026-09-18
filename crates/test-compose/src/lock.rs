@@ -143,6 +143,7 @@ pub(crate) fn new_node_envs(index: usize, conf: &Config, mode: NodeMode) -> Vec<
         Kv::new("monitoring-address", "0.0.0.0:3620"),
         Kv::new("p2p-external-hostname", format!("node{index}")),
         Kv::new("p2p-tcp-address", "0.0.0.0:3610"),
+        Kv::new("p2p-udp-address", "0.0.0.0:3630"),
         Kv::new("p2p-relays", p2p_relay_addr),
         Kv::new("log-level", "debug"),
         Kv::new("log-color", "force"),

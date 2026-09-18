@@ -57,6 +57,7 @@ Commands (run from `pluto/`):
 ```bash
 cargo +nightly fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo test --workspace --features pluto-eth2api/integration
+# Smoke tests are opt-in (--features smoke); see crates/test-compose/README.md.
 cargo deny check --hide-inclusion-graph
 ```
