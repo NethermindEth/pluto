@@ -817,6 +817,7 @@ impl Component {
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
@@ -1220,7 +1221,7 @@ impl Handler for Component {
                     .await
                     .map_err(|err| {
                         signing_error_to_api_error(
-                            err,
+                            err.into(),
                             "aggregate selection proof verification failed",
                         )
                     })?;
@@ -1740,7 +1741,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    signing_error_to_api_error(err, "invalid sync committee selection proof")
+                    signing_error_to_api_error(err.into(), "invalid sync committee selection proof")
                 })?;
             }
 
@@ -1861,7 +1862,10 @@ fn proposal_timeout() -> ApiError {
 
 /// Builds the `ApiError` returned when an upstream beacon-node call fails
 /// without an HTTP status.
-fn upstream_call_failed(upstream: Upstream, err: EthBeaconNodeApiClientError) -> ApiError {
+fn upstream_call_failed<E>(upstream: Upstream, err: E) -> ApiError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         format!("upstream {upstream} failed"),
@@ -1884,9 +1888,9 @@ fn upstream_error(
 ) -> ApiError {
     match err {
         EthBeaconNodeApiClientError::Http(http) if propagated.contains(&http.status) => {
-            upstream_status_error(upstream, http)
+            upstream_status_error(upstream, (*http).clone())
         }
-        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, http),
+        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, (*http).clone()),
         other => upstream_call_failed(upstream, other),
     }
 }
@@ -2115,27 +2119,40 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 /// with `invalid_msg`; anything else — e.g. a public key from the cluster
 /// lock or validator cache that is not a valid BLS point — is server-side
 /// state, so 500.
-fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+fn signing_error_to_api_error(
+    err: pluto_stacktrace::LocatedError<SigningError>,
+    invalid_msg: impl Into<String>,
+) -> ApiError {
     use pluto_crypto::types::Error as CryptoError;
 
-    match err {
-        SigningError::BeaconNode(_) | SigningError::Helper(HelperError::GettingSpec(_)) => {
-            ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "beacon node lookup failed during signature verification",
-            )
-            .with_source(err)
-        }
-        SigningError::ZeroSignature
-        | SigningError::UnknownAggregateAndProofVersion
-        | SigningError::Verification(
-            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_),
-        ) => ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err),
-        _ => ApiError::new(
+    let beacon_node_failure = match &*err {
+        SigningError::BeaconNode(_) => true,
+        SigningError::Helper(e) => matches!(**e, HelperError::GettingSpec(_)),
+        _ => false,
+    };
+    let invalid_signature = match &*err {
+        SigningError::ZeroSignature | SigningError::UnknownAggregateAndProofVersion => true,
+        SigningError::Verification(e) => matches!(
+            **e,
+            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_)
+        ),
+        _ => false,
+    };
+
+    if beacon_node_failure {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "beacon node lookup failed during signature verification",
+        )
+        .with_source(err)
+    } else if invalid_signature {
+        ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err)
+    } else {
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error during signature verification",
         )
-        .with_source(err),
+        .with_source(err)
     }
 }
 
@@ -3533,7 +3550,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+                VerifyPartialSigError::Signing(ref e) if matches!(**e, SigningError::BeaconNode(_))
             ),
             "expected upstream signing error, got {err:?}"
         );
@@ -3546,7 +3563,7 @@ mod tests {
     /// Genuine signature failures keep mapping to 400.
     #[test]
     fn verify_partial_sig_error_maps_signature_failures_to_400() {
-        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature.into());
         assert_eq!(
             verify_partial_sig_error(err).status_code,
             StatusCode::BAD_REQUEST
@@ -3620,13 +3637,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
         }
@@ -4783,13 +4800,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
         }

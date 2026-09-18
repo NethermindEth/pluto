@@ -91,7 +91,7 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
     let version = match fetch_node_version(beacon_node).await {
         Ok(version) => version,
         Err(error) => {
-            error!(%error, "Failed to get beacon node version");
+            error!(?error, "Failed to get beacon node version");
             return;
         }
     };
@@ -139,7 +139,7 @@ async fn fetch_node_version(
     beacon_node
         .get_node_version()
         .await
-        .map_err(ReadyCheckerError::BeaconNode)
+        .map_err(|e| ReadyCheckerError::BeaconNode(e.into()))
 }
 
 async fn run_ready_checker(
@@ -155,7 +155,7 @@ async fn run_ready_checker(
     } {
         Ok(config) => config,
         Err(error) => {
-            error!(%error, "Failed to initialise ready checker");
+            error!(?error, "Failed to initialise ready checker");
             return;
         }
     };
@@ -216,11 +216,11 @@ async fn fetch_config(
     let genesis_time = beacon_node
         .fetch_genesis_time()
         .await
-        .map_err(ReadyCheckerError::BeaconNode)?;
+        .map_err(|e| ReadyCheckerError::BeaconNode(e.into()))?;
     let (slot_duration, slots_per_epoch) = beacon_node
         .fetch_slots_config()
         .await
-        .map_err(ReadyCheckerError::BeaconNode)?;
+        .map_err(|e| ReadyCheckerError::BeaconNode(e.into()))?;
 
     // `tokio::time::interval` panics on a zero period, so reject a zero slot
     // duration here rather than letting the checker loop panic.
@@ -250,7 +250,7 @@ async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, R
     let peers = beacon_node
         .get_peer_count()
         .await
-        .map_err(ReadyCheckerError::BeaconNode)?;
+        .map_err(|e| ReadyCheckerError::BeaconNode(e.into()))?;
     Ok(peers.connected)
 }
 
@@ -260,7 +260,7 @@ async fn fetch_sync_status(
     let state = beacon_node
         .get_syncing_status()
         .await
-        .map_err(ReadyCheckerError::BeaconNode)?;
+        .map_err(|e| ReadyCheckerError::BeaconNode(e.into()))?;
     MONITORING_METRICS
         .monitoring_beacon_node_syncing
         .set(i64::from(state.is_syncing));
@@ -385,6 +385,7 @@ impl ReadyChecker {
     }
 }
 
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum ReadyCheckerError {
     #[error("beacon node request failed: {0}")]

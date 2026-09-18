@@ -14,6 +14,7 @@ use crate::{
 };
 
 /// Error type for sigagg.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SigAggError {
     /// Threshold must be a positive integer.

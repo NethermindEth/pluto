@@ -113,6 +113,7 @@ impl fmt::Display for RelayAddr {
 }
 
 /// P2P configuration error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum P2PConfigError {
     /// Failed to parse the TCP addresses.
@@ -255,7 +256,7 @@ pub(crate) fn multi_addr_from_socket_addr(
     };
 
     Multiaddr::from_str(&format!("/{}/{}/{}", typ, socket_addr.ip(), transport))
-        .map_err(P2PConfigError::FailedToParseMultiaddr)
+        .map_err(|e| P2PConfigError::FailedToParseMultiaddr(e.into()))
 }
 
 #[cfg(test)]

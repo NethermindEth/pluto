@@ -32,7 +32,7 @@ async fn main() -> ExitCode {
     let loki = match pluto_tracing::init(&cli.tracing.tracing_config()) {
         Ok(loki) => loki,
         Err(err) => {
-            eprintln!("{err}");
+            eprintln!("{err:?}");
             return ExitCode::FAILURE;
         }
     };
@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
     let exit = match &result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            error!(error = %err, "command exited with error");
+            error!(error = ?err, "command exited with error");
             ExitCode::FAILURE
         }
     };

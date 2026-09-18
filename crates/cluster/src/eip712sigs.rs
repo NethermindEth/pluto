@@ -12,6 +12,7 @@ type ValueFunc = Box<dyn Fn(&Definition, &Operator) -> Value>;
 type Result<T> = std::result::Result<T, EIP712Error>;
 
 /// EIP712Error is the error type for EIP-712 errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum EIP712Error {
     /// Failed to convert fork version to chain ID.

@@ -26,6 +26,7 @@ const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 type Result<T> = std::result::Result<T, EthClientError>;
 
 /// Defines errors that can occur when interacting with the Ethereum client.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum EthClientError {
     /// An RPC error.

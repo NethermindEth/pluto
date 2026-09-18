@@ -114,6 +114,7 @@ pub(crate) enum DecodedValue {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Component construction and inbound admission errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Peer order did not fit the wire index type.
@@ -613,7 +614,7 @@ impl crate::wrapper::Consensus for Consensus {
     async fn participate(&self, ct: CancellationToken, duty: Duty) -> crate::wrapper::Result<()> {
         Consensus::participate(self, duty, &ct)
             .await
-            .map_err(Into::into)
+            .map_err(|err| err.into())
     }
 
     async fn propose(
@@ -624,7 +625,7 @@ impl crate::wrapper::Consensus for Consensus {
     ) -> crate::wrapper::Result<()> {
         Consensus::propose(self, duty, value, &ct)
             .await
-            .map_err(Into::into)
+            .map_err(|err| err.into())
     }
 
     fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {

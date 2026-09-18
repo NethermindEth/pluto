@@ -108,7 +108,7 @@ impl IntoResponse for ApiError {
                 tracing::error!(
                     status = self.status_code.as_u16(),
                     message = %self.message,
-                    source = %DisplayChain(source.as_ref()),
+                    source = ?source,
                     "validator api error"
                 );
             } else {

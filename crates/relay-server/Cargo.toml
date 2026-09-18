@@ -22,6 +22,7 @@ rand.workspace = true
 tracing.workspace = true
 pluto-p2p.workspace = true
 pluto-core.workspace = true
+pluto-stacktrace.workspace = true
 
 [dev-dependencies]
 reqwest = { workspace = true }

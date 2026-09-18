@@ -317,7 +317,10 @@ impl FTransport for FrostP2P {
         self.broadcast_round(ROUND1_CAST_ID, &casts_msg, cancellation)
             .await?;
         if let Err(error) = self.round1_casts_tx.send(casts_msg) {
-            error!(%error, "frost round 1 casts receiver dropped before self-delivery");
+            error!(
+                ?error,
+                "frost round 1 casts receiver dropped before self-delivery"
+            );
             return Err(FrostError::Round1CastsReceiverDropped);
         }
 
@@ -375,7 +378,10 @@ impl FTransport for FrostP2P {
         self.broadcast_round(ROUND2_CAST_ID, &casts_msg, cancellation)
             .await?;
         if let Err(error) = self.round2_casts_tx.send(casts_msg) {
-            error!(%error, "frost round 2 casts receiver dropped before self-delivery");
+            error!(
+                ?error,
+                "frost round 2 casts receiver dropped before self-delivery"
+            );
             return Err(FrostError::Round2CastsReceiverDropped);
         }
 

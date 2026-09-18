@@ -47,6 +47,7 @@ pluto-cluster.workspace = true
 pluto-k1util.workspace = true
 pluto-crypto.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 # Normal (non-dev) dependency: the beacon/validator mocks are wired into the
 # production `pluto run` path for simnet mode (`--simnet-beacon-mock` /
 # `--simnet-validator-mock`), mirroring Charon which always compiles its mocks

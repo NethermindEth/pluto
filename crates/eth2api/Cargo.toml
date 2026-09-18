@@ -23,6 +23,7 @@ tree_hash.workspace = true
 tree_hash_derive.workspace = true
 alloy.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 url.workspace = true

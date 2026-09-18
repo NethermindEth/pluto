@@ -46,6 +46,7 @@ pub type AwaitAttDataFunc =
 pub type FeeRecipientFunc = Arc<dyn Fn(&PubKey) -> ExecutionAddress + Send + Sync>;
 
 /// Errors returned while fetching duty data.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum FetcherError {
     /// Wraps an inner error with the duty-type context, matching Go's
@@ -421,7 +422,7 @@ impl Fetcher {
         self.eth2_cl
             .produce_attestation_data(slot, comm_idx)
             .await
-            .map_err(FetcherError::from)
+            .map_err(|err| err.into())
     }
 
     /// Queries the beacon node for an aggregate attestation by data root.
@@ -1400,8 +1401,12 @@ mod tests {
                 FetcherError::Fetch { source, .. }
                     if matches!(
                         &**source,
-                        FetcherError::BeaconNode(EthBeaconNodeApiClientError::Http(http))
-                            if http.status == StatusCode::INTERNAL_SERVER_ERROR
+                        FetcherError::BeaconNode(e)
+                            if matches!(
+                                &**e,
+                                EthBeaconNodeApiClientError::Http(http)
+                                    if http.status == StatusCode::INTERNAL_SERVER_ERROR
+                            )
                     )
             ),
             "got: {err:?}"

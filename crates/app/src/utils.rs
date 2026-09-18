@@ -1,6 +1,7 @@
 use std::{fs, io, path};
 
 /// Error type for util operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum UtilsError {
     /// Underlying IO error occurred.
