@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::{
     config::RelayAddr,
-    peer::{AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key},
+    peer::{self, AddrInfo, MutablePeer, Peer, PeerError},
 };
 
 /// Polling interval for relay address updates.
@@ -206,7 +206,7 @@ async fn resolve_relay(
         if prev_addrs != new_addrs {
             prev_addrs = new_addrs;
 
-            match addr_infos_from_p2p_addrs(&addrs) {
+            match peer::addr_infos_from_p2p_addrs(&addrs) {
                 Ok(infos) if infos.len() != 1 => {
                     tracing::error!(
                         n = infos.len(),
@@ -365,7 +365,7 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
         PeerError::MissingPublicKeyInEnr,
     ))?;
 
-    let peer_id = peer_id_from_key(public_key)?;
+    let peer_id = peer::peer_id_from_key(public_key)?;
 
     let mut addrs = Vec::new();
 
@@ -397,7 +397,7 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
 /// This is a convenience wrapper around `addr_infos_from_p2p_addrs` for a
 /// single address.
 fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, PeerError> {
-    let mut infos = addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
+    let mut infos = peer::addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
 
     infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
 }
@@ -422,7 +422,7 @@ mod tests {
     /// relay serves for it.
     fn relay_fixture() -> (PeerId, String) {
         let key = k256::SecretKey::random(&mut OsRng);
-        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
         let body = serde_json::to_string(&[format!("/ip4/10.0.0.1/tcp/3610/p2p/{peer_id}")])
             .expect("serialize relay addrs");
 
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn multi_addr_from_enr_str_maps_ports_to_transports() {
         let key = k256::SecretKey::random(&mut OsRng);
-        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
         let ip = EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4));
 
         // The UDP port is advertised as QUIC, and comes first when both ports

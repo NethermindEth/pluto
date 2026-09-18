@@ -40,13 +40,12 @@ use pluto_eth2util::{
     network, registration as eth2util_registration,
 };
 use pluto_p2p::k1 as p2p_k1;
-use pluto_ssz::to_0x_hex;
 use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
     commands::{
-        address_validation::validate_addresses,
+        address_validation,
         constants::{MIN_NODES, MIN_THRESHOLD},
         create_dkg,
     },
@@ -938,7 +937,7 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         return Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile);
     }
 
-    let (fee_recipient_addrs, withdrawal_addrs) = validate_addresses(
+    let (fee_recipient_addrs, withdrawal_addrs) = address_validation::validate_addresses(
         num_validators,
         &args.fee_recipient_addrs,
         &args.withdrawal_addrs,
@@ -969,21 +968,20 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
 
     let consensus_protocol = args.consensus_protocol.clone().unwrap_or_default();
 
-    let def = pluto_cluster::definition::Definition::new(
-        name,
-        num_validators,
-        threshold,
-        fee_recipient_addrs,
-        withdrawal_addrs,
-        fork_version,
-        pluto_cluster::definition::Creator::default(),
-        operators,
-        deposit::eths_to_gweis(&args.deposit_amounts),
-        consensus_protocol,
-        args.target_gas_limit,
-        args.compounding,
-        vec![],
-    )?;
+    let def = pluto_cluster::definition::Definition::builder()
+        .name(name)
+        .num_validators(num_validators)
+        .threshold(threshold)
+        .fee_recipient_addresses(fee_recipient_addrs)
+        .withdrawal_addresses(withdrawal_addrs)
+        .fork_version_hex(fork_version)
+        .creator(pluto_cluster::definition::Creator::default())
+        .operators(operators)
+        .deposit_amounts(deposit::eths_to_gweis(&args.deposit_amounts))
+        .consensus_protocol(consensus_protocol)
+        .target_gas_limit(args.target_gas_limit)
+        .compounding(args.compounding)
+        .build()?;
     Ok(def)
 }
 
@@ -1204,7 +1202,7 @@ async fn load_definition(
 
         info!(
             url = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition downloaded from URL"
         );
 
@@ -1216,7 +1214,7 @@ async fn load_definition(
 
         info!(
             path = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition loaded from disk",
         );
 
@@ -2342,7 +2340,7 @@ mod tests {
         // "insufficient fee recipient addresses": 0 addrs for 4 validators →
         // error
         {
-            let err = super::validate_addresses(4, &[], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(4, &[], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --fee-recipient-addresses"),
@@ -2354,7 +2352,7 @@ mod tests {
         // validator → error
         {
             let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
-            let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --withdrawal-addresses"),
@@ -2864,7 +2862,7 @@ mod tests {
     /// `CHARON_*` env var. Charon binds env for all commands generically
     /// (viper `SetEnvPrefix`+`AutomaticEnv`), so tooling that configures a
     /// cluster purely through the environment — the compose harness in
-    /// `test-infra/compose` — works against charon and pluto alike.
+    /// `crates/test-compose` — works against charon and pluto alike.
     #[test]
     fn create_cluster_flags_use_charon_env_prefix() {
         use clap::CommandFactory as _;

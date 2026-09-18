@@ -1,4 +1,7 @@
-#![allow(clippy::arithmetic_side_effects)]
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test-only fake clock over Instant/Duration with bounded, non-overflowing arithmetic"
+)]
 
 use crossbeam::channel as mpmc;
 use std::{

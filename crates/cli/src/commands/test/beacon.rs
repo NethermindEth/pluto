@@ -956,17 +956,29 @@ async fn single_cluster_simulation(cancel: CancellationToken, target: &str) -> S
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
     let now = Instant::now();
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut slot_interval = interval_at(now + SLOT_TIME, SLOT_TIME);
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_12_slots = interval_at(
         now + SLOT_TIME.saturating_mul(12),
         SLOT_TIME.saturating_mul(12),
     );
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_10_sec =
         interval_at(now + StdDuration::from_secs(10), StdDuration::from_secs(10));
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small fixed interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval_minute =
         interval_at(now + StdDuration::from_secs(60), StdDuration::from_secs(60));
 
@@ -1280,7 +1292,10 @@ async fn attestation_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1333,7 +1348,10 @@ async fn aggregation_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
@@ -1379,7 +1397,10 @@ async fn proposal_duty(
     {
         return Default::default();
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1413,7 +1434,10 @@ async fn proposal_duty(
     (produce_all, publish_all)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "orchestrates several independent sync-committee duty streams; splitting the arguments into a struct would not improve clarity"
+)]
 async fn sync_committee_duties(
     cancel: CancellationToken,
     target: &str,
@@ -1446,7 +1470,10 @@ async fn sync_committee_duties(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time_subscribe, tick_time_subscribe);
 
     loop {
@@ -1478,7 +1505,10 @@ async fn sync_committee_contribution_duty(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
@@ -1530,7 +1560,10 @@ async fn sync_committee_message_duty(
     {
         return;
     }
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a small tick interval to a fresh Instant cannot overflow in practice"
+    )]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
@@ -1621,7 +1654,7 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
         tracing::warn!("Failed to convert duration length to u32");
         u32::MAX
     });
-    #[allow(
+    #[expect(
         clippy::arithmetic_side_effects,
         reason = "count is non-zero (early return above)"
     )]

@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use libp2p::PeerId;
 use prost::{Message, Name};
@@ -37,13 +38,13 @@ pub(crate) struct BroadcastCommand {
 }
 
 /// Type-erased entry stored per registered message ID.
+#[async_trait]
 pub(crate) trait RegisteredMessage: Send + Sync {
     /// Validates the incoming wrapped protobuf message.
     fn check(&self, peer_id: PeerId, any: &Any) -> Result<()>;
 
     /// Dispatches the incoming wrapped protobuf message to the typed callback.
-    fn callback(&self, peer_id: PeerId, msg_id: String, any: Any)
-    -> BoxFuture<'static, Result<()>>;
+    async fn callback(&self, peer_id: PeerId, msg_id: String, any: Any) -> Result<()>;
 }
 
 struct TypedRegistration<M> {
@@ -51,6 +52,7 @@ struct TypedRegistration<M> {
     callback: CallbackFn<M>,
 }
 
+#[async_trait]
 impl<M> RegisteredMessage for TypedRegistration<M>
 where
     M: Message + Name + Default + Clone + Send + Sync + 'static,
@@ -60,16 +62,9 @@ where
         (self.check)(peer_id, &message)
     }
 
-    fn callback(
-        &self,
-        peer_id: PeerId,
-        msg_id: String,
-        any: Any,
-    ) -> BoxFuture<'static, Result<()>> {
-        match any.to_msg::<M>() {
-            Ok(message) => (self.callback)(peer_id, msg_id, message),
-            Err(e) => Box::pin(async move { Err(e.into()) }),
-        }
+    async fn callback(&self, peer_id: PeerId, msg_id: String, any: Any) -> Result<()> {
+        let message = any.to_msg::<M>()?;
+        (self.callback)(peer_id, msg_id, message).await
     }
 }
 

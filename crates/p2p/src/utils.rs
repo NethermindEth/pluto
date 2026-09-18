@@ -27,19 +27,36 @@ use crate::{
     manet::Manet,
 };
 
-/// Returns the external IP and Hostname fields as TCP multiaddrs on `ports`.
+/// A transport a node can listen on and advertise.
+///
+/// Distinct from [`crate::p2p::NodeType`], which says which transports a node
+/// installs: a QUIC node installs both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportProtocol {
+    /// TCP, addressed as `/tcp/<port>`.
+    Tcp,
+    /// QUIC over UDP, addressed as `/udp/<port>/quic-v1`.
+    Quic,
+}
+
+/// Returns the external IP and Hostname fields as `proto` multiaddrs on
+/// `ports`.
 ///
 /// `ports` must be the ports the node actually listens on: a configured port of
 /// 0 means the kernel picks one, so the configured value would advertise
 /// nothing dialable.
-fn external_tcp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
+fn external_proto_multiaddrs(
+    cfg: &P2PConfig,
+    ports: &[u16],
+    proto: TransportProtocol,
+) -> crate::p2p::Result<Vec<Multiaddr>> {
     let mut resp = vec![];
 
     if let Some(external_ip) = cfg.external_ip.as_ref() {
         let ip = external_ip.parse::<IpAddr>()?;
 
         for port in ports {
-            let maddr = config::multi_addr_from_ip_tcp_port(SocketAddr::new(ip, *port))?;
+            let maddr = config::multi_addr_from_socket_addr(SocketAddr::new(ip, *port), proto)?;
 
             resp.push(maddr);
         }
@@ -47,37 +64,12 @@ fn external_tcp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result
 
     if let Some(external_host) = cfg.external_host.as_ref() {
         for port in ports {
-            resp.push(multiaddr::multiaddr!(Dns(external_host), Tcp(*port)));
-        }
-    }
-
-    Ok(resp)
-}
-
-/// Returns the external IP and Hostname fields as QUIC multiaddrs on `ports`.
-///
-/// `ports` must be the ports the node actually listens on, as in
-/// [`external_tcp_multiaddrs`].
-fn external_udp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut resp = vec![];
-
-    if let Some(external_ip) = cfg.external_ip.as_ref() {
-        let ip = external_ip.parse::<IpAddr>()?;
-
-        for port in ports {
-            let maddr = config::multi_addr_from_ip_udp_port(SocketAddr::new(ip, *port))?;
-
-            resp.push(maddr);
-        }
-    }
-
-    if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in ports {
-            resp.push(multiaddr::multiaddr!(
-                Dns(external_host),
-                Udp(*port),
-                QuicV1
-            ));
+            resp.push(match proto {
+                TransportProtocol::Tcp => multiaddr::multiaddr!(Dns(external_host), Tcp(*port)),
+                TransportProtocol::Quic => {
+                    multiaddr::multiaddr!(Dns(external_host), Udp(*port), QuicV1)
+                }
+            });
         }
     }
 
@@ -90,27 +82,25 @@ pub fn external_multiaddrs(
     cfg: &P2PConfig,
     listen_addrs: &[Multiaddr],
 ) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let tcp_ports: Vec<u16> = listen_addrs.iter().filter_map(tcp_port).collect();
-    let udp_ports: Vec<u16> = listen_addrs.iter().filter_map(udp_port).collect();
+    let mut addrs = Vec::new();
 
-    let mut addrs = external_tcp_multiaddrs(cfg, &tcp_ports)?;
-    addrs.extend(external_udp_multiaddrs(cfg, &udp_ports)?);
+    for proto in [TransportProtocol::Tcp, TransportProtocol::Quic] {
+        let ports: Vec<u16> = listen_addrs
+            .iter()
+            .filter_map(|addr| addr_port(addr, proto))
+            .collect();
+
+        addrs.extend(external_proto_multiaddrs(cfg, &ports, proto)?);
+    }
 
     Ok(addrs)
 }
 
-/// Returns the TCP port of a multiaddr.
-pub fn tcp_port(addr: &Multiaddr) -> Option<u16> {
-    addr.iter().find_map(|protocol| match protocol {
-        MaProtocol::Tcp(port) => Some(port),
-        _ => None,
-    })
-}
-
-/// Returns the UDP port of a multiaddr.
-pub fn udp_port(addr: &Multiaddr) -> Option<u16> {
-    addr.iter().find_map(|protocol| match protocol {
-        MaProtocol::Udp(port) => Some(port),
+/// Returns the port `addr` carries for `proto`, if any.
+pub fn addr_port(addr: &Multiaddr, proto: TransportProtocol) -> Option<u16> {
+    addr.iter().find_map(|protocol| match (protocol, proto) {
+        (MaProtocol::Tcp(port), TransportProtocol::Tcp)
+        | (MaProtocol::Udp(port), TransportProtocol::Quic) => Some(port),
         _ => None,
     })
 }

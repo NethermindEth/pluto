@@ -7,8 +7,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use pluto_eth2api::ProposalPreparation;
-use serde::Deserialize;
+use pluto_eth2api::v1::ProposalPreparation;
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path},
@@ -42,13 +41,6 @@ impl ProposalPreparationStore {
     }
 }
 
-/// Wire representation of a single `prepare_beacon_proposer` body item.
-#[derive(Debug, Deserialize)]
-struct ProposalPreparationItem {
-    validator_index: String,
-    fee_recipient: String,
-}
-
 /// Mounts the recording `prepare_beacon_proposer` handler on `server`.
 pub(crate) async fn mount(server: &MockServer, state: Arc<MockState>) {
     Mock::given(method("POST"))
@@ -60,45 +52,19 @@ pub(crate) async fn mount(server: &MockServer, state: Arc<MockState>) {
 }
 
 fn response(state: &MockState, request: &Request) -> ResponseTemplate {
-    match parse_body(&request.body) {
+    match serde_json::from_slice::<Vec<ProposalPreparation>>(&request.body) {
         Ok(preparations) => {
             state.proposal_preparation_store.record(preparations);
             ResponseTemplate::new(200)
         }
-        Err(message) => error_response(400, message),
+        Err(_) => error_response(400, "invalid prepare_beacon_proposer body"),
     }
-}
-
-fn parse_body(body: &[u8]) -> Result<Vec<ProposalPreparation>, &'static str> {
-    let items: Vec<ProposalPreparationItem> =
-        serde_json::from_slice(body).map_err(|_| "invalid prepare_beacon_proposer body")?;
-
-    items
-        .into_iter()
-        .map(|item| {
-            let validator_index = item
-                .validator_index
-                .parse()
-                .map_err(|_| "invalid validator_index")?;
-            let fee_recipient = parse_execution_address(&item.fee_recipient)?;
-            Ok(ProposalPreparation {
-                validator_index,
-                fee_recipient,
-            })
-        })
-        .collect()
-}
-
-fn parse_execution_address(value: &str) -> Result<[u8; 20], &'static str> {
-    let stripped = value.strip_prefix("0x").unwrap_or(value);
-    let bytes = hex::decode(stripped).map_err(|_| "invalid fee_recipient hex")?;
-    bytes.try_into().map_err(|_| "invalid fee_recipient length")
 }
 
 #[cfg(test)]
 mod tests {
     use crate::beaconmock::BeaconMock;
-    use pluto_eth2api::ProposalPreparation;
+    use pluto_eth2api::v1::ProposalPreparation;
     use serde_json::json;
 
     #[tokio::test]
@@ -120,7 +86,7 @@ mod tests {
         ];
 
         mock.client()
-            .submit_proposal_preparations(&preparations)
+            .prepare_beacon_proposer(&preparations)
             .await
             .expect("submit succeeds");
 
@@ -144,11 +110,11 @@ mod tests {
         };
 
         mock.client()
-            .submit_proposal_preparations(std::slice::from_ref(&first))
+            .prepare_beacon_proposer(std::slice::from_ref(&first))
             .await
             .expect("first submit succeeds");
         mock.client()
-            .submit_proposal_preparations(std::slice::from_ref(&second))
+            .prepare_beacon_proposer(std::slice::from_ref(&second))
             .await
             .expect("second submit succeeds");
 

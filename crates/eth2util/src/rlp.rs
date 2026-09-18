@@ -8,9 +8,6 @@ pub enum RlpError {
     /// The input is too short.
     #[error("input too short")]
     InputTooShort,
-    /// The length is negative.
-    #[error("negative length")]
-    NegativeLength,
     /// The length is too large.
     #[error("length overflow")]
     Overflow,

@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use k256::{PublicKey, SecretKey};
 use prost::{Message, Name};
@@ -97,7 +98,7 @@ pub struct Config {
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
     /// Injected feature set, resolved once at construction.
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
 }
 
 /// Decoded consensus value supported by this component.
@@ -290,7 +291,7 @@ pub struct Consensus {
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,
     compare_attestations: bool,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
     subscribers: SubscriberSet,
     instances: Arc<Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>>,
 }
@@ -431,9 +432,10 @@ impl Consensus {
             return Err(Error::InvalidConsensusMessage);
         }
 
-        if !qbft::MessageType::from_wire(msg.r#type).valid() {
-            return Err(Error::InvalidConsensusMessageType);
-        }
+        // The conversion is the admission check: `TryFrom` accepts exactly the
+        // wire values `MessageType::valid` accepted, so there is no separate
+        // validity test to keep in sync.
+        qbft::MessageType::try_from(msg.r#type).map_err(|_| Error::InvalidConsensusMessageType)?;
 
         let duty = msg.duty.as_ref().ok_or(Error::InvalidConsensusMessage)?;
         let duty_type =
@@ -598,6 +600,7 @@ impl Consensus {
     }
 }
 
+#[async_trait]
 impl crate::wrapper::Consensus for Consensus {
     fn protocol_id(&self) -> String {
         self.protocol_id().to_string()
@@ -607,29 +610,21 @@ impl crate::wrapper::Consensus for Consensus {
         drop(Consensus::start(self, ct));
     }
 
-    fn participate(
-        &self,
-        ct: CancellationToken,
-        duty: Duty,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::participate(self, duty, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    async fn participate(&self, ct: CancellationToken, duty: Duty) -> crate::wrapper::Result<()> {
+        Consensus::participate(self, duty, &ct)
+            .await
+            .map_err(Into::into)
     }
 
-    fn propose(
+    async fn propose(
         &self,
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::propose(self, duty, value, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    ) -> crate::wrapper::Result<()> {
+        Consensus::propose(self, duty, value, &ct)
+            .await
+            .map_err(Into::into)
     }
 
     fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {
@@ -1397,14 +1392,14 @@ pub(crate) mod tests {
         consensus_with_feature_set(
             local_peer_idx,
             duty_allowed,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         )
     }
 
     pub(crate) fn consensus_with_feature_set(
         local_peer_idx: i64,
         duty_allowed: bool,
-        feature_set: Arc<pluto_featureset::FeatureSet>,
+        feature_set: &'static pluto_featureset::FeatureSet,
     ) -> Consensus {
         Consensus::new(Config {
             peers: peers(),
@@ -1428,7 +1423,8 @@ pub(crate) mod tests {
             DeadlinerTask::start(cancel, "qbft-test", FutureCalculator)
         };
 
-        let fs = Arc::new(pluto_featureset::FeatureSet::new());
+        let fs: &pluto_featureset::FeatureSet =
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
         Config {
             peers: vec![],
             local_peer_idx: 0,
@@ -1439,7 +1435,7 @@ pub(crate) mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: false,
-            timer_func: get_round_timer_func(fs.clone()),
+            timer_func: get_round_timer_func(fs),
             feature_set: fs,
         }
     }

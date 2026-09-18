@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pluto_core::{
     signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::{ParSignedData, PubKey, SignedData},
+    types::{ParSignedData, PubKey},
 };
 use pluto_crypto::{
     tbls,

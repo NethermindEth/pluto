@@ -337,7 +337,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::const_is_empty, reason = "SUPPORTED should never be empty")]
+    // SUPPORTED should never be empty; lint does not fire on all toolchains so
+    // `allow` (not `expect`) is used to avoid an unfulfilled-expectation error.
+    #[allow(clippy::const_is_empty)]
     fn multi_supported() {
         assert!(!SUPPORTED.is_empty());
     }

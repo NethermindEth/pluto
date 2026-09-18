@@ -19,10 +19,6 @@ pub enum HelperError {
     #[error("Invalid ethereum address: {0}")]
     InvalidAddress(String),
 
-    /// Hex decoding error
-    #[error("Invalid ethereum hex address: {0}")]
-    InvalidHexAddress(String),
-
     /// Invalid HTTP header format
     #[error("http headers must be comma separated values formatted as header=value")]
     InvalidHTTPHeader,
@@ -31,9 +27,10 @@ pub enum HelperError {
     #[error("getting spec: {0}")]
     GettingSpec(String),
 
-    /// Failed to fetch a required value from the spec
-    #[error("fetch slots per epoch")]
-    FetchSlotsPerEpoch,
+    /// The beacon node reported a zero slots-per-epoch, so an epoch cannot be
+    /// derived from a slot.
+    #[error("beacon node reported slots per epoch as zero")]
+    ZeroSlotsPerEpoch,
 
     /// The slot for a timestamp could not be computed from the genesis time and
     /// slot duration (out-of-range timestamp, overflow, or a zero slot
@@ -167,7 +164,7 @@ pub async fn epoch_from_slot(
         .map_err(|e| HelperError::GettingSpec(e.to_string()))?;
 
     slot.checked_div(slots_per_epoch)
-        .ok_or(HelperError::FetchSlotsPerEpoch)
+        .ok_or(HelperError::ZeroSlotsPerEpoch)
 }
 
 #[cfg(test)]

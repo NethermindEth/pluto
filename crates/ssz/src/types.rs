@@ -188,7 +188,10 @@ impl<T: Encode, const SIZE: usize> Encode for SszVector<T, SIZE> {
 
     fn ssz_fixed_len() -> usize {
         if T::is_ssz_fixed_len() {
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "fixed element length times a small const SIZE cannot overflow a usize for real SSZ types"
+            )]
             {
                 T::ssz_fixed_len() * SIZE
             }
@@ -213,7 +216,10 @@ impl<T: Decode, const SIZE: usize> Decode for SszVector<T, SIZE> {
 
     fn ssz_fixed_len() -> usize {
         if T::is_ssz_fixed_len() {
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "fixed element length times a small const SIZE cannot overflow a usize for real SSZ types"
+            )]
             {
                 T::ssz_fixed_len() * SIZE
             }
@@ -572,12 +578,7 @@ impl<const SIZE: usize> BitVector<SIZE> {
         // `rem` is in 1..=7, so the shift never overflows. A valid final byte
         // has every bit at position >= rem (the padding region) cleared.
         match bytes.last() {
-            Some(&last) => {
-                #[allow(clippy::arithmetic_side_effects)]
-                {
-                    last >> rem == 0
-                }
-            }
+            Some(&last) => last >> rem == 0,
             None => true,
         }
     }

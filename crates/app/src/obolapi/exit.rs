@@ -9,22 +9,18 @@ use pluto_crypto::{tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
 use pluto_cluster::{
-    helpers::to_0x_hex,
+    helpers,
     ssz::{SSZ_LEN_BLS_SIG, SSZ_LEN_PUB_KEY},
 };
-use pluto_eth2api::types::{
-    GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
-};
-use pluto_ssz::{HashRoot, HashWalker, Hasher, put_bytes_n};
+use pluto_ssz::{HashRoot, HashWalker, Hasher};
 
 use crate::obolapi::{
     client::Client,
     error::{Error, Result},
-    helper::{bearer_string, from_0x},
+    helper,
 };
 
-/// Type alias for signed voluntary exit from eth2api.
-pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
+pub use pluto_eth2api::spec::phase0::{SignedVoluntaryExit, VoluntaryExit};
 
 /// Trait for types that can be hashed using SSZ hash tree root.
 pub trait SszHashable {
@@ -44,23 +40,19 @@ impl SszHashable for SignedVoluntaryExit {
         let index = hh.index();
 
         self.message.hash_with(hh)?;
-        let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
-        put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
+        pluto_ssz::put_bytes_n(hh, &self.signature, SSZ_LEN_BLS_SIG)?;
 
         hh.merkleize(index)?;
         Ok(())
     }
 }
 
-impl SszHashable for Phase0SignedVoluntaryExitMessage {
+impl SszHashable for VoluntaryExit {
     fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
-        let epoch = self.epoch.parse::<u64>()?;
-        let validator_index = self.validator_index.parse::<u64>()?;
-
-        hh.put_uint64(epoch)?;
-        hh.put_uint64(validator_index)?;
+        hh.put_uint64(self.epoch)?;
+        hh.put_uint64(self.validator_index)?;
 
         hh.merkleize(index)?;
         Ok(())
@@ -88,7 +80,7 @@ impl SszHashable for ExitBlob {
                 "missing public key".to_string(),
             ))
         })?;
-        let pk_bytes = from_0x(pk, SSZ_LEN_PUB_KEY)?;
+        let pk_bytes = helper::from_0x(pk, SSZ_LEN_PUB_KEY)?;
         hh.put_bytes(&pk_bytes)?;
 
         self.signed_exit_message.hash_with(hh)?;
@@ -178,7 +170,7 @@ impl TryFrom<PartialExitRequestDto> for PartialExitRequest {
     type Error = Error;
 
     fn try_from(dto: PartialExitRequestDto) -> Result<Self> {
-        let signature = from_0x(&dto.signature, 65)?;
+        let signature = helper::from_0x(&dto.signature, 65)?;
 
         Ok(Self {
             unsigned: dto.unsigned,
@@ -191,7 +183,7 @@ impl From<PartialExitRequest> for PartialExitRequestDto {
     fn from(req: PartialExitRequest) -> Self {
         Self {
             unsigned: req.unsigned,
-            signature: to_0x_hex(&req.signature),
+            signature: helpers::to_0x_hex(&req.signature),
         }
     }
 }
@@ -233,7 +225,7 @@ impl SszHashable for FullExitAuthBlob {
         let index = hh.index();
 
         hh.put_bytes(&self.lock_hash)?;
-        put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
+        pluto_ssz::put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
         hh.put_uint64(self.share_index)?;
 
         hh.merkleize(index)?;
@@ -252,19 +244,13 @@ impl Client {
         identity_key: &k256::SecretKey,
         mut exit_blobs: Vec<ExitBlob>,
     ) -> Result<()> {
-        let lock_hash_str = to_0x_hex(lock_hash);
+        let lock_hash_str = helpers::to_0x_hex(lock_hash);
         let path = submit_partial_exit_url(&lock_hash_str);
 
         let url = self.build_url(&path)?;
 
         // Sort by validator index ascending
-        exit_blobs.sort_by_key(|blob| {
-            blob.signed_exit_message
-                .message
-                .validator_index
-                .parse::<u64>()
-                .unwrap_or_default()
-        });
+        exit_blobs.sort_by_key(|blob| blob.signed_exit_message.message.validator_index);
 
         let unsigned_msg = UnsignedPartialExitRequest {
             partial_exits: exit_blobs.into(),
@@ -297,9 +283,9 @@ impl Client {
         identity_key: &k256::SecretKey,
     ) -> Result<ExitBlob> {
         // Validate public key is 48 bytes
-        let val_pubkey_bytes = from_0x(val_pubkey, 48)?;
+        let val_pubkey_bytes = helper::from_0x(val_pubkey, 48)?;
 
-        let path = fetch_full_exit_url(val_pubkey, &to_0x_hex(lock_hash), share_index);
+        let path = fetch_full_exit_url(val_pubkey, &helpers::to_0x_hex(lock_hash), share_index);
 
         let url = self.build_url(&path)?;
 
@@ -316,7 +302,7 @@ impl Client {
 
         let headers = vec![(
             "Authorization".to_string(),
-            bearer_string(&lock_hash_signature),
+            helper::bearer_string(&lock_hash_signature),
         )];
 
         let response_body = self.http_get(url, Some(&headers)).await?;
@@ -338,7 +324,7 @@ impl Client {
             }
 
             // A BLS signature is 96 bytes long
-            let sig_bytes = from_0x(sig_str, 96)?;
+            let sig_bytes = helper::from_0x(sig_str, 96)?;
 
             // Convert to Signature type
             let mut sig = [0u8; 96];
@@ -357,16 +343,16 @@ impl Client {
         // Perform threshold aggregation
         let full_sig = tbls::threshold_aggregate(&raw_signatures)?;
 
-        let epoch_u64: u64 = exit_response.epoch.parse()?;
+        let epoch: u64 = exit_response.epoch.parse()?;
 
         Ok(ExitBlob {
             public_key: Some(val_pubkey.to_string()),
-            signed_exit_message: pluto_eth2api::types::GetPoolVoluntaryExitsResponseResponseDatum {
-                message: pluto_eth2api::types::Phase0SignedVoluntaryExitMessage {
-                    epoch: epoch_u64.to_string(),
-                    validator_index: exit_response.validator_index.to_string(),
+            signed_exit_message: SignedVoluntaryExit {
+                message: VoluntaryExit {
+                    epoch,
+                    validator_index: exit_response.validator_index,
                 },
-                signature: to_0x_hex(&full_sig),
+                signature: full_sig,
             },
         })
     }
@@ -382,9 +368,9 @@ impl Client {
         identity_key: &k256::SecretKey,
     ) -> Result<()> {
         // Validate public key is 48 bytes
-        let val_pubkey_bytes = from_0x(val_pubkey, 48)?;
+        let val_pubkey_bytes = helper::from_0x(val_pubkey, 48)?;
 
-        let path = delete_partial_exit_url(val_pubkey, &to_0x_hex(lock_hash), share_index);
+        let path = delete_partial_exit_url(val_pubkey, &helpers::to_0x_hex(lock_hash), share_index);
 
         let url = self.build_url(&path)?;
 
@@ -400,7 +386,7 @@ impl Client {
 
         let headers = vec![(
             "Authorization".to_string(),
-            bearer_string(&lock_hash_signature),
+            helper::bearer_string(&lock_hash_signature),
         )];
 
         self.http_delete(url, Some(&headers)).await?;
@@ -472,20 +458,28 @@ mod tests {
             "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\
 2122232425262728292a2b2c2d2e2f30",
         )?;
-        let bls_sig_hex = "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\
-202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\
-404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f";
+        let bls_sig: [u8; 96] = std::array::from_fn(|i| u8::try_from(i).expect("fits"));
 
         let exit_blob = ExitBlob {
-            public_key: Some(to_0x_hex(&validator_pubkey)),
+            public_key: Some(helpers::to_0x_hex(&validator_pubkey)),
             signed_exit_message: SignedVoluntaryExit {
-                message: Phase0SignedVoluntaryExitMessage {
-                    epoch: "194048".to_string(),
-                    validator_index: "42".to_string(),
+                message: VoluntaryExit {
+                    epoch: 194048,
+                    validator_index: 42,
                 },
-                signature: bls_sig_hex.to_string(),
+                signature: bls_sig,
             },
         };
+
+        // The Obol API contract: decimal-string integers and a 0x hex
+        // signature.
+        assert_eq!(
+            serde_json::to_value(&exit_blob.signed_exit_message)?,
+            serde_json::json!({
+                "message": { "epoch": "194048", "validator_index": "42" },
+                "signature": helpers::to_0x_hex(&bls_sig),
+            })
+        );
         let partial_exits: PartialExits = vec![exit_blob.clone()].into();
         let unsigned = UnsignedPartialExitRequest {
             partial_exits: partial_exits.clone(),

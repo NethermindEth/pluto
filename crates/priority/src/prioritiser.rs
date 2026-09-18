@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 
+use bon::bon;
 use futures::FutureExt;
 use libp2p::PeerId;
 use pluto_core::{
@@ -30,7 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    calculate::calculate_result,
+    calculate,
     component::MsgVerifier,
     consensus::{Consensus, PrioritySubscriber},
     error::{Error, Result},
@@ -97,7 +98,7 @@ struct Shared {
     /// Cluster peers participating in the protocol.
     peers: Vec<PeerId>,
     /// Validates received messages (peer membership + signature).
-    msg_validator: Arc<MsgVerifier>,
+    msg_validator: MsgVerifier,
     /// Cancelled when the engine shuts down, signalling instances to stop.
     quit: CancellationToken,
     /// Deadline scheduler; expired duties drop their request buffers.
@@ -177,7 +178,7 @@ impl Shared {
             return Err(Error::InvalidPeerId);
         }
 
-        (self.msg_validator)(&msg)?; // Arc<Box<dyn Fn>> auto-derefs for call.
+        (self.msg_validator)(&msg)?;
 
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
@@ -228,6 +229,7 @@ pub struct Prioritiser {
     subs: Arc<Mutex<Vec<Subscriber>>>,
 }
 
+#[bon]
 impl Prioritiser {
     /// Constructs a prioritiser and its libp2p transport behaviour.
     ///
@@ -241,7 +243,7 @@ impl Prioritiser {
     /// handler and its exchange silently skipped, so the instance could
     /// otherwise reach consensus on a partial message set. Callers using this
     /// seam directly must uphold that invariant.
-    #[allow(clippy::too_many_arguments)]
+    #[builder]
     pub fn new_internal(
         local_id: PeerId,
         peers: Vec<PeerId>,
@@ -258,7 +260,7 @@ impl Prioritiser {
         // feeds the remaining `Inner` fields — no construction cycle.
         let shared = Arc::new(Shared {
             peers,
-            msg_validator: Arc::new(msg_validator),
+            msg_validator,
             quit: CancellationToken::new(),
             deadliner,
             req_buffers: Mutex::new(HashMap::new()),
@@ -510,7 +512,7 @@ fn start_consensus(
     msgs: &[PriorityMsg],
     ct: &CancellationToken,
 ) -> Result<()> {
-    let result = calculate_result(msgs, inner.min_required)
+    let result = calculate::calculate_result(msgs, inner.min_required)
         .map_err(|e| Error::CalculateResult(Box::new(e)))?;
 
     let consensus = inner.consensus.clone();
@@ -532,6 +534,7 @@ fn start_consensus(
 mod tests {
     use std::sync::Mutex as StdMutex;
 
+    use async_trait::async_trait;
     use chrono::{Duration as ChronoDuration, Utc};
     use pluto_core::{
         corepb::v1::priority::{PriorityResult, PriorityTopicProposal},
@@ -569,7 +572,7 @@ mod tests {
         proposed: Arc<StdMutex<Vec<(Duty, PriorityResult)>>>,
     }
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl Consensus for MockConsensus {
         async fn propose_priority(
             &self,
@@ -629,16 +632,16 @@ mod tests {
         let consensus = Arc::new(MockConsensus::default());
         let ct = CancellationToken::new();
         let (deadliner, _expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_secs(3600),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_secs(3600))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
 
         let msg = build_msg(&key, peer, "v1");
         let duty = duty_from_proto(msg.duty.as_ref().expect("duty"));
@@ -673,16 +676,16 @@ mod tests {
         // consensus on the exchange timeout (matching the reference, which
         // never short-circuits the empty exchange). Keep the timeout short so
         // the test decides promptly.
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_millis(100),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_millis(100))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
 
         let (result_tx, mut result_rx) = mpsc::unbounded_channel();
         prio.subscribe(Box::new(move |duty, result| {
@@ -734,16 +737,16 @@ mod tests {
         let ct = CancellationToken::new();
         let (deadliner, expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
         let exchange_timeout = Duration::from_secs(2);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            exchange_timeout,
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(exchange_timeout)
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
         prio.start(expired, ct.clone());
 
         let msg = build_msg(&key, peer, "v1");
@@ -779,16 +782,16 @@ mod tests {
 
         let ct = CancellationToken::new();
         let (deadliner, _expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_secs(3600),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_secs(3600))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
 
         // No prioritise instance runs for this duty, so the buffered request's
         // response oneshot is never fulfilled; the wait must time out.
@@ -815,16 +818,16 @@ mod tests {
 
         let ct = CancellationToken::new();
         let (deadliner, _expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_secs(3600),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_secs(3600))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
 
         let msg = build_msg(&key, peer, "v1");
         // Use a different connection peer id than the message claims.
@@ -864,16 +867,16 @@ mod tests {
 
         let ct = CancellationToken::new();
         let (deadliner, _expired) = DeadlinerTask::start(ct.clone(), "test", ExpiredCalculator);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_secs(3600),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_secs(3600))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
 
         let msg = build_msg(&key, peer, "v1");
         let err = prio
@@ -901,16 +904,16 @@ mod tests {
         // deterministically.
         let (expired_tx, expired_rx) = mpsc::channel(1);
         let (deadliner, _real_expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
-        let (prio, _behaviour) = Prioritiser::new_internal(
-            peer,
-            peers,
-            1,
-            consensus,
-            validator,
-            Duration::from_secs(3600),
-            deadliner,
-            P2PContext::default(),
-        );
+        let (prio, _behaviour) = Prioritiser::new_internal()
+            .local_id(peer)
+            .peers(peers)
+            .min_required(1)
+            .consensus(consensus)
+            .msg_validator(validator)
+            .exchange_timeout(Duration::from_secs(3600))
+            .deadliner(deadliner)
+            .p2p_context(P2PContext::default())
+            .call();
         prio.start(expired_rx, ct.clone());
 
         let duty = Duty::new(SlotNumber::new(42), DutyType::Unknown);

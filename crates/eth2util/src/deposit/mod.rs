@@ -227,7 +227,10 @@ pub fn get_deposit_file_path(data_dir: impl AsRef<Path>, amount: Gwei) -> PathBu
         "deposit-data.json".to_string()
     } else {
         // Convert Gwei to ETH and format
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "gwei amount fits precisely in f64 for filename formatting"
+        )]
         let eth = amount as f64 / ONE_ETH_IN_GWEI as f64;
         format!("deposit-data-{}eth.json", eth)
     };

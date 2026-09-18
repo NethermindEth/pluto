@@ -237,12 +237,12 @@ pub fn network_to_fork_version_bytes(network: impl AsRef<str>) -> Result<Vec<u8>
 }
 
 /// Valid network.
-pub fn valid_network(name: &str) -> bool {
+pub fn valid_network(name: impl AsRef<str>) -> bool {
     network_from_name(name).is_ok()
 }
 
 /// Network to genesis time.
-pub fn network_to_genesis_time(name: &str) -> Result<DateTime<Utc>> {
+pub fn network_to_genesis_time(name: impl AsRef<str>) -> Result<DateTime<Utc>> {
     let network = network_from_name(name)?;
     DateTime::<Utc>::from_timestamp(
         i64::try_from(network.genesis_timestamp).map_err(|_| {

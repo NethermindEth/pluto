@@ -62,8 +62,6 @@ pub(crate) struct CoreBehaviour {
 pub struct CoreHandles {
     /// Outbound partial-signature broadcast + inbound subscription handle.
     pub parsigex: parsigex::Handle,
-    /// Outbound QBFT broadcast handle.
-    pub consensus: qbft::p2p::Handle,
     /// Shared P2P runtime context (known peers + live connections), used by the
     /// monitoring API's readiness checker to compute quorum connectivity.
     pub p2p_context: P2PContext,
@@ -82,9 +80,12 @@ pub(crate) struct WireP2PParams {
     pub p2p_config: pluto_p2p::config::P2PConfig,
     pub peers: Vec<Peer>,
     pub consensus: Arc<qbft::Consensus>,
+    /// Receiving half of the QBFT broadcast channel whose [`qbft::p2p::Handle`]
+    /// already backs `consensus`'s broadcaster.
+    pub consensus_broadcast_queue: qbft::p2p::BroadcastQueue,
     pub min_required: i64,
     pub deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator>,
-    pub feature_set: Arc<pluto_featureset::FeatureSet>,
+    pub feature_set: &'static pluto_featureset::FeatureSet,
     pub duty_gater: DutyGaterFn,
     pub eth2_cl: EthBeaconNodeApiClient,
     pub pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
@@ -105,6 +106,7 @@ pub(crate) async fn wire_p2p(
         p2p_config,
         peers,
         consensus,
+        consensus_broadcast_queue,
         min_required,
         deadline_calc,
         feature_set,
@@ -157,14 +159,18 @@ pub(crate) async fn wire_p2p(
     let priority_consensus: Arc<dyn pluto_priority::Consensus> = consensus.clone();
     let priority_cancellation = cancellation.clone();
 
-    // QBFT consensus transport. `Behaviour::new` errors if the local peer id is
-    // not present in the configured cluster peer list.
-    let (consensus_comp, consensus_handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
-        consensus,
-        p2p_context: p2p_context.clone(),
-        local_peer_id,
-        cancellation,
-    })?;
+    // QBFT consensus transport: drains the broadcast channel the caller
+    // already handed to `consensus`'s broadcaster. `Behaviour::new` errors if
+    // the local peer id is not present in the configured cluster peer list.
+    let consensus_comp = qbft::p2p::Behaviour::new(
+        qbft::p2p::Config {
+            consensus,
+            p2p_context: p2p_context.clone(),
+            local_peer_id,
+            cancellation,
+        },
+        consensus_broadcast_queue,
+    )?;
 
     // Peer metadata exchange. Use the Charon-compatible short git hash: Charon
     // rejects a peer's whole peerinfo record if the git hash isn't
@@ -185,16 +191,16 @@ pub(crate) async fn wire_p2p(
     // versions/protocols/proposal types. The 6s exchange timeout (half a slot)
     // matches Charon; `new_component` fails fast on a peer missing from the
     // shared `p2p_context`.
-    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component(
-        peer_ids.clone(),
-        min_required,
-        priority_consensus,
-        std::time::Duration::from_secs(6),
-        key.clone(),
-        deadline_calc,
-        p2p_context.clone(),
-        priority_cancellation,
-    )?;
+    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component()
+        .peers(peer_ids.clone())
+        .min_required(min_required)
+        .consensus(priority_consensus)
+        .exchange_timeout(std::time::Duration::from_secs(6))
+        .privkey(key.clone())
+        .calculator(deadline_calc)
+        .p2p_context(p2p_context.clone())
+        .ct(priority_cancellation)
+        .call()?;
     let priority_comp = Arc::new(priority_comp);
 
     let infosync = Arc::new(pluto_infosync::Component::new(
@@ -202,7 +208,7 @@ pub(crate) async fn wire_p2p(
         pluto_core::version::SUPPORTED.to_vec(),
         local_protocols(),
         local_proposal_types(builder_enabled),
-        &feature_set,
+        feature_set,
     ));
 
     // Clone the context before it is moved into the node so the readiness
@@ -230,7 +236,6 @@ pub(crate) async fn wire_p2p(
 
     let handles = CoreHandles {
         parsigex: parsigex_handle,
-        consensus: consensus_handle,
         p2p_context: p2p_context_for_handle,
         priority: priority_comp,
         priority_expired_rx,

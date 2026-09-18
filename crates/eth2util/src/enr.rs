@@ -55,21 +55,17 @@ pub enum RecordError {
     #[error("Failed to parse the secp256k1 public key: {0}")]
     Secp256k1Error(#[from] elliptic_curve::Error),
 
-    /// Failed to verify the signature.
-    #[error("Signature verification succeeded, but the signature is invalid")]
+    /// Signature verification ran and rejected the signature.
+    #[error("The record signature does not match the public key")]
     FailedToVerifySignature,
 
-    /// The signature is invalid.
-    #[error("The verification failed: {0}")]
+    /// Signature verification could not be performed.
+    #[error("Failed to verify the record signature: {0}")]
     InvalidSignature(pluto_k1util::K1UtilError),
 
     /// Failed to sign the record.
     #[error("Failed to sign the record: {0}")]
     FailedToSign(pluto_k1util::K1UtilError),
-
-    /// Failed to convert the signature.
-    #[error("Failed to convert the signature: {0}")]
-    FailedToConvertSignature(std::array::TryFromSliceError),
 }
 
 /// InvalidFormatError is an error type for invalid format errors.

@@ -49,7 +49,7 @@ pub(crate) struct Check {
     pub(crate) name: &'static str,
     /// Human-readable description. Not yet surfaced anywhere; retained for
     /// completeness.
-    #[allow(
+    #[expect(
         dead_code,
         reason = "retained for completeness; surfaced by future tooling"
     )]
@@ -69,7 +69,7 @@ static PROPOSAL_DUTY_LABELS: LazyLock<[LabelMatcher; 1]> =
     LazyLock::new(|| [LabelMatcher::new("duty", ".*proposal")]);
 
 /// Lossy `i64` → `f64` conversion used only for threshold comparisons.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "validator/peer counts are small; threshold comparison does not require exactness"
 )]

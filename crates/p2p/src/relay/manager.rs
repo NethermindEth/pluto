@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     metrics::P2P_METRICS,
-    name::peer_name,
+    name,
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
 };
@@ -231,7 +231,7 @@ impl RelayManager {
     /// `p2p_relay_connections` — not how many transport connections exist,
     /// matching Charon's `relay.go`.
     fn report_relay_connection(relay_id: PeerId, reserved: bool) {
-        P2P_METRICS.relay_connections[&peer_name(&relay_id)].set(i64::from(reserved));
+        P2P_METRICS.relay_connections[&name::peer_name(&relay_id)].set(i64::from(reserved));
     }
 
     /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for
@@ -361,25 +361,39 @@ impl RelayManager {
             .collect()
     }
 
-    /// Builds circuit dial addresses for reaching `target` through every
-    /// currently reserved relay:
-    /// `/.../p2p/<relay-id>/p2p-circuit/p2p/<target>`.
+    /// Builds circuit dial addresses for reaching `target`:
+    /// `/.../p2p/<relay-id>/p2p-circuit/p2p/<target>`, exactly ONE per
+    /// currently reserved relay.
+    ///
+    /// A relay's transport addresses are alternative routes to the *same*
+    /// relay, not alternative routes to `target`. libp2p dials every address
+    /// in a `DialOpts` concurrently, so bundling one circuit address per
+    /// (relay × relay transport addr) fires N simultaneous HOP `CONNECT`
+    /// requests per peer pair — with three relay addresses a single campaign
+    /// burned three circuit-rate-limiter tokens within milliseconds and the
+    /// relay answered `ResourceLimitExceeded` for the rest of the run.
+    ///
+    /// Collapsing to one address per relay costs nothing: we only route
+    /// through *reserved* relays, so a transport connection to the relay is
+    /// already open, and rust-libp2p's circuit client reuses it
+    /// (`priv_client::Behaviour` handling of `DialReq`) — the transport
+    /// address embedded in the circuit multiaddr is never dialed. This
+    /// mirrors the reservation side, which likewise requests exactly one
+    /// listener per relay.
     fn peer_circuit_addrs(&self, target: &PeerId) -> Vec<Multiaddr> {
         let mut addrs = Vec::new();
         for relay_id in self.reserved_relay_ids() {
-            let Some(relay_addrs) = self.relay_addrs.get(&relay_id) else {
+            let Some(relay_addr) = self.relay_addrs.get(&relay_id).and_then(|a| a.first()) else {
                 continue;
             };
-            for relay_addr in relay_addrs {
-                let mut circuit: Multiaddr = relay_addr
-                    .iter()
-                    .filter(|p| !matches!(p, MaProtocol::P2p(_)))
-                    .collect();
-                circuit.push(MaProtocol::P2p(relay_id));
-                circuit.push(MaProtocol::P2pCircuit);
-                circuit.push(MaProtocol::P2p(*target));
-                addrs.push(circuit);
-            }
+            let mut circuit: Multiaddr = relay_addr
+                .iter()
+                .filter(|p| !matches!(p, MaProtocol::P2p(_)))
+                .collect();
+            circuit.push(MaProtocol::P2p(relay_id));
+            circuit.push(MaProtocol::P2pCircuit);
+            circuit.push(MaProtocol::P2p(*target));
+            addrs.push(circuit);
         }
         addrs
     }
@@ -404,13 +418,17 @@ impl RelayManager {
     /// Inserts or refreshes a dial state for `target` using the current circuit
     /// addrs.
     ///
-    /// If the address set changed (or there was no dial state yet) the backoff
-    /// schedule is reset so the new route is tried immediately. If the address
-    /// set is unchanged, the existing dial state is left alone — its backoff
-    /// schedule survives so we don't hammer peers that have been unreachable
-    /// just because re-routing was re-evaluated. If no reserved relay can
-    /// currently reach `target`, any pre-existing dial state is removed so we
-    /// don't keep firing `Dial` events at circuits through unreserved relays.
+    /// An existing campaign keeps its backoff schedule: if the address set is
+    /// unchanged it is left alone entirely, and if it changed only the
+    /// addresses are swapped in place. Re-routing is re-evaluated on every
+    /// relay `Reserved` transition (and on every watchdog sweep), so
+    /// rebuilding the state would reset `retry_count` to zero and pin a
+    /// flapping route to the 1s base delay forever — the campaign would never
+    /// back off no matter how consistently the relay denies it.
+    ///
+    /// If no reserved relay can currently reach `target`, any pre-existing
+    /// dial state is removed so we don't keep firing `Dial` events at circuits
+    /// through unreserved relays.
     fn upsert_peer_dial(&mut self, target: PeerId) {
         let addrs = self.peer_circuit_addrs(&target);
         if addrs.is_empty() {
@@ -418,9 +436,10 @@ impl RelayManager {
             return;
         }
 
-        if let Some(existing) = self.dial_states.get(&target)
-            && addr_sets_equal(&existing.addrs, &addrs)
-        {
+        if let Some(existing) = self.dial_states.get_mut(&target) {
+            if !addr_sets_equal(&existing.addrs, &addrs) {
+                existing.set_addrs(addrs);
+            }
             return;
         }
 
@@ -655,6 +674,12 @@ impl RelayManager {
     ///   backoff retries are cheap (libp2p re-rejects with the same error) and
     ///   `on_connection_established` will tear the dial state down once libp2p
     ///   surfaces the connection.
+    ///
+    /// The other special case is a relay `ResourceLimitExceeded` denial: the
+    /// relay is telling us its circuit quota or rate limiter is exhausted, so
+    /// the campaign is parked via `RelayDialState::throttle_denied` instead of
+    /// retrying on the normal ladder (which restarts at 1s and keeps the
+    /// bucket empty).
     fn on_dial_failure(&mut self, peer_id: Option<PeerId>, error: &DialError) {
         let Some(peer_id) = peer_id else { return };
         let Some(state) = self.dial_states.get(&peer_id) else {
@@ -663,6 +688,32 @@ impl RelayManager {
         let target = state.ty;
         let retry_count = state.retry_count;
         let skipped = matches!(error, DialError::DialPeerConditionFalse(_));
+        let dial_error = RelayDialError::from(error);
+
+        if dial_error.is_resource_limit_exceeded() {
+            // `state` is borrowed immutably above; re-borrow mutably here.
+            let backoff = self
+                .dial_states
+                .get_mut(&peer_id)
+                .map(RelayDialState::throttle_denied);
+            tracing::warn!(
+                peer_id = %peer_id,
+                dial_type = ?target,
+                retry_count,
+                ?backoff,
+                %dial_error,
+                "Relay denied circuit for exceeding a resource limit; throttling dial campaign"
+            );
+            self.events
+                .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::DialFailed {
+                    peer_id,
+                    target,
+                    retry_count,
+                    error: dial_error,
+                }));
+
+            return;
+        }
 
         if skipped {
             match target {
@@ -711,7 +762,7 @@ impl RelayManager {
                 peer_id,
                 target,
                 retry_count,
-                error: RelayDialError::from(error),
+                error: dial_error,
             }));
     }
 

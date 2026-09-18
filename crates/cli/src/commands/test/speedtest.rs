@@ -327,10 +327,14 @@ pub(super) fn bytes_to_mbps(bytes: usize, elapsed: Duration) -> f64 {
         return 0.0;
     }
 
-    #[allow(
+    // `arithmetic_side_effects` cannot be an `expect`: the arithmetic below is
+    // all floating-point, which the lint never fires on, so it would be an
+    // unfulfilled expectation. Kept as `allow`. Reason: arithmetic overflow is
+    // impossible for realistic network speeds.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
         clippy::cast_precision_loss,
-        clippy::arithmetic_side_effects,
-        reason = "precision loss requires >8PB transferred; arithmetic overflow is impossible for realistic network speeds"
+        reason = "precision loss requires >8PB transferred"
     )]
     let bytes: f64 = bytes as f64;
     bytes * 8.0 / secs / 1_000_000.0

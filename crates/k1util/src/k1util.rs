@@ -9,6 +9,7 @@ use k256::{
     ecdsa::{self, RecoveryId, Signature, SigningKey, hazmat::VerifyPrimitive},
 };
 use libp2p::identity::PublicKey as Libp2pPublicKey;
+use zeroize::Zeroizing;
 
 /// `SCALAR_LEN` is the length of secp256k1 scalar.
 pub const SCALAR_LEN: usize = 32;
@@ -84,8 +85,8 @@ pub enum K1UtilError {
 type Result<T> = std::result::Result<T, K1UtilError>;
 
 /// Converts a libp2p PublicKey to a secp256k1 PublicKey.
-pub fn public_key_from_libp2p(pk: &Libp2pPublicKey) -> Result<PublicKey> {
-    let secp_key = pk.clone().try_into_secp256k1()?;
+pub fn public_key_from_libp2p(pk: Libp2pPublicKey) -> Result<PublicKey> {
+    let secp_key = pk.try_into_secp256k1()?;
     PublicKey::from_sec1_bytes(&secp_key.to_bytes())
         .map_err(K1UtilError::FailedToParseSecp256k1PublicKey)
 }
@@ -212,10 +213,16 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
 }
 
 /// Load loads a secret key from a file.
-pub fn load(file: &Path) -> Result<SecretKey> {
-    let contents = std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?;
+///
+/// The hex-encoded file contents and the decoded scalar are intermediate
+/// buffers holding the raw secret, so both are wrapped in [`Zeroizing`] and
+/// wiped once the key has been parsed.
+pub fn load(file: impl AsRef<Path>) -> Result<SecretKey> {
+    let contents = Zeroizing::new(
+        std::fs::read_to_string(file.as_ref()).map_err(K1UtilError::FailedToReadFile)?,
+    );
 
-    let decoded = hex::decode(contents.trim())?;
+    let decoded = Zeroizing::new(hex::decode(contents.trim())?);
 
     let key = SecretKey::from_slice(&decoded).map_err(K1UtilError::FailedToParseSecretKey)?;
 
@@ -228,8 +235,14 @@ pub fn load(file: &Path) -> Result<SecretKey> {
 /// matching Charon's `app/k1util/k1util.go` `Save` which writes via
 /// `os.WriteFile(file, ..., 0o600)`. This prevents the private key from being
 /// world-readable.
-pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
-    let encoded = hex::encode(key.to_bytes());
+///
+/// The serialized scalar and its hex encoding are intermediate buffers holding
+/// the raw secret, so both are wrapped in [`Zeroizing`] and wiped once the file
+/// has been written.
+pub fn save(key: &SecretKey, file: impl AsRef<Path>) -> Result<()> {
+    let file = file.as_ref();
+    let raw = Zeroizing::new(key.to_bytes());
+    let encoded = Zeroizing::new(hex::encode(raw.as_slice()));
 
     #[cfg(unix)]
     {
@@ -258,7 +271,7 @@ pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
 
     #[cfg(not(unix))]
     {
-        std::fs::write(file, encoded).map_err(K1UtilError::FailedToWriteFile)?;
+        std::fs::write(file, encoded.as_bytes()).map_err(K1UtilError::FailedToWriteFile)?;
     }
 
     Ok(())
@@ -489,5 +502,216 @@ mod tests {
             );
             assert_eq!(result.unwrap(), key, "Key should match");
         }
+    }
+
+    fn key_1() -> SecretKey {
+        SecretKey::from_slice(&hex::decode(PRIV_KEY_1).expect("PRIV_KEY_1 is valid hex"))
+            .expect("PRIV_KEY_1 is a valid secp256k1 scalar")
+    }
+
+    /// A second, unrelated key. `0x1111..11` is a valid secp256k1 scalar.
+    fn key_2() -> SecretKey {
+        SecretKey::from_slice(&[0x11u8; SCALAR_LEN]).expect("0x11..11 is a valid secp256k1 scalar")
+    }
+
+    fn digest_1() -> Vec<u8> {
+        hex::decode(DIGEST_1).expect("DIGEST_1 is valid hex")
+    }
+
+    fn sig_1() -> [u8; SIGNATURE_LEN] {
+        let bytes = hex::decode(SIG_1).expect("SIG_1 is valid hex");
+        let mut sig = [0u8; SIGNATURE_LEN];
+        sig.copy_from_slice(&bytes);
+        sig
+    }
+
+    /// Ways a *well-formed* input can still fail to verify: every length,
+    /// scalar and recovery byte stays valid, so no error path is taken.
+    #[derive(Debug, Clone, Copy)]
+    enum Corruption {
+        WrongKey,
+        WrongHash,
+        CorruptedR,
+    }
+
+    fn corrupted_input(corruption: Corruption) -> (PublicKey, Vec<u8>, [u8; SIGNATURE_LEN]) {
+        match corruption {
+            Corruption::WrongKey => (key_2().public_key(), digest_1(), sig_1()),
+            Corruption::WrongHash => {
+                let mut hash = digest_1();
+                hash[0] ^= 0xff;
+                (key_1().public_key(), hash, sig_1())
+            }
+            Corruption::CorruptedR => {
+                let mut sig = sig_1();
+                // 0xe0 ^ 0xff = 0x1f, so R stays a valid non-zero scalar.
+                sig[0] ^= 0xff;
+                (key_1().public_key(), digest_1(), sig)
+            }
+        }
+    }
+
+    // Every other assertion here checks a *successful* verification, so a
+    // `verify_64` hard-wired to `Ok(true)` would pass the whole suite. A failed
+    // verification is `Ok(false)`, not an error.
+    #[test_case(Corruption::WrongKey ; "wrong public key")]
+    #[test_case(Corruption::WrongHash ; "wrong hash")]
+    #[test_case(Corruption::CorruptedR ; "corrupted r")]
+    fn verify_64_returns_false_for_wrong_signature(corruption: Corruption) {
+        let (pubkey, hash, sig) = corrupted_input(corruption);
+
+        let verified = verify_64(&pubkey, &hash, &sig[..SIGNATURE_LEN_WITHOUT_V])
+            .expect("a well-formed input must not produce an error");
+
+        assert!(!verified, "{corruption:?} must verify as false");
+    }
+
+    // `verify_65` recovers and compares rather than verifying prehashed, so it
+    // needs its own `Ok(false)` catcher. `CorruptedR` is absent: it changes
+    // which key is recovered, and recovery is allowed to fail outright.
+    #[test_case(Corruption::WrongKey ; "wrong public key")]
+    #[test_case(Corruption::WrongHash ; "wrong hash")]
+    fn verify_65_returns_false_for_wrong_signature(corruption: Corruption) {
+        let (pubkey, hash, sig) = corrupted_input(corruption);
+
+        let verified =
+            verify_65(&pubkey, &hash, &sig).expect("a well-formed input must not produce an error");
+
+        assert!(!verified, "{corruption:?} must verify as false");
+    }
+
+    // Both the expected and the actual length must be reported: swapping the
+    // two fields would still satisfy an `is_err()` check.
+    #[test_case(SIGNATURE_LEN_WITHOUT_V - 1 ; "one byte short")]
+    #[test_case(SIGNATURE_LEN ; "the 65-byte format offered to the 64-byte verifier")]
+    fn verify_64_rejects_wrong_length_signature(len: usize) {
+        let err = verify_64(&key_1().public_key(), &digest_1(), &vec![0u8; len])
+            .expect_err("a wrong-length signature must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                K1UtilError::InvalidSignatureLength { expected, actual }
+                    if expected == SIGNATURE_LEN_WITHOUT_V && actual == len
+            ),
+            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN_WITHOUT_V}, actual: {len} }}"
+        );
+    }
+
+    #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
+    #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
+    fn verify_64_rejects_wrong_length_hash(len: usize) {
+        let sig = sig_1();
+
+        let err = verify_64(
+            &key_1().public_key(),
+            &vec![0u8; len],
+            &sig[..SIGNATURE_LEN_WITHOUT_V],
+        )
+        .expect_err("a wrong-length hash must be rejected");
+
+        assert!(
+            matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
+            "expected InvalidHashLength {{ actual: {len} }}"
+        );
+    }
+
+    // 64 is the interesting row: confusing [R || S] with [R || S || V] is the
+    // realistic mistake.
+    #[test_case(SIGNATURE_LEN_WITHOUT_V ; "the 64-byte format offered to the recoverer")]
+    #[test_case(SIGNATURE_LEN + 1 ; "one byte long")]
+    fn recover_rejects_wrong_length_signature(len: usize) {
+        let err = recover(&digest_1(), &vec![0u8; len])
+            .expect_err("a wrong-length signature must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                K1UtilError::InvalidSignatureLength { expected, actual }
+                    if expected == SIGNATURE_LEN && actual == len
+            ),
+            "expected InvalidSignatureLength {{ expected: {SIGNATURE_LEN}, actual: {len} }}"
+        );
+    }
+
+    #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
+    #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
+    fn recover_rejects_wrong_length_hash(len: usize) {
+        let err =
+            recover(&vec![0u8; len], &sig_1()).expect_err("a wrong-length hash must be rejected");
+
+        assert!(
+            matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
+            "expected InvalidHashLength {{ actual: {len} }}"
+        );
+    }
+
+    #[test_case(K1_HASH_LEN - 1 ; "one byte short")]
+    #[test_case(K1_HASH_LEN + 1 ; "one byte long")]
+    fn sign_rejects_wrong_length_hash(len: usize) {
+        let err =
+            sign(&key_1(), &vec![0u8; len]).expect_err("a wrong-length hash must be rejected");
+
+        assert!(
+            matches!(err, K1UtilError::InvalidHashLength { actual } if actual == len),
+            "expected InvalidHashLength {{ actual: {len} }}"
+        );
+    }
+
+    // `recover_recovery_id_domain` only asserts that 27 and 28 are *accepted*.
+    // This pins what as: 27 is the Bitcoin-compact spelling of 0, 28 of 1. A
+    // mapping that folded them together would still pass the domain test.
+    #[test]
+    fn recover_maps_compact_recovery_ids_to_ethereum_ids() {
+        let digest = digest_1();
+        let mut sig = sig_1();
+
+        let mut recovered_with = |recovery_byte: u8| {
+            sig[K1_REC_IDX] = recovery_byte;
+            recover(&digest, &sig)
+                .unwrap_or_else(|e| panic!("recovery byte {recovery_byte} must recover: {e}"))
+        };
+
+        let from_0 = recovered_with(0);
+        let from_1 = recovered_with(1);
+        let from_27 = recovered_with(27);
+        let from_28 = recovered_with(28);
+
+        // Without this the two equalities below would hold for any mapping.
+        assert_ne!(
+            from_0, from_1,
+            "recovery ids 0 and 1 must yield different keys"
+        );
+        assert_eq!(from_27, from_0, "27 is the Bitcoin-compact spelling of 0");
+        assert_eq!(from_28, from_1, "28 is the Bitcoin-compact spelling of 1");
+    }
+
+    #[test]
+    fn public_key_from_libp2p_round_trips_secp256k1_key() {
+        let sec1 = key_1().public_key().to_sec1_bytes();
+        let libp2p_key = libp2p::identity::secp256k1::PublicKey::try_from_bytes(&sec1)
+            .expect("a compressed sec1 point is a valid libp2p secp256k1 key");
+
+        let converted = public_key_from_libp2p(Libp2pPublicKey::from(libp2p_key))
+            .expect("a secp256k1 libp2p key must convert");
+
+        assert_eq!(
+            converted.to_sec1_bytes().to_vec(),
+            hex::decode(PUB_KEY_1).unwrap(),
+            "conversion must preserve the key"
+        );
+    }
+
+    #[test]
+    fn public_key_from_libp2p_rejects_non_secp256k1_key() {
+        let ed25519 = libp2p::identity::ed25519::Keypair::generate().public();
+
+        let err = public_key_from_libp2p(Libp2pPublicKey::from(ed25519))
+            .expect_err("a non-secp256k1 key must be rejected");
+
+        assert!(
+            matches!(err, K1UtilError::FailedToParseLibp2pPublicKey(_)),
+            "expected FailedToParseLibp2pPublicKey"
+        );
     }
 }

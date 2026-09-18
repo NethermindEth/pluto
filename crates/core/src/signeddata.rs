@@ -4,19 +4,16 @@ use alloy::primitives::U256;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
-use pluto_crypto::types::sig_to_eth2;
+use pluto_crypto::types;
+pub use pluto_eth2api::versioned::{ProposalBlock, VersionedProposal};
 use pluto_eth2api::{
-    ConsensusVersion, ProduceBlockV3ResponseResponse,
-    spec::{
-        altair, bellatrix, capella, deneb, electra, phase0, serde_legacy_builder_version,
-        serde_legacy_data_version,
-    },
+    spec::{altair, phase0, serde_legacy_builder_version, serde_legacy_data_version},
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
 use pluto_ssz::HashRoot;
 
-use crate::types::{ParSignedData, Signature, SignedData};
+use crate::types::{ParSignedData, Signature};
 
 /// Error type for signed data operations.
 #[derive(Debug, thiserror::Error)]
@@ -39,9 +36,6 @@ pub enum SignedDataError {
     /// Missing attestation payload for the selected fork.
     #[error("no {0} attestation")]
     MissingAttestation(versioned::DataVersion),
-    /// Missing aggregate-and-proof payload for the selected fork.
-    #[error("no {0} aggregate and proof")]
-    MissingAggregateAndProof(versioned::DataVersion),
     /// Missing unblinded proposal payload for the selected fork.
     #[error("no {0} proposal")]
     MissingProposal(versioned::DataVersion),
@@ -54,12 +48,6 @@ pub enum SignedDataError {
     /// Invalid attestation wrapper JSON.
     #[error("unmarshal attestation")]
     AttestationJson,
-    /// A proposal response carried an unparsable block reward value.
-    #[error("invalid proposal block value: {0}")]
-    InvalidBlockValue(&'static str),
-    /// A versioned proposal response was missing the `block` field.
-    #[error("proposal response missing block field")]
-    MissingBlockField,
     /// Custom error.
     #[error("{0}")]
     Custom(Box<dyn std::error::Error + Send + Sync>),
@@ -101,41 +89,306 @@ struct VersionedRawAggregateAndProofJson<T> {
     aggregate_and_proof: T,
 }
 
-/// Raw JSON wrapper for the unsigned Deneb+ block contents
-/// (`{block, kzg_proofs, blobs}`). `kzg_proofs`/`blobs` are optional and
-/// tolerate `null` (matching charon's optional fields).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct UnsignedBlockContentsJson<B> {
-    block: B,
-    #[serde(default)]
-    kzg_proofs: Option<Vec<deneb::KZGProof>>,
-    #[serde(default)]
-    blobs: Option<Vec<deneb::Blob>>,
-}
-
 /// Converts an ETH2 signature to a core signature.
 pub fn sig_from_eth2(sig: phase0::BLSSignature) -> Signature {
     sig
 }
 
-impl SignedData for Signature {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
-        Ok(*self)
+/// Signed duty data variant — the enum equivalent of Go's `core.SignedData`
+/// interface, closed over every payload pluto signs and exchanges.
+///
+/// Mirrors [`UnsignedDutyData`](crate::unsigneddata::UnsignedDutyData) for the
+/// sibling unsigned concept: dispatch is an exhaustive match, so adding a
+/// payload type is a compile error at every site that has to handle it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignedData {
+    /// Raw BLS signature (`DutyType::Signature`).
+    Signature(Signature),
+    /// Signed beacon block proposal (`DutyType::Proposer`).
+    VersionedSignedProposal(Box<VersionedSignedProposal>),
+    /// Non-versioned (phase0) attestation (`DutyType::Attester`).
+    Attestation(Attestation),
+    /// Versioned attestation (`DutyType::Attester`).
+    VersionedAttestation(VersionedAttestation),
+    /// Signed voluntary exit (`DutyType::Exit`).
+    SignedVoluntaryExit(SignedVoluntaryExit),
+    /// Signed validator registration (`DutyType::BuilderRegistration`).
+    VersionedSignedValidatorRegistration(VersionedSignedValidatorRegistration),
+    /// Signed randao reveal (`DutyType::Randao`).
+    SignedRandao(SignedRandao),
+    /// Beacon committee selection proof (`DutyType::PrepareAggregator`).
+    BeaconCommitteeSelection(BeaconCommitteeSelection),
+    /// Sync committee selection proof (`DutyType::PrepareSyncContribution`).
+    SyncCommitteeSelection(SyncCommitteeSelection),
+    /// Non-versioned (phase0) signed aggregate-and-proof
+    /// (`DutyType::Aggregator`).
+    SignedAggregateAndProof(Box<SignedAggregateAndProof>),
+    /// Versioned signed aggregate-and-proof (`DutyType::Aggregator`).
+    VersionedSignedAggregateAndProof(Box<VersionedSignedAggregateAndProof>),
+    /// Signed sync committee message (`DutyType::SyncMessage`).
+    SignedSyncMessage(SignedSyncMessage),
+    /// Sync contribution-and-proof (`DutyType::SyncContribution`).
+    SyncContributionAndProof(Box<SyncContributionAndProof>),
+    /// Signed sync contribution-and-proof (`DutyType::SyncContribution`).
+    SignedSyncContributionAndProof(Box<SignedSyncContributionAndProof>),
+    /// Test-only payload, used by unit tests that need a signed-data value
+    /// without a real beacon-chain payload behind it.
+    #[cfg(test)]
+    Mock(MockSignedData),
+}
+
+impl SignedData {
+    /// Returns the signed duty data's signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
+        match self {
+            Self::Signature(sig) => Ok(*sig),
+            Self::VersionedSignedProposal(inner) => inner.signature(),
+            Self::Attestation(inner) => inner.signature(),
+            Self::VersionedAttestation(inner) => inner.signature(),
+            Self::SignedVoluntaryExit(inner) => inner.signature(),
+            Self::VersionedSignedValidatorRegistration(inner) => inner.signature(),
+            Self::SignedRandao(inner) => inner.signature(),
+            Self::BeaconCommitteeSelection(inner) => inner.signature(),
+            Self::SyncCommitteeSelection(inner) => inner.signature(),
+            Self::SignedAggregateAndProof(inner) => inner.signature(),
+            Self::VersionedSignedAggregateAndProof(inner) => inner.signature(),
+            Self::SignedSyncMessage(inner) => inner.signature(),
+            Self::SyncContributionAndProof(inner) => inner.signature(),
+            Self::SignedSyncContributionAndProof(inner) => inner.signature(),
+            #[cfg(test)]
+            Self::Mock(inner) => inner.signature(),
+        }
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
-        Ok(signature)
+    /// Returns a copy of the signed duty data with the signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+        Ok(match self {
+            Self::Signature(_) => Self::Signature(signature),
+            Self::VersionedSignedProposal(inner) => {
+                Self::VersionedSignedProposal(Box::new(inner.set_signature(signature)?))
+            }
+            Self::Attestation(inner) => Self::Attestation(inner.set_signature(signature)?),
+            Self::VersionedAttestation(inner) => {
+                Self::VersionedAttestation(inner.set_signature(signature)?)
+            }
+            Self::SignedVoluntaryExit(inner) => {
+                Self::SignedVoluntaryExit(inner.set_signature(signature)?)
+            }
+            Self::VersionedSignedValidatorRegistration(inner) => {
+                Self::VersionedSignedValidatorRegistration(inner.set_signature(signature)?)
+            }
+            Self::SignedRandao(inner) => Self::SignedRandao(inner.set_signature(signature)?),
+            Self::BeaconCommitteeSelection(inner) => {
+                Self::BeaconCommitteeSelection(inner.set_signature(signature)?)
+            }
+            Self::SyncCommitteeSelection(inner) => {
+                Self::SyncCommitteeSelection(inner.set_signature(signature)?)
+            }
+            Self::SignedAggregateAndProof(inner) => {
+                Self::SignedAggregateAndProof(Box::new(inner.set_signature(signature)?))
+            }
+            Self::VersionedSignedAggregateAndProof(inner) => {
+                Self::VersionedSignedAggregateAndProof(Box::new(inner.set_signature(signature)?))
+            }
+            Self::SignedSyncMessage(inner) => {
+                Self::SignedSyncMessage(inner.set_signature(signature)?)
+            }
+            Self::SyncContributionAndProof(inner) => {
+                Self::SyncContributionAndProof(Box::new(inner.set_signature(signature)?))
+            }
+            Self::SignedSyncContributionAndProof(inner) => {
+                Self::SignedSyncContributionAndProof(Box::new(inner.set_signature(signature)?))
+            }
+            #[cfg(test)]
+            Self::Mock(inner) => Self::Mock(inner.set_signature(signature)?),
+        })
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
+    /// Returns the message root of the signed duty data's unsigned message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+        match self {
+            Self::Signature(_) => Err(SignedDataError::UnsupportedSignatureMessageRoot),
+            Self::VersionedSignedProposal(inner) => inner.message_root(),
+            Self::Attestation(inner) => inner.message_root(),
+            Self::VersionedAttestation(inner) => inner.message_root(),
+            Self::SignedVoluntaryExit(inner) => inner.message_root(),
+            Self::VersionedSignedValidatorRegistration(inner) => inner.message_root(),
+            Self::SignedRandao(inner) => inner.message_root(),
+            Self::BeaconCommitteeSelection(inner) => inner.message_root(),
+            Self::SyncCommitteeSelection(inner) => inner.message_root(),
+            Self::SignedAggregateAndProof(inner) => inner.message_root(),
+            Self::VersionedSignedAggregateAndProof(inner) => inner.message_root(),
+            Self::SignedSyncMessage(inner) => inner.message_root(),
+            Self::SyncContributionAndProof(inner) => inner.message_root(),
+            Self::SignedSyncContributionAndProof(inner) => inner.message_root(),
+            #[cfg(test)]
+            Self::Mock(inner) => inner.message_root(),
+        }
+    }
+}
+
+impl From<Signature> for SignedData {
+    fn from(value: Signature) -> Self {
+        Self::Signature(value)
+    }
+}
+
+impl From<VersionedSignedProposal> for SignedData {
+    fn from(value: VersionedSignedProposal) -> Self {
+        Self::VersionedSignedProposal(Box::new(value))
+    }
+}
+
+impl From<Attestation> for SignedData {
+    fn from(value: Attestation) -> Self {
+        Self::Attestation(value)
+    }
+}
+
+impl From<VersionedAttestation> for SignedData {
+    fn from(value: VersionedAttestation) -> Self {
+        Self::VersionedAttestation(value)
+    }
+}
+
+impl From<SignedVoluntaryExit> for SignedData {
+    fn from(value: SignedVoluntaryExit) -> Self {
+        Self::SignedVoluntaryExit(value)
+    }
+}
+
+impl From<VersionedSignedValidatorRegistration> for SignedData {
+    fn from(value: VersionedSignedValidatorRegistration) -> Self {
+        Self::VersionedSignedValidatorRegistration(value)
+    }
+}
+
+impl From<SignedRandao> for SignedData {
+    fn from(value: SignedRandao) -> Self {
+        Self::SignedRandao(value)
+    }
+}
+
+impl From<BeaconCommitteeSelection> for SignedData {
+    fn from(value: BeaconCommitteeSelection) -> Self {
+        Self::BeaconCommitteeSelection(value)
+    }
+}
+
+impl From<SyncCommitteeSelection> for SignedData {
+    fn from(value: SyncCommitteeSelection) -> Self {
+        Self::SyncCommitteeSelection(value)
+    }
+}
+
+impl From<SignedAggregateAndProof> for SignedData {
+    fn from(value: SignedAggregateAndProof) -> Self {
+        Self::SignedAggregateAndProof(Box::new(value))
+    }
+}
+
+impl From<VersionedSignedAggregateAndProof> for SignedData {
+    fn from(value: VersionedSignedAggregateAndProof) -> Self {
+        Self::VersionedSignedAggregateAndProof(Box::new(value))
+    }
+}
+
+impl From<SignedSyncMessage> for SignedData {
+    fn from(value: SignedSyncMessage) -> Self {
+        Self::SignedSyncMessage(value)
+    }
+}
+
+impl From<SyncContributionAndProof> for SignedData {
+    fn from(value: SyncContributionAndProof) -> Self {
+        Self::SyncContributionAndProof(Box::new(value))
+    }
+}
+
+impl From<SignedSyncContributionAndProof> for SignedData {
+    fn from(value: SignedSyncContributionAndProof) -> Self {
+        Self::SignedSyncContributionAndProof(Box::new(value))
+    }
+}
+
+/// Test-only signed-data payload, standing in for a real beacon-chain payload
+/// in unit tests that only care about the signature and message root.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MockSignedData {
+    /// Signature returned by [`Self::signature`].
+    pub sig: Signature,
+    /// Message root returned by [`Self::message_root`].
+    pub message_root: HashRoot,
+    /// When set, [`Self::signature`] fails with
+    /// [`SignedDataError::UnknownType`].
+    pub fail_signature: bool,
+    /// When set, [`Self::set_signature`] fails with
+    /// [`SignedDataError::UnknownType`].
+    pub fail_set_signature: bool,
+}
+
+#[cfg(test)]
+impl MockSignedData {
+    /// Creates a mock payload carrying `sig` and a zero message root.
+    pub fn new(sig: Signature) -> Self {
+        Self {
+            sig,
+            message_root: [0u8; 32],
+            fail_signature: false,
+            fail_set_signature: false,
+        }
     }
 
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-        Err(SignedDataError::UnsupportedSignatureMessageRoot)
+    /// Returns the mock with its message root replaced.
+    pub fn with_message_root(mut self, message_root: HashRoot) -> Self {
+        self.message_root = message_root;
+        self
+    }
+
+    /// Returns a mock whose [`Self::signature`] always fails.
+    pub fn failing_signature() -> Self {
+        Self {
+            fail_signature: true,
+            ..Self::new([0u8; crate::types::SIGNATURE_LENGTH])
+        }
+    }
+
+    /// Returns the mock with a failing [`Self::set_signature`].
+    pub fn with_failing_set_signature(mut self) -> Self {
+        self.fail_set_signature = true;
+        self
+    }
+
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
+        if self.fail_signature {
+            return Err(SignedDataError::UnknownType);
+        }
+        Ok(self.sig)
+    }
+
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, sig: Signature) -> Result<Self, SignedDataError> {
+        if self.fail_set_signature {
+            return Err(SignedDataError::UnknownType);
+        }
+        Ok(Self {
+            sig,
+            ..self.clone()
+        })
+    }
+
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+        Ok(self.message_root)
+    }
+}
+
+#[cfg(test)]
+impl From<MockSignedData> for SignedData {
+    fn from(value: MockSignedData) -> Self {
+        Self::Mock(value)
     }
 }
 
@@ -221,8 +474,9 @@ impl VersionedSignedProposal {
     }
 }
 
-impl SignedData for VersionedSignedProposal {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl VersionedSignedProposal {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -230,26 +484,21 @@ impl SignedData for VersionedSignedProposal {
         Ok(sig_from_eth2(proposal.block.signature()))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let proposal = &mut out.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        let eth2_sig = sig_to_eth2(signature);
+        let eth2_sig = types::sig_to_eth2(signature);
         proposal.block.set_signature(eth2_sig);
 
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -301,55 +550,12 @@ impl<'de> Deserialize<'de> for VersionedSignedProposal {
         D: Deserializer<'de>,
     {
         let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
-        let version = raw.version;
-        let blinded = raw.blinded;
-        use versioned::SignedProposalBlock;
-        let block = match (version, blinded) {
-            (versioned::DataVersion::Unknown, _) => {
-                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
-            }
-            (versioned::DataVersion::Phase0, _) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Phase0)
-            }
-            (versioned::DataVersion::Altair, _) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Altair)
-            }
-            (versioned::DataVersion::Bellatrix, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::BellatrixBlinded)
-            }
-            (versioned::DataVersion::Bellatrix, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Bellatrix)
-            }
-            (versioned::DataVersion::Capella, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::CapellaBlinded)
-            }
-            (versioned::DataVersion::Capella, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Capella)
-            }
-            (versioned::DataVersion::Deneb, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::DenebBlinded)
-            }
-            (versioned::DataVersion::Deneb, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Deneb)
-            }
-            (versioned::DataVersion::Electra, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::ElectraBlinded)
-            }
-            (versioned::DataVersion::Electra, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Electra)
-            }
-            (versioned::DataVersion::Fulu, true) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::FuluBlinded)
-            }
-            (versioned::DataVersion::Fulu, false) => {
-                serde_json::from_value(raw.block).map(SignedProposalBlock::Fulu)
-            }
-        }
-        .map_err(serde::de::Error::custom)?;
+        let block = versioned::SignedProposalBlock::from_json(raw.version, raw.blinded, raw.block)
+            .map_err(serde::de::Error::custom)?;
 
         Self::new(versioned::VersionedSignedProposal {
-            version,
-            blinded,
+            version: raw.version,
+            blinded: raw.blinded,
             block,
         })
         .map_err(serde::de::Error::custom)
@@ -376,25 +582,21 @@ impl Attestation {
     }
 }
 
-impl SignedData for Attestation {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl Attestation {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(hash_root(&self.0.data))
     }
 }
@@ -444,8 +646,9 @@ impl VersionedAttestation {
     }
 }
 
-impl SignedData for VersionedAttestation {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl VersionedAttestation {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -457,7 +660,8 @@ impl SignedData for VersionedAttestation {
             .ok_or(SignedDataError::MissingAttestation(version))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let version = out.0.version;
         if version == versioned::DataVersion::Unknown {
@@ -467,19 +671,13 @@ impl SignedData for VersionedAttestation {
             .attestation
             .as_mut()
             .ok_or(SignedDataError::MissingAttestation(version))?
-            .set_signature(sig_to_eth2(signature));
+            .set_signature(types::sig_to_eth2(signature));
 
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -583,25 +781,21 @@ pub struct SignedVoluntaryExit(
     pub phase0::SignedVoluntaryExit,
 );
 
-impl SignedData for SignedVoluntaryExit {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SignedVoluntaryExit {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -653,8 +847,9 @@ impl VersionedSignedValidatorRegistration {
     }
 }
 
-impl SignedData for VersionedSignedValidatorRegistration {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl VersionedSignedValidatorRegistration {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
                 .0
@@ -666,14 +861,15 @@ impl SignedData for VersionedSignedValidatorRegistration {
         }
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         match out.0.version {
             versioned::BuilderVersion::V1 => {
                 let Some(v1) = out.0.v1.as_mut() else {
                     return Err(SignedDataError::MissingV1Registration);
                 };
-                v1.signature = sig_to_eth2(signature);
+                v1.signature = types::sig_to_eth2(signature);
             }
             versioned::BuilderVersion::Unknown => {
                 return Err(SignedDataError::UnknownVersion);
@@ -683,14 +879,8 @@ impl SignedData for VersionedSignedValidatorRegistration {
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
                 .0
@@ -755,25 +945,21 @@ pub struct SignedRandao(
     pub SignedEpoch,
 );
 
-impl SignedData for SignedRandao {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SignedRandao {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -805,25 +991,21 @@ pub struct BeaconCommitteeSelection(
     pub v1::BeaconCommitteeSelection,
 );
 
-impl SignedData for BeaconCommitteeSelection {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl BeaconCommitteeSelection {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -848,25 +1030,21 @@ pub struct SyncCommitteeSelection(
     pub v1::SyncCommitteeSelection,
 );
 
-impl SignedData for SyncCommitteeSelection {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SyncCommitteeSelection {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -891,25 +1069,21 @@ pub struct SignedAggregateAndProof(
     pub phase0::SignedAggregateAndProof,
 );
 
-impl SignedData for SignedAggregateAndProof {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SignedAggregateAndProof {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(hash_root(&self.0.message))
     }
 }
@@ -966,8 +1140,9 @@ impl VersionedSignedAggregateAndProof {
     }
 }
 
-impl SignedData for VersionedSignedAggregateAndProof {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl VersionedSignedAggregateAndProof {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -976,7 +1151,8 @@ impl SignedData for VersionedSignedAggregateAndProof {
         Ok(sig_from_eth2(self.0.aggregate_and_proof.signature()))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let version = out.0.version;
         if version == versioned::DataVersion::Unknown {
@@ -984,19 +1160,13 @@ impl SignedData for VersionedSignedAggregateAndProof {
         }
         out.0
             .aggregate_and_proof
-            .set_signature(sig_to_eth2(signature));
+            .set_signature(types::sig_to_eth2(signature));
 
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -1071,25 +1241,21 @@ pub struct SignedSyncMessage(
     pub altair::SyncCommitteeMessage,
 );
 
-impl SignedData for SignedSyncMessage {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SignedSyncMessage {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -1114,25 +1280,21 @@ pub struct SyncContributionAndProof(
     pub altair::ContributionAndProof,
 );
 
-impl SignedData for SyncContributionAndProof {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SyncContributionAndProof {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.selection_proof = sig_to_eth2(signature);
+        out.0.selection_proof = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.selection_proof_message_root())
     }
 }
@@ -1157,25 +1319,21 @@ pub struct SignedSyncContributionAndProof(
     pub altair::SignedContributionAndProof,
 );
 
-impl SignedData for SignedSyncContributionAndProof {
-    fn signature(&self) -> Result<Signature, SignedDataError> {
+impl SignedSyncContributionAndProof {
+    /// Returns the payload's BLS signature.
+    pub fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
+    /// Returns a copy of the payload with its signature replaced.
+    pub fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
-        out.0.signature = sig_to_eth2(signature);
+        out.0.signature = types::sig_to_eth2(signature);
         Ok(out)
     }
 
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError> {
-        Ok(Box::new(self.set_signature(signature)?))
-    }
-
-    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
+    /// Returns the hash-tree-root of the signed message.
+    pub fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -1192,30 +1350,13 @@ impl SignedSyncContributionAndProof {
     }
 }
 
-/// Attester duty metadata associated with an attestation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttesterDuty {
-    /// Slot for the duty.
-    pub slot: phase0::Slot,
-    /// Validator index.
-    pub validator_index: phase0::ValidatorIndex,
-    /// Committee index.
-    pub committee_index: u64,
-    /// Number of validators in the committee.
-    pub committee_length: u64,
-    /// Number of committees at this slot.
-    pub committees_at_slot: u64,
-    /// Validator's position within the committee.
-    pub validator_committee_index: u64,
-}
-
 /// Unsigned attestation data paired with its duty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationData {
     /// Raw attestation data.
     pub data: phase0::AttestationData,
     /// Associated attester duty.
-    pub duty: AttesterDuty,
+    pub duty: v1::AttesterDuty,
 }
 
 /// Versioned aggregated attestation (unsigned).
@@ -1233,320 +1374,19 @@ impl VersionedAggregatedAttestation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncContribution(pub altair::SyncCommitteeContribution);
 
-/// Unsigned proposal block across all supported forks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProposalBlock {
-    /// Phase0 beacon block.
-    Phase0(phase0::BeaconBlock),
-    /// Altair beacon block.
-    Altair(altair::BeaconBlock),
-    /// Bellatrix beacon block.
-    Bellatrix(bellatrix::BeaconBlock),
-    /// Bellatrix blinded beacon block.
-    BellatrixBlinded(bellatrix::BlindedBeaconBlock),
-    /// Capella beacon block.
-    Capella(capella::BeaconBlock),
-    /// Capella blinded beacon block.
-    CapellaBlinded(capella::BlindedBeaconBlock),
-    /// Deneb beacon block with KZG proofs and blobs.
-    Deneb {
-        /// Beacon block.
-        block: Box<deneb::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Deneb blinded beacon block.
-    DenebBlinded(deneb::BlindedBeaconBlock),
-    /// Electra beacon block with KZG proofs and blobs.
-    Electra {
-        /// Beacon block.
-        block: Box<electra::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Electra blinded beacon block.
-    ElectraBlinded(electra::BlindedBeaconBlock),
-    /// Fulu beacon block with KZG proofs and blobs (uses electra block type).
-    Fulu {
-        /// Beacon block.
-        block: Box<electra::BeaconBlock>,
-        /// KZG proofs.
-        kzg_proofs: Vec<deneb::KZGProof>,
-        /// Blobs.
-        blobs: Vec<deneb::Blob>,
-    },
-    /// Fulu blinded beacon block (uses electra block type).
-    FuluBlinded(electra::BlindedBeaconBlock),
-}
+/// Decodes the JSON form of an unsigned [`VersionedProposal`] exchanged
+/// between cluster nodes, `{version, block, blinded}`, mirroring charon's
+/// `VersionedProposal.UnmarshalJSON`. Block reward values are not part of it
+/// and default to zero (the validatorapi overrides them).
+pub(crate) fn versioned_proposal_from_json(data: &[u8]) -> serde_json::Result<VersionedProposal> {
+    let raw: VersionedRawBlockJson<serde_json::Value> = serde_json::from_slice(data)?;
+    let block = ProposalBlock::from_json(raw.version, raw.blinded, raw.block)?;
 
-impl ProposalBlock {
-    /// Returns the fork version of this block.
-    pub fn version(&self) -> versioned::DataVersion {
-        match self {
-            Self::Phase0(_) => versioned::DataVersion::Phase0,
-            Self::Altair(_) => versioned::DataVersion::Altair,
-            Self::Bellatrix(_) | Self::BellatrixBlinded(_) => versioned::DataVersion::Bellatrix,
-            Self::Capella(_) | Self::CapellaBlinded(_) => versioned::DataVersion::Capella,
-            Self::Deneb { .. } | Self::DenebBlinded(_) => versioned::DataVersion::Deneb,
-            Self::Electra { .. } | Self::ElectraBlinded(_) => versioned::DataVersion::Electra,
-            Self::Fulu { .. } | Self::FuluBlinded(_) => versioned::DataVersion::Fulu,
-        }
-    }
-
-    /// Returns true if this is a blinded block.
-    pub fn is_blinded(&self) -> bool {
-        matches!(
-            self,
-            Self::BellatrixBlinded(_)
-                | Self::CapellaBlinded(_)
-                | Self::DenebBlinded(_)
-                | Self::ElectraBlinded(_)
-                | Self::FuluBlinded(_)
-        )
-    }
-
-    /// Returns the slot of this block.
-    pub fn slot(&self) -> phase0::Slot {
-        match self {
-            Self::Phase0(b) => b.slot,
-            Self::Altair(b) => b.slot,
-            Self::Bellatrix(b) => b.slot,
-            Self::BellatrixBlinded(b) => b.slot,
-            Self::Capella(b) => b.slot,
-            Self::CapellaBlinded(b) => b.slot,
-            Self::Deneb { block, .. } => block.slot,
-            Self::DenebBlinded(b) => b.slot,
-            Self::Electra { block, .. } => block.slot,
-            Self::ElectraBlinded(b) => b.slot,
-            Self::Fulu { block, .. } => block.slot,
-            Self::FuluBlinded(b) => b.slot,
-        }
-    }
-
-    /// Returns the tree-hash root of this block.
-    pub fn root(&self) -> phase0::Root {
-        match self {
-            Self::Phase0(b) => b.tree_hash_root().0,
-            Self::Altair(b) => b.tree_hash_root().0,
-            Self::Bellatrix(b) => b.tree_hash_root().0,
-            Self::BellatrixBlinded(b) => b.tree_hash_root().0,
-            Self::Capella(b) => b.tree_hash_root().0,
-            Self::CapellaBlinded(b) => b.tree_hash_root().0,
-            Self::Deneb { block, .. } => block.tree_hash_root().0,
-            Self::DenebBlinded(b) => b.tree_hash_root().0,
-            Self::Electra { block, .. } => block.tree_hash_root().0,
-            Self::ElectraBlinded(b) => b.tree_hash_root().0,
-            Self::Fulu { block, .. } => block.tree_hash_root().0,
-            Self::FuluBlinded(b) => b.tree_hash_root().0,
-        }
-    }
-}
-
-/// Unsigned versioned proposal across all supported forks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionedProposal {
-    /// Unsigned block payload.
-    pub block: ProposalBlock,
-    /// Consensus block reward, in Wei. The pipeline does not persist the
-    /// upstream v3 produce-block reward; the validatorapi `Proposal`
-    /// handler overrides this to `1` before returning so the value is
-    /// unified across nodes.
-    pub consensus_block_value: U256,
-    /// Execution payload value, in Wei. See
-    /// [`Self::consensus_block_value`] for the override rationale.
-    pub execution_payload_value: U256,
-}
-
-impl VersionedProposal {
-    /// Returns the fork version, derived from the block variant.
-    pub fn version(&self) -> versioned::DataVersion {
-        self.block.version()
-    }
-
-    /// Returns true if this is a blinded proposal, derived from the block
-    /// variant.
-    pub fn is_blinded(&self) -> bool {
-        self.block.is_blinded()
-    }
-
-    /// Returns the slot of the proposal block.
-    pub fn slot(&self) -> phase0::Slot {
-        self.block.slot()
-    }
-
-    /// Returns the tree-hash root of the proposal block.
-    pub fn root(&self) -> phase0::Root {
-        self.block.root()
-    }
-}
-
-impl<'de> Deserialize<'de> for VersionedProposal {
-    /// Mirrors charon's `VersionedProposal.UnmarshalJSON`: dispatches the raw
-    /// `block` JSON to the per-fork [`ProposalBlock`] variant selected by
-    /// `(version, blinded)`. Shares the `{version, block, blinded}` raw wrapper
-    /// with [`VersionedSignedProposal`]. Block reward values are not present in
-    /// the JSON form and default to zero (the validatorapi overrides them).
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
-        let version = raw.version;
-        let blinded = raw.blinded;
-
-        let block_contents = |value: serde_json::Value| {
-            serde_json::from_value::<UnsignedBlockContentsJson<serde_json::Value>>(value)
-        };
-
-        let block = match (version, blinded) {
-            (versioned::DataVersion::Phase0, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Phase0)
-            }
-            (versioned::DataVersion::Altair, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Altair)
-            }
-            (versioned::DataVersion::Bellatrix, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Bellatrix)
-            }
-            (versioned::DataVersion::Bellatrix, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::BellatrixBlinded)
-            }
-            (versioned::DataVersion::Capella, false) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::Capella)
-            }
-            (versioned::DataVersion::Capella, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::CapellaBlinded)
-            }
-            (versioned::DataVersion::Deneb, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Deneb {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Deneb, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::DenebBlinded)
-            }
-            (versioned::DataVersion::Electra, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Electra {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Electra, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::ElectraBlinded)
-            }
-            (versioned::DataVersion::Fulu, false) => block_contents(raw.block).and_then(|c| {
-                Ok(ProposalBlock::Fulu {
-                    block: Box::new(serde_json::from_value(c.block)?),
-                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
-                    blobs: c.blobs.unwrap_or_default(),
-                })
-            }),
-            (versioned::DataVersion::Fulu, true) => {
-                serde_json::from_value(raw.block).map(ProposalBlock::FuluBlinded)
-            }
-            (versioned::DataVersion::Phase0 | versioned::DataVersion::Altair, true) => {
-                return Err(serde::de::Error::custom(
-                    "pre-merge block cannot be blinded",
-                ));
-            }
-            (versioned::DataVersion::Unknown, _) => {
-                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
-            }
-        }
-        .map_err(serde::de::Error::custom)?;
-
-        Ok(VersionedProposal {
-            block,
-            consensus_block_value: U256::ZERO,
-            execution_payload_value: U256::ZERO,
-        })
-    }
-}
-
-impl TryFrom<&ProduceBlockV3ResponseResponse> for VersionedProposal {
-    type Error = SignedDataError;
-
-    /// Builds an unsigned proposal from a `produce_block_v3` response,
-    /// selecting the block variant by `(version, blinded)`.
-    fn try_from(resp: &ProduceBlockV3ResponseResponse) -> Result<Self, Self::Error> {
-        let data = serde_json::to_value(&resp.data)?;
-        let blinded = resp.execution_payload_blinded;
-
-        let block = match (&resp.version, blinded) {
-            (ConsensusVersion::Phase0, _) => ProposalBlock::Phase0(json_from(&data)?),
-            (ConsensusVersion::Altair, _) => ProposalBlock::Altair(json_from(&data)?),
-            (ConsensusVersion::Bellatrix, false) => ProposalBlock::Bellatrix(json_from(&data)?),
-            (ConsensusVersion::Bellatrix, true) => {
-                ProposalBlock::BellatrixBlinded(json_from(&data)?)
-            }
-            (ConsensusVersion::Capella, false) => ProposalBlock::Capella(json_from(&data)?),
-            (ConsensusVersion::Capella, true) => ProposalBlock::CapellaBlinded(json_from(&data)?),
-            (ConsensusVersion::Deneb, false) => ProposalBlock::Deneb {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Deneb, true) => ProposalBlock::DenebBlinded(json_from(&data)?),
-            (ConsensusVersion::Electra, false) => ProposalBlock::Electra {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Electra, true) => ProposalBlock::ElectraBlinded(json_from(&data)?),
-            (ConsensusVersion::Fulu, false) => ProposalBlock::Fulu {
-                block: Box::new(json_from(block_field(&data)?)?),
-                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-                blobs: json_from_field(&data, "blobs")?,
-            },
-            (ConsensusVersion::Fulu, true) => ProposalBlock::FuluBlinded(json_from(&data)?),
-        };
-
-        let consensus_block_value = resp
-            .consensus_block_value
-            .parse()
-            .map_err(|_| SignedDataError::InvalidBlockValue("consensus_block_value"))?;
-        let execution_payload_value = resp
-            .execution_payload_value
-            .parse()
-            .map_err(|_| SignedDataError::InvalidBlockValue("execution_payload_value"))?;
-
-        Ok(VersionedProposal {
-            block,
-            consensus_block_value,
-            execution_payload_value,
-        })
-    }
-}
-
-/// Deserializes a JSON value into `T`.
-fn json_from<T: serde::de::DeserializeOwned>(
-    value: &serde_json::Value,
-) -> Result<T, SignedDataError> {
-    Ok(serde_json::from_value(value.clone())?)
-}
-
-/// Returns the `block` field of a Deneb+ versioned block contents object.
-fn block_field(value: &serde_json::Value) -> Result<&serde_json::Value, SignedDataError> {
-    value.get("block").ok_or(SignedDataError::MissingBlockField)
-}
-
-/// Deserializes the named field of `value` into `T`, defaulting to `T::default`
-/// when absent.
-fn json_from_field<T: serde::de::DeserializeOwned + Default>(
-    value: &serde_json::Value,
-    field: &str,
-) -> Result<T, SignedDataError> {
-    match value.get(field) {
-        Some(v) => Ok(serde_json::from_value(v.clone())?),
-        None => Ok(T::default()),
-    }
+    Ok(VersionedProposal {
+        block,
+        consensus_block_value: U256::ZERO,
+        execution_payload_value: U256::ZERO,
+    })
 }
 
 #[cfg(test)]
@@ -2416,10 +2256,8 @@ mod tests {
         }
     }
 
-    fn assert_set_signature<T>(data: T)
-    where
-        T: SignedData + std::fmt::Debug + PartialEq,
-    {
+    fn assert_set_signature(data: impl Into<SignedData>) {
+        let data: SignedData = data.into();
         let clone = data.set_signature(sample_signature(0xAB)).unwrap();
         let clone_sig = clone.signature().unwrap();
         let data_sig = data.signature().unwrap();
@@ -2632,7 +2470,7 @@ mod tests {
         assert_golden_fixture::<BeaconCommitteeSelection>(
             "TestJSONSerialisation_BeaconCommitteeSelection.json.golden",
             "76090e708e9b20aa000000000000000000000000000000000000000000000000",
-            SignedData::message_root,
+            BeaconCommitteeSelection::message_root,
         );
     }
 
@@ -2641,7 +2479,7 @@ mod tests {
         assert_golden_fixture::<SignedRandao>(
             "TestJSONSerialisation_SignedRandao.json.golden",
             "1e34c5f04204cb9a000000000000000000000000000000000000000000000000",
-            SignedData::message_root,
+            SignedRandao::message_root,
         );
     }
 
@@ -2650,7 +2488,7 @@ mod tests {
         assert_golden_fixture::<SignedSyncContributionAndProof>(
             "TestJSONSerialisation_SignedSyncContributionAndProof.json.golden",
             "a9114ab23ddeca5729536b5f7132b0845653b235f11e10195659cd8b88ca48e4",
-            SignedData::message_root,
+            SignedSyncContributionAndProof::message_root,
         );
     }
 
@@ -2659,7 +2497,7 @@ mod tests {
         assert_golden_fixture::<SignedSyncMessage>(
             "TestJSONSerialisation_SignedSyncMessage.json.golden",
             "0272908d45b0164a1ed1fe5f6c6bb64a52fa1a95e2bdff2aea5190ce067ad5d2",
-            SignedData::message_root,
+            SignedSyncMessage::message_root,
         );
     }
 
@@ -2668,7 +2506,7 @@ mod tests {
         assert_golden_fixture::<SignedVoluntaryExit>(
             "TestJSONSerialisation_SignedVoluntaryExit.json.golden",
             "d5fe7392cad0d8cd8cf3a3b29e14f6e687bc2e64141973099c60d3097d26629b",
-            SignedData::message_root,
+            SignedVoluntaryExit::message_root,
         );
     }
 
@@ -2677,7 +2515,7 @@ mod tests {
         assert_golden_fixture::<SyncCommitteeSelection>(
             "TestJSONSerialisation_SyncCommitteeSelection.json.golden",
             "af587f1aea1ba20c11450b28da5905c861bdce697ea67d3ba23f62f8ffcffd25",
-            SignedData::message_root,
+            SyncCommitteeSelection::message_root,
         );
     }
 
@@ -2695,7 +2533,7 @@ mod tests {
         assert_golden_fixture::<SyncContributionAndProof>(
             "TestJSONSerialisation_SyncContributionAndProof.json.golden",
             "7d175134bb90ae74308d78c559b8ae6e5280fee44de77209361305f8cc56e5df",
-            SignedData::message_root,
+            SyncContributionAndProof::message_root,
         );
     }
 
@@ -2713,7 +2551,7 @@ mod tests {
         assert_golden_fixture::<VersionedAttestation>(
             "TestJSONSerialisation_VersionedAttestation.json.golden",
             "a36b13159845b8afc947ea7f9ffd74ceb1178e9882533ee767b6a6578501771c",
-            SignedData::message_root,
+            VersionedAttestation::message_root,
         );
     }
 
@@ -2758,7 +2596,7 @@ mod tests {
         assert_golden_fixture::<VersionedSignedAggregateAndProof>(
             "TestJSONSerialisation_VersionedSignedAggregateAndProof.json.golden",
             "b583185cb9587e89300afca09c2052bd6e75b885fbdccdcea9d7bcdaa80646f0",
-            SignedData::message_root,
+            VersionedSignedAggregateAndProof::message_root,
         );
     }
 
@@ -2785,7 +2623,7 @@ mod tests {
         assert_golden_fixture::<VersionedSignedProposal>(
             "TestJSONSerialisation_VersionedSignedProposal.json#01.golden",
             "4bf04729550ce290f32088070ae5dead2940c4350620a4bb85e04b0b1f3c2177",
-            SignedData::message_root,
+            VersionedSignedProposal::message_root,
         );
     }
 
@@ -2794,7 +2632,7 @@ mod tests {
         assert_golden_fixture::<VersionedSignedProposal>(
             "TestJSONSerialisation_VersionedSignedProposal.json.golden",
             "cd3d0d0abc5d9ba7a85b8c3388a6d4ebe2ee6367e20bf3c77a8d4977c657c0e1",
-            SignedData::message_root,
+            VersionedSignedProposal::message_root,
         );
     }
 
@@ -2803,21 +2641,21 @@ mod tests {
         assert_golden_fixture::<VersionedSignedValidatorRegistration>(
             "VersionedSignedValidatorRegistration.v1.json",
             "e342f29f5f6bb692ec8fae5ab27854afbb2a40296497001b31987a8587e70b8e",
-            SignedData::message_root,
+            VersionedSignedValidatorRegistration::message_root,
         );
     }
 
     #[test]
     fn signature() {
-        let sig1 = sample_signature(0x22);
-        let sig2 = sig1;
+        let sig1 = SignedData::Signature(sample_signature(0x22));
+        let sig2 = sig1.clone();
 
         assert!(matches!(
             sig1.message_root(),
             Err(SignedDataError::UnsupportedSignatureMessageRoot)
         ));
-        assert_eq!(sig1, sig1.signature().unwrap());
-        assert_eq!(sig1, sig2.signature().unwrap());
+        assert_eq!(sample_signature(0x22), sig1.signature().unwrap());
+        assert_eq!(sample_signature(0x22), sig2.signature().unwrap());
 
         let ss = sig1.set_signature(sig2.signature().unwrap()).unwrap();
         assert_eq!(sig2, ss);
@@ -3006,26 +2844,5 @@ mod tests {
             assert_eq!(Some(&data), wrapped.data());
             assert_eq!(Some(aggregation_bits.clone()), wrapped.aggregation_bits());
         }
-    }
-
-    #[test]
-    fn versioned_proposal_from_produce_block_response() {
-        // Electra block contents `{block, kzg_proofs, blobs}` from the golden
-        // fixture, wrapped as a `produce_block_v3` response.
-        let golden = load_signeddata_fixture("TestJSONSerialisation_VersionedProposal.json.golden");
-        let resp: ProduceBlockV3ResponseResponse = serde_json::from_value(serde_json::json!({
-            "version": "electra",
-            "execution_payload_blinded": false,
-            "execution_payload_value": "11",
-            "consensus_block_value": "22",
-            "data": golden["block"],
-        }))
-        .expect("deserialize produce_block_v3 response");
-
-        let proposal = VersionedProposal::try_from(&resp).expect("convert");
-        assert!(matches!(proposal.block, ProposalBlock::Electra { .. }));
-        assert_eq!(proposal.version(), versioned::DataVersion::Electra);
-        assert_eq!(proposal.execution_payload_value, U256::from(11));
-        assert_eq!(proposal.consensus_block_value, U256::from(22));
     }
 }

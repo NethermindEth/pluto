@@ -25,7 +25,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 
@@ -124,27 +124,30 @@ pub trait RoundTimer: Send + Sync {
     fn timer(&self, round: i64) -> Result<RoundTimerFuture>;
 }
 
+/// Duty a timer is bound to, paired with the feature set consulted for the
+/// round-one proposal-timeout override.
+#[derive(Debug, Clone)]
+struct BoundDuty {
+    duty: Duty,
+    feature_set: &'static FeatureSet,
+}
+
 /// Implements a linearly increasing round timer.
 #[derive(Debug, Clone, Default)]
 pub struct IncreasingRoundTimer {
-    duty: Option<Duty>,
-    feature_set: Arc<FeatureSet>,
+    duty: Option<BoundDuty>,
 }
 
 impl IncreasingRoundTimer {
     /// Creates an increasing round timer.
     pub fn new() -> Self {
-        Self {
-            duty: None,
-            feature_set: Arc::new(FeatureSet::new()),
-        }
+        Self { duty: None }
     }
 
     /// Creates an increasing round timer for a duty.
-    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set,
+            duty: Some(BoundDuty { duty, feature_set }),
         }
     }
 }
@@ -155,8 +158,7 @@ impl RoundTimer for IncreasingRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
-        {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None => increasing_round_timeout(round)?,
         };
@@ -185,8 +187,7 @@ impl RoundTimer for IncreasingRoundTimer {
 /// number: 1s, 2s, 3s, etc.
 #[derive(Debug, Default)]
 pub struct EagerDoubleLinearRoundTimer {
-    duty: Option<Duty>,
-    feature_set: Arc<FeatureSet>,
+    duty: Option<BoundDuty>,
     first_deadlines: Mutex<HashMap<i64, Instant>>,
 }
 
@@ -195,16 +196,14 @@ impl EagerDoubleLinearRoundTimer {
     pub fn new() -> Self {
         Self {
             duty: None,
-            feature_set: Arc::new(FeatureSet::new()),
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
 
     /// Creates an eager double linear round timer for a duty.
-    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set,
+            duty: Some(BoundDuty { duty, feature_set }),
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
@@ -216,8 +215,7 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
-        {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None => linear_round_timeout(round)?,
         };
@@ -250,24 +248,19 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
 /// increase linearly.
 #[derive(Debug, Clone, Default)]
 pub struct LinearRoundTimer {
-    duty: Option<Duty>,
-    feature_set: Arc<FeatureSet>,
+    duty: Option<BoundDuty>,
 }
 
 impl LinearRoundTimer {
     /// Creates a linear round timer.
     pub fn new() -> Self {
-        Self {
-            duty: None,
-            feature_set: Arc::new(FeatureSet::new()),
-        }
+        Self { duty: None }
     }
 
     /// Creates a linear round timer for a duty.
-    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn with_duty(duty: Duty, feature_set: &'static FeatureSet) -> Self {
         Self {
-            duty: Some(duty),
-            feature_set,
+            duty: Some(BoundDuty { duty, feature_set }),
         }
     }
 }
@@ -278,8 +271,7 @@ impl RoundTimer for LinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
-        {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None if round == 1 => Duration::from_secs(1),
             None => linear_subsequent_round_timeout(round)?,
@@ -291,33 +283,25 @@ impl RoundTimer for LinearRoundTimer {
 
 /// Returns a timer function based on the enabled features.
 ///
-/// The injected `feature_set` is cloned into each built timer, which reads
-/// `ProposalTimeout` from it per round.
-pub fn get_round_timer_func(feature_set: Arc<FeatureSet>) -> RoundTimerFunc {
+/// The injected `feature_set` (a `Copy` `&'static` pointer) is threaded into
+/// each built timer, which reads `ProposalTimeout` from it per round.
+pub fn get_round_timer_func(feature_set: &'static FeatureSet) -> RoundTimerFunc {
     if feature_set.enabled(Feature::Linear) {
         return Box::new(move |duty| {
             if is_proposer(&duty) {
-                Box::new(LinearRoundTimer::with_duty(duty, feature_set.clone()))
+                Box::new(LinearRoundTimer::with_duty(duty, feature_set))
             } else if feature_set.enabled(Feature::EagerDoubleLinear) {
-                Box::new(EagerDoubleLinearRoundTimer::with_duty(
-                    duty,
-                    feature_set.clone(),
-                ))
+                Box::new(EagerDoubleLinearRoundTimer::with_duty(duty, feature_set))
             } else {
-                Box::new(IncreasingRoundTimer::with_duty(duty, feature_set.clone()))
+                Box::new(IncreasingRoundTimer::with_duty(duty, feature_set))
             }
         });
     }
 
     if feature_set.enabled(Feature::EagerDoubleLinear) {
-        Box::new(move |duty| {
-            Box::new(EagerDoubleLinearRoundTimer::with_duty(
-                duty,
-                feature_set.clone(),
-            ))
-        })
+        Box::new(move |duty| Box::new(EagerDoubleLinearRoundTimer::with_duty(duty, feature_set)))
     } else {
-        Box::new(move |duty| Box::new(IncreasingRoundTimer::with_duty(duty, feature_set.clone())))
+        Box::new(move |duty| Box::new(IncreasingRoundTimer::with_duty(duty, feature_set)))
     }
 }
 
@@ -328,12 +312,9 @@ fn is_proposer(duty: &Duty) -> bool {
 
 /// Returns the proposer round-one override duration, when `ProposalTimeout` is
 /// enabled and the duty is a proposer in round one.
-fn proposal_timeout_duration(
-    duty: Option<&Duty>,
-    round: i64,
-    feature_set: &FeatureSet,
-) -> Option<Duration> {
-    if round == 1 && duty.is_some_and(is_proposer) && feature_set.enabled(Feature::ProposalTimeout)
+fn proposal_timeout_duration(bound: Option<&BoundDuty>, round: i64) -> Option<Duration> {
+    let bound = bound?;
+    if round == 1 && is_proposer(&bound.duty) && bound.feature_set.enabled(Feature::ProposalTimeout)
     {
         Some(PROPOSAL_TIMEOUT)
     } else {
@@ -427,7 +408,7 @@ fn checked_deadline(start: Instant, timeout: Duration, round: i64) -> Result<Ins
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
     use pluto_featureset::{Config, FeatureSet};
     use test_case::test_case;
@@ -552,28 +533,28 @@ mod tests {
         let proposer = Duty::new_proposer_duty(SlotNumber::from(0));
 
         let fs = FeatureSet::new();
-        let timer_func = get_round_timer_func(Arc::new(fs));
+        let timer_func = get_round_timer_func(Box::leak(Box::new(fs)));
         assert_eq!(
             TimerType::EagerDoubleLinear,
             timer_func(attester.clone()).timer_type()
         );
 
         let fs = featureset(vec![], vec![Feature::EagerDoubleLinear]);
-        let timer_func = get_round_timer_func(Arc::new(fs));
+        let timer_func = get_round_timer_func(Box::leak(Box::new(fs)));
         assert_eq!(
             TimerType::Increasing,
             timer_func(attester.clone()).timer_type()
         );
 
         let fs = featureset(vec![Feature::Linear], vec![Feature::EagerDoubleLinear]);
-        let timer_func = get_round_timer_func(Arc::new(fs));
+        let timer_func = get_round_timer_func(Box::leak(Box::new(fs)));
         assert_eq!(
             TimerType::Increasing,
             timer_func(attester.clone()).timer_type()
         );
 
         let fs = featureset(vec![Feature::Linear], vec![]);
-        let timer_func = get_round_timer_func(Arc::new(fs));
+        let timer_func = get_round_timer_func(Box::leak(Box::new(fs)));
         assert_eq!(
             TimerType::EagerDoubleLinear,
             timer_func(attester).timer_type()
@@ -812,7 +793,7 @@ mod tests {
             .expect("test featureset is valid")
     }
 
-    fn proposal_timeout_fs() -> Arc<FeatureSet> {
-        Arc::new(featureset(vec![Feature::ProposalTimeout], vec![]))
+    fn proposal_timeout_fs() -> &'static FeatureSet {
+        Box::leak(Box::new(featureset(vec![Feature::ProposalTimeout], vec![])))
     }
 }

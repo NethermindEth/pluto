@@ -645,6 +645,7 @@ fn attestation_json_bytes(data: &phase0::AttestationData) -> Bytes {
     let value = serde_json::json!({
         "attestation_data": data,
         "attestation_duty": {
+            "pubkey": pubkey(1),
             "slot": "1",
             "validator_index": "1",
             "committee_index": "2",
@@ -740,9 +741,9 @@ fn in_memory_network(
                 compare_attestations,
                 timer_func: match round_timeout {
                     Some(timeout) => short_timer_func(timeout),
-                    None => crate::timer::get_round_timer_func(Arc::new(
+                    None => crate::timer::get_round_timer_func(Box::leak(Box::new(
                         pluto_featureset::FeatureSet::new(),
-                    )),
+                    ))),
                 },
                 sniffer: {
                     let sniffed_tx = sniffed_tx.clone();

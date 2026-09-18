@@ -139,7 +139,10 @@ struct Host {
 /// in-process [`MemoryTransport`], wrapped by an infosync [`InfoSync`]
 /// component. A capture subscriber is registered *after* infosync's own, so
 /// receiving a capture message guarantees infosync's store is already updated.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper wires the full infosync host setup"
+)]
 fn build_host(
     seed: u8,
     idx: usize,
@@ -154,17 +157,17 @@ fn build_host(
     let key = generate_insecure_k1_key(seed);
     let keypair = keypair_from_secret_key(key.clone()).expect("keypair");
 
-    let (prio, behaviour, expired) = new_component(
-        peers.clone(),
-        i64::try_from(peers.len()).expect("peer count fits i64"),
-        consensus,
-        Duration::from_secs(30),
-        key,
-        FutureCalculator,
-        P2PContext::new(peers),
-        ct.clone(),
-    )
-    .expect("new_component");
+    let (prio, behaviour, expired) = new_component()
+        .peers(peers.clone())
+        .min_required(i64::try_from(peers.len()).expect("peer count fits i64"))
+        .consensus(consensus)
+        .exchange_timeout(Duration::from_secs(30))
+        .privkey(key)
+        .calculator(FutureCalculator)
+        .p2p_context(P2PContext::new(peers))
+        .ct(ct.clone())
+        .call()
+        .expect("new_component");
     let prio = Arc::new(prio);
 
     // infosync subscribes to the prioritiser inside `new`.
@@ -173,7 +176,7 @@ fn build_host(
         versions,
         protocols,
         proposals,
-        &FeatureSet::new(),
+        Box::leak(Box::new(FeatureSet::new())),
     ));
 
     // Capture subscriber registered after infosync's (fan-out runs in

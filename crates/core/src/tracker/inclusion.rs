@@ -10,34 +10,22 @@
 //! directly from tests. The networked driver that polls the beacon node and
 //! builds the `Block` inputs is layered on top separately.
 
-// TODO: The networked `InclusionChecker` that wires the default reporters and drives
-// this core is added in a follow-up; until then some core items (default
-// reporters, committee plumbing) have no in-crate caller.
-#![allow(dead_code)]
-
 use std::{
-    any::Any,
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockV2Request, GetBlockV2Response,
-    versioned,
-};
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError, v1, versioned};
 use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
 use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
 
 use crate::{
-    signeddata::{
-        Attestation, SignedAggregateAndProof, SignedDataError, VersionedAttestation,
-        VersionedSignedAggregateAndProof, VersionedSignedProposal,
-    },
-    tracker::{StepError, analysis::incl_supported, metrics::TRACKER_METRICS},
+    signeddata::SignedDataError,
+    tracker::{StepError, analysis, metrics::TRACKER_METRICS},
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
 };
 
@@ -129,20 +117,11 @@ pub struct Submission {
     /// The validator the duty belongs to.
     pub pubkey: PubKey,
     /// The signed data broadcast to the beacon node.
-    pub data: Box<dyn SignedData>,
+    pub data: SignedData,
     /// Hash-tree-root of the attestation data (zero for proposals).
     pub att_data_root: HashRoot,
     /// Delay between slot start and broadcast.
     pub delay: Duration,
-}
-
-/// A minimal attester duty, carrying only the fields used by inclusion checks.
-#[derive(Clone)]
-pub struct AttesterDuty {
-    /// Validator index the duty belongs to.
-    pub validator_index: u64,
-    /// Index of the validator within its committee's aggregation bits.
-    pub validator_committee_index: u64,
 }
 
 /// A beacon committee for a slot, carrying only the fields used by inclusion.
@@ -159,7 +138,7 @@ pub struct Block {
     /// Slot of the block.
     pub slot: u64,
     /// Attester duties relevant to this slot (used for Electra inclusion).
-    pub att_duties: Vec<AttesterDuty>,
+    pub att_duties: Vec<v1::AttesterDuty>,
     /// Block attestations keyed by their attestation-data root.
     pub attestations_by_data_root: HashMap<HashRoot, versioned::VersionedAttestation>,
     /// Beacon committees for the slot, ordered by committee index.
@@ -178,13 +157,13 @@ pub struct InclusionCore {
     tracker_incl_fn: TrackerInclFn,
     missed_fn: MissedFn,
     att_included_fn: AttIncludedFn,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
 }
 
 impl InclusionCore {
     /// Creates a core with the production reporters (`report_missed` and
     /// `report_att_inclusion`) and the given tracker callback.
-    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
+    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: &'static FeatureSet) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
             Box::new(report_missed),
@@ -198,7 +177,7 @@ impl InclusionCore {
         tracker_incl_fn: TrackerInclFn,
         missed_fn: MissedFn,
         att_included_fn: AttIncludedFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Self {
         Self {
             submissions: HashMap::new(),
@@ -218,48 +197,49 @@ impl InclusionCore {
         &mut self,
         duty: Duty,
         pubkey: PubKey,
-        data: Box<dyn SignedData>,
+        data: SignedData,
         delay: Duration,
     ) -> Result<(), InclusionError> {
-        if !incl_supported(&self.feature_set).contains(&duty.duty_type) {
+        if !analysis::incl_supported(self.feature_set).contains(&duty.duty_type) {
             return Ok(());
         }
 
         let mut att_data_root = [0u8; 32];
 
         if duty.duty_type == DutyType::Attester {
-            let any = &*data as &dyn Any;
-            if let Some(att) = any.downcast_ref::<VersionedAttestation>() {
-                let payload = att
-                    .0
-                    .attestation
-                    .as_ref()
-                    .ok_or(InclusionError::MissingAttestation)?;
-                att_data_root = payload.data().tree_hash_root().0;
-            } else if let Some(att) = any.downcast_ref::<Attestation>() {
-                att_data_root = att.0.data.tree_hash_root().0;
-            } else {
-                return Err(InclusionError::InvalidAttestation);
+            match &data {
+                SignedData::VersionedAttestation(att) => {
+                    let payload = att
+                        .0
+                        .attestation
+                        .as_ref()
+                        .ok_or(InclusionError::MissingAttestation)?;
+                    att_data_root = payload.data().tree_hash_root().0;
+                }
+                SignedData::Attestation(att) => {
+                    att_data_root = att.0.data.tree_hash_root().0;
+                }
+                _ => return Err(InclusionError::InvalidAttestation),
             }
         }
 
         if duty.duty_type == DutyType::Aggregator {
-            let any = &*data as &dyn Any;
-            if let Some(agg) = any.downcast_ref::<VersionedSignedAggregateAndProof>() {
-                let data = agg.data().ok_or(InclusionError::InvalidAggregateAndProof)?;
-                att_data_root = data.tree_hash_root().0;
-            } else if let Some(agg) = any.downcast_ref::<SignedAggregateAndProof>() {
-                att_data_root = agg.0.message.aggregate.data.tree_hash_root().0;
-            } else {
-                return Err(InclusionError::InvalidAggregateAndProof);
+            match &data {
+                SignedData::VersionedSignedAggregateAndProof(agg) => {
+                    let data = agg.data().ok_or(InclusionError::InvalidAggregateAndProof)?;
+                    att_data_root = data.tree_hash_root().0;
+                }
+                SignedData::SignedAggregateAndProof(agg) => {
+                    att_data_root = agg.0.message.aggregate.data.tree_hash_root().0;
+                }
+                _ => return Err(InclusionError::InvalidAggregateAndProof),
             }
         }
 
         if duty.duty_type == DutyType::Proposer {
-            let any = &*data as &dyn Any;
-            let proposal = any
-                .downcast_ref::<VersionedSignedProposal>()
-                .ok_or(InclusionError::InvalidBlock)?;
+            let SignedData::VersionedSignedProposal(proposal) = &data else {
+                return Err(InclusionError::InvalidBlock);
+            };
             if proposal.0.is_synthetic() {
                 // Synthetic blocks are already on-chain; report inclusion now.
                 (self.tracker_incl_fn)(&duty, pubkey, None);
@@ -330,18 +310,16 @@ impl InclusionCore {
 
         for key in matched {
             let blinded = match self.submissions.get(&key) {
-                Some(sub) => {
-                    match (&*sub.data as &dyn Any).downcast_ref::<VersionedSignedProposal>() {
-                        Some(proposal) => proposal.0.blinded,
-                        None => {
-                            tracing::error!(
-                                duty = %sub.duty,
-                                "Submission data has wrong type",
-                            );
-                            continue;
-                        }
+                Some(sub) => match &sub.data {
+                    SignedData::VersionedSignedProposal(proposal) => proposal.0.blinded,
+                    _ => {
+                        tracing::error!(
+                            duty = %sub.duty,
+                            "Submission data has wrong type",
+                        );
+                        continue;
                     }
-                }
+                },
                 None => continue,
             };
 
@@ -388,14 +366,14 @@ impl InclusionCore {
                     if sub.duty.slot.inner() != block.slot {
                         continue;
                     }
-                    match (&*sub.data as &dyn Any).downcast_ref::<VersionedSignedProposal>() {
-                        Some(proposal) => acts.push((
+                    match &sub.data {
+                        SignedData::VersionedSignedProposal(proposal) => acts.push((
                             key.clone(),
                             Act::ProposerInclude {
                                 blinded: proposal.0.blinded,
                             },
                         )),
-                        None => {
+                        _ => {
                             tracing::error!(duty = %sub.duty, "Submission data has wrong type");
                         }
                     }
@@ -449,10 +427,9 @@ fn electra_committee_index(payload: &versioned::AttestationPayload) -> Result<u6
 
 /// Checks whether the submitted attestation is included in the block.
 fn check_attestation_inclusion(sub: &Submission, block: &Block) -> Result<bool, InclusionError> {
-    let any = &*sub.data as &dyn Any;
-    let sub_att = any
-        .downcast_ref::<VersionedAttestation>()
-        .ok_or(InclusionError::NotAnAttestation)?;
+    let SignedData::VersionedAttestation(sub_att) = &sub.data else {
+        return Err(InclusionError::NotAnAttestation);
+    };
 
     let Some(att) = block.attestations_by_data_root.get(&sub.att_data_root) else {
         return Ok(false);
@@ -516,10 +493,9 @@ fn check_aggregation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
     let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
         .map_err(|_| InclusionError::DecodeAggregationBits)?;
 
-    let any = &*sub.data as &dyn Any;
-    let agg = any
-        .downcast_ref::<VersionedSignedAggregateAndProof>()
-        .ok_or(InclusionError::ParseVersionedAggregate)?;
+    let SignedData::VersionedSignedAggregateAndProof(agg) = &sub.data else {
+        return Err(InclusionError::ParseVersionedAggregate);
+    };
     let sub_bits = AggBits::from_ssz_bytes(
         agg.aggregation_bits()
             .ok_or(InclusionError::ParseVersionedAggregate)?,
@@ -547,24 +523,22 @@ fn report_missed(sub: &Submission) {
                 "{msg}",
             );
         }
-        DutyType::Proposer => {
-            match (&*sub.data as &dyn Any).downcast_ref::<VersionedSignedProposal>() {
-                Some(proposal) => {
-                    let msg = if proposal.0.blinded {
-                        "Broadcasted blinded block never included on-chain"
-                    } else {
-                        "Broadcasted block never included on-chain"
-                    };
-                    tracing::warn!(
-                        pubkey = %sub.pubkey,
-                        block_slot = sub.duty.slot.inner(),
-                        broadcast_delay = ?sub.delay,
-                        "{msg}",
-                    );
-                }
-                None => tracing::error!(duty = %sub.duty, "Submission data has wrong type"),
+        DutyType::Proposer => match &sub.data {
+            SignedData::VersionedSignedProposal(proposal) => {
+                let msg = if proposal.0.blinded {
+                    "Broadcasted blinded block never included on-chain"
+                } else {
+                    "Broadcasted block never included on-chain"
+                };
+                tracing::warn!(
+                    pubkey = %sub.pubkey,
+                    block_slot = sub.duty.slot.inner(),
+                    broadcast_delay = ?sub.delay,
+                    "{msg}",
+                );
             }
-        }
+            _ => tracing::error!(duty = %sub.duty, "Submission data has wrong type"),
+        },
         _ => unreachable!("bug: unexpected type"),
     }
 }
@@ -636,7 +610,7 @@ impl InclusionChecker {
     pub async fn new(
         eth2_cl: EthBeaconNodeApiClient,
         tracker_incl_fn: TrackerInclFn,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Result<Self, EthBeaconNodeApiClientError> {
         let genesis = eth2_cl.fetch_genesis_time().await?;
         let (slot_duration, _slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
@@ -700,27 +674,11 @@ impl InclusionChecker {
         head.checked_sub(INCL_CHECK_LAG)
     }
 
-    /// Reports whether a block exists at `slot`. A `404` means no block was
-    /// proposed, which is a normal outcome rather than an error — the same
-    /// distinction charon draws via `is404Error`.
+    /// Reports whether a block was proposed at `slot`.
     async fn block_exists(&self, slot: u64) -> Result<bool, InclusionCheckerError> {
-        let request = GetBlockV2Request::builder()
-            .block_id(slot.to_string())
-            .build()
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?;
+        let block = self.eth2_cl.get_block_v2(&slot.to_string()).await?;
 
-        match self
-            .eth2_cl
-            .get_block_v2(request)
-            .await
-            .map_err(|err| InclusionCheckerError::Request(err.into()))?
-        {
-            GetBlockV2Response::Ok(_) | GetBlockV2Response::OkBinary(_) => Ok(true),
-            GetBlockV2Response::NotFound(_) => Ok(false),
-            other => Err(InclusionCheckerError::UnexpectedResponse(format!(
-                "{other:?}"
-            ))),
-        }
+        Ok(block.is_some())
     }
 
     /// Drives inclusion checking until `cancel` fires: once per due slot, ask
@@ -769,13 +727,9 @@ impl InclusionChecker {
 /// retried on the next tick.
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
-    /// The beacon-node request failed or could not be built. Boxed because the
-    /// generated client surfaces `anyhow::Error`, which `pluto-core` avoids.
+    /// The beacon-node request failed.
     #[error("beacon node request failed: {0}")]
-    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// The beacon node returned a status the checker does not handle.
-    #[error("unexpected beacon node response: {0}")]
-    UnexpectedResponse(String),
+    Request(#[from] EthBeaconNodeApiClientError),
 }
 
 #[cfg(test)]
@@ -794,24 +748,29 @@ mod tests {
     use pluto_featureset::{Config, Feature};
 
     use super::*;
-    use crate::types::SlotNumber;
+    use crate::{
+        signeddata::{
+            Attestation, SignedAggregateAndProof, VersionedAttestation, VersionedSignedProposal,
+        },
+        types::SlotNumber,
+    };
 
     /// Shared recorder of duties passed to a callback.
     type Rec = Arc<Mutex<Vec<Duty>>>;
 
-    fn featureset(attestation_inclusion: bool) -> Arc<FeatureSet> {
+    fn featureset(attestation_inclusion: bool) -> &'static FeatureSet {
         let enabled = if attestation_inclusion {
             vec![Feature::AttestationInclusion]
         } else {
             vec![]
         };
-        Arc::new(
+        Box::leak(Box::new(
             FeatureSet::from_config(Config {
                 enabled,
                 ..Config::default()
             })
             .expect("test featureset is valid"),
-        )
+        ))
     }
 
     fn pubkey() -> PubKey {
@@ -863,7 +822,7 @@ mod tests {
         .expect("golden proposal deserialises")
     }
 
-    fn submission(duty: Duty, data: Box<dyn SignedData>, att_data_root: HashRoot) -> Submission {
+    fn submission(duty: Duty, data: SignedData, att_data_root: HashRoot) -> Submission {
         Submission {
             duty,
             pubkey: pubkey(),
@@ -912,28 +871,28 @@ mod tests {
         core.submitted(
             Duty::new_attester_duty(SlotNumber::new(1)),
             pubkey(),
-            Box::new(att1),
+            att1.clone().into(),
             Duration::ZERO,
         )
         .expect("submit attester 1");
         core.submitted(
             Duty::new_aggregator_duty(SlotNumber::new(2)),
             pubkey(),
-            Box::new(agg2),
+            agg2.clone().into(),
             Duration::ZERO,
         )
         .expect("submit aggregator 2");
         core.submitted(
             Duty::new_attester_duty(SlotNumber::new(3)),
             pubkey(),
-            Box::new(att3),
+            att3.clone().into(),
             Duration::ZERO,
         )
         .expect("submit attester 3");
         core.submitted(
             Duty::new_proposer_duty(SlotNumber::new(100)),
             pubkey(),
-            Box::new(block4),
+            block4.clone().into(),
             Duration::ZERO,
         )
         .expect("submit proposer 100");
@@ -980,7 +939,7 @@ mod tests {
             core.submitted(
                 Duty::new_proposer_duty(SlotNumber::new(slot)),
                 pubkey(),
-                Box::new(proposal()),
+                proposal().into(),
                 Duration::ZERO,
             )
             .expect("submit proposal");
@@ -1011,7 +970,7 @@ mod tests {
         core.submitted(
             Duty::new_attester_duty(SlotNumber::new(7)),
             pubkey(),
-            Box::new(Attestation::new(phase0_attestation(7))),
+            Attestation::new(phase0_attestation(7)).into(),
             Duration::ZERO,
         )
         .expect("submit attester");
@@ -1037,7 +996,7 @@ mod tests {
         core.submitted(
             Duty::new_proposer_duty(SlotNumber::new(5)),
             pubkey(),
-            Box::new(proposal()),
+            proposal().into(),
             Duration::ZERO,
         )
         .expect("submit proposal");
@@ -1093,7 +1052,7 @@ mod tests {
         };
         let sub = submission(
             Duty::new_attester_duty(SlotNumber::new(slot)),
-            Box::new(VersionedAttestation::new(sub_att).unwrap()),
+            VersionedAttestation::new(sub_att).unwrap().into(),
             data_root,
         );
         let block = Block {
@@ -1157,14 +1116,19 @@ mod tests {
         };
         let sub = submission(
             Duty::new_attester_duty(SlotNumber::new(slot)),
-            Box::new(VersionedAttestation::new(sub_att).unwrap()),
+            VersionedAttestation::new(sub_att).unwrap().into(),
             data_root,
         );
         let block = Block {
             slot,
-            att_duties: vec![AttesterDuty {
+            att_duties: vec![v1::AttesterDuty {
+                pubkey: [0u8; 48],
                 validator_index,
+                committee_index: u64::try_from(committee_index).unwrap(),
+                committee_length: 4,
+                committees_at_slot: 2,
                 validator_committee_index,
+                slot,
             }],
             attestations_by_data_root: HashMap::from([(data_root, block_att)]),
             beacon_committees: vec![

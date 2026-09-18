@@ -1,4 +1,7 @@
-#![allow(missing_docs)]
+#![expect(
+    missing_docs,
+    reason = "example binary; public items are self-explanatory"
+)]
 //! Bootnode example demonstrating relay-based P2P connectivity.
 //!
 //! This example shows how to:

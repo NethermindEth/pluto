@@ -1,6 +1,4 @@
 //! Loading and verification of a cluster `Lock` from disk.
-//!
-//! Mirrors Charon's `cluster.LoadClusterLock` (`cluster/load.go`).
 
 use std::path::Path;
 
@@ -49,14 +47,12 @@ pub enum LoadError {
 /// [`Lock`], and verifies its hashes and signatures.
 ///
 /// When `no_verify` is set, verification failures are logged as warnings
-/// instead of being returned as errors (mirrors Charon's `--no-verify`): both
+/// instead of being returned as errors (the `--no-verify` flag): both
 /// [`Lock::verify_hashes`] and [`Lock::verify_signatures`] still run.
 ///
-/// `eth1` backs EIP-1271 smart-contract operator-signature verification. Pass a
-/// no-op client (from `EthClient::new("")`) to skip only the contract-based
-/// checks; BLS-aggregate and node signatures are still verified.
-///
-/// Mirrors Charon's `cluster.LoadClusterLock`.
+/// `eth1` backs EIP-1271 smart-contract operator-signature verification. Pass
+/// [`EthClient::Noop`] to skip only the contract-based checks; BLS-aggregate
+/// and node signatures are still verified.
 pub async fn load_cluster_lock(
     lock_file_path: impl AsRef<Path>,
     no_verify: bool,
@@ -99,8 +95,6 @@ pub async fn load_cluster_lock(
 /// execution-layer endpoint to inject. EIP-1271 smart-contract operator
 /// signatures are skipped; BLS-aggregate and node signatures are still
 /// verified.
-///
-/// Mirrors Charon's `cluster.LoadClusterLockAndVerify`.
 pub async fn load_cluster_lock_and_verify(
     lock_file_path: impl AsRef<Path>,
 ) -> Result<Lock, LoadError> {
@@ -119,13 +113,6 @@ mod tests {
 
     const LOCK_V1_10_0: &str = include_str!("testdata/cluster_lock_v1_10_0.json");
 
-    /// A no-op execution-layer client: BLS-aggregate and node signatures are
-    /// still verified, only EIP-1271 contract-based operator signatures are
-    /// skipped.
-    async fn noop_eth1() -> EthClient {
-        EthClient::new("").await.expect("noop eth1 client")
-    }
-
     /// Writes `contents` to a temporary file that `load_cluster_lock` can read
     /// by path.
     fn write_lock(contents: &str) -> NamedTempFile {
@@ -136,12 +123,12 @@ mod tests {
         file
     }
 
-    /// Ports Charon's `TestLoadClusterLock`: the lock is read and parsed and
-    /// its fields are populated (verification skipped via `no_verify`).
+    /// The lock is read and parsed and its fields are populated (verification
+    /// skipped via `no_verify`).
     #[tokio::test]
     async fn load_cluster_lock_reads_and_parses() {
         let file = write_lock(LOCK_V1_10_0);
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let lock = load_cluster_lock(file.path(), true, &eth1)
             .await
@@ -180,7 +167,7 @@ mod tests {
         let mut lock: Lock = serde_json::from_str(LOCK_V1_10_0).unwrap();
         lock.lock_hash[0] ^= 0xff;
         let file = write_lock(&serde_json::to_string(&lock).unwrap());
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let err = load_cluster_lock(file.path(), false, &eth1)
             .await
@@ -196,7 +183,7 @@ mod tests {
         let mut lock: Lock = serde_json::from_str(LOCK_V1_10_0).unwrap();
         lock.lock_hash[0] ^= 0xff;
         let file = write_lock(&serde_json::to_string(&lock).unwrap());
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let loaded = load_cluster_lock(file.path(), true, &eth1)
             .await
@@ -208,7 +195,7 @@ mod tests {
     /// A missing file surfaces a read error rather than a parse/verify error.
     #[tokio::test]
     async fn load_cluster_lock_missing_file() {
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let err = load_cluster_lock("/nonexistent/cluster-lock.json", false, &eth1)
             .await
@@ -221,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn load_cluster_lock_malformed_json() {
         let file = write_lock("{ not valid json");
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let err = load_cluster_lock(file.path(), false, &eth1)
             .await
@@ -236,7 +223,7 @@ mod tests {
     async fn load_cluster_lock_verifies_generated_lock() {
         let (lock, ..) = crate::test_cluster::new_for_test(1, 2, 3, 1);
         let file = write_lock(&serde_json::to_string(&lock).expect("serialize generated lock"));
-        let eth1 = noop_eth1().await;
+        let eth1 = EthClient::Noop;
 
         let loaded = load_cluster_lock(file.path(), false, &eth1)
             .await

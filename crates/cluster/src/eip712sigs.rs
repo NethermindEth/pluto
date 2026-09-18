@@ -2,10 +2,9 @@ use crate::{definition::Definition, operator::Operator, version::V1_3};
 use k256::SecretKey;
 use pluto_eth2util::{
     eip712::{
-        Domain, Field, PRIMITIVE_STRING, PRIMITIVE_UINT256, Primitive, Type, TypedData, Value,
-        hash_typed_data,
+        self, Domain, Field, PRIMITIVE_STRING, PRIMITIVE_UINT256, Primitive, Type, TypedData, Value,
     },
-    network::fork_version_to_chain_id,
+    network,
 };
 
 type ValueFunc = Box<dyn Fn(&Definition, &Operator) -> Value>;
@@ -139,7 +138,7 @@ pub(crate) fn digest_eip712(
     definition: &Definition,
     operator: &Operator,
 ) -> Result<Vec<u8>> {
-    let chain_id = fork_version_to_chain_id(definition.fork_version.as_ref())?;
+    let chain_id = network::fork_version_to_chain_id(definition.fork_version.as_ref())?;
 
     let fields = typ
         .fields
@@ -163,7 +162,7 @@ pub(crate) fn digest_eip712(
         },
     };
 
-    let digest = hash_typed_data(&data).map_err(EIP712Error::FailedToHashTypedData)?;
+    let digest = eip712::hash_typed_data(&data).map_err(EIP712Error::FailedToHashTypedData)?;
 
     Ok(digest)
 }

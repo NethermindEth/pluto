@@ -149,8 +149,7 @@ impl ProtocolState {
             return;
         }
 
-        #[allow(
-            clippy::cast_precision_loss,
+        #[expect(
             clippy::arithmetic_side_effects,
             reason = "RTT/2 subtraction from current time cannot underflow"
         )]
@@ -212,7 +211,10 @@ impl ProtocolState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "metrics submission needs all peer-info fields as distinct arguments"
+    )]
     fn metrics_submitter(
         &self,
         clock_offset: chrono::Duration,
@@ -240,7 +242,10 @@ impl ProtocolState {
 
         // Clamp clock offset to [-1 hour, 1 hour]
         let one_hour = chrono::Duration::hours(1);
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "negating a fixed one-hour Duration cannot overflow"
+        )]
         let clamped_offset = if clock_offset < -one_hour {
             -one_hour
         } else if clock_offset > one_hour {

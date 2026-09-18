@@ -3,6 +3,7 @@ members = [
     "crates/app",
     "crates/parsigex",
     "crates/build-proto",
+    "crates/proto",
     "crates/cli",
     "crates/cluster",
     "crates/consensus",
@@ -23,6 +24,7 @@ members = [
     "crates/frost",
     "crates/priority",
     "crates/infosync",
+    "crates/test-compose",
 ]
 # Vendored fork consumed only via [patch.crates-io]; excluded so it builds/tests
 # standalone (its upstream code isn't written to this workspace's lints) without
@@ -49,8 +51,6 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
-dyn-clone = "1.0"
-dyn-eq = "0.1.3"
 either = "1.13"
 eventsource-stream = "0.2"
 futures = "0.3"
@@ -58,6 +58,7 @@ futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"
+nix = { version = "0.30", features = ["user"] }
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
@@ -71,7 +72,8 @@ rand = { version = "0.8", features = ["std_rng"] }
 rand_core = "0.6"
 regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde_json = { version = "1.0", features = ["raw_value"] }
+serde_path_to_error = "0.1"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -128,11 +130,8 @@ vise = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf
 vise-exporter = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 criterion = "0.8"
 reqwest = "0.13"
-http = "1.4"
 tempfile = "3.24"
 assert-json-diff = "2.0"
-validator = { version = "0.20", features = ["derive"] }
-oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"
@@ -151,6 +150,7 @@ quick-xml = { version = "0.41", features = ["serialize"] }
 pluto-app = { path = "crates/app" }
 pluto-parsigex = { path = "crates/parsigex" }
 pluto-build-proto = { path = "crates/build-proto" }
+pluto-proto = { path = "crates/proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
 pluto-consensus = { path = "crates/consensus" }
@@ -171,6 +171,7 @@ pluto-peerinfo = { path = "crates/peerinfo" }
 pluto-frost = { path = "crates/frost" }
 pluto-priority = { path = "crates/priority" }
 pluto-infosync = { path = "crates/infosync" }
+pluto-test-compose = { path = "crates/test-compose" }
 
 [workspace.lints.rust]
 missing_docs = "deny"
