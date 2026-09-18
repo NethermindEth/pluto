@@ -88,6 +88,7 @@
 //! Client nodes may include relay client to support connecting via relays.
 
 use std::{
+    net::IpAddr,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -291,6 +292,18 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Listeners registered through [`Node::listen_on`], in registration order.
     listener_ids: Vec<ListenerId>,
+
+    /// External IP to advertise on the bound ports.
+    external_ip: Option<IpAddr>,
+
+    /// External hostname to advertise on the bound ports.
+    external_host: Option<String>,
+
+    /// Whether private listen addresses are withheld from advertisement.
+    filter_private_addrs: bool,
+
+    /// Addresses this node currently registers as external on the swarm.
+    advertised_addrs: Vec<Multiaddr>,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -394,13 +407,25 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(node)
     }
 
-    /// Listens on and advertises the configured addresses of every transport
-    /// this node's [`NodeType`] installs.
+    /// Listens on the configured addresses of every transport this node's
+    /// [`NodeType`] installs.
     ///
     /// Transport and address selection are driven by the same
     /// [`NodeType::transports`] list, so a node can never listen on a transport
     /// it did not install, nor install one it never listens on.
+    ///
+    /// Nothing is advertised yet: a configured port of 0 means the kernel picks
+    /// one, so the advertised set is derived from the addresses libp2p reports
+    /// as bound (see [`Node::readvertise`]).
     fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
+        self.external_ip = cfg
+            .external_ip
+            .as_deref()
+            .map(str::parse::<IpAddr>)
+            .transpose()?;
+        self.external_host = cfg.external_host.clone();
+        self.filter_private_addrs = filter_private_addrs;
+
         let mut addrs = Vec::new();
 
         for &proto in self.node_type.transports() {
@@ -419,48 +444,51 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        // Listen on internal addresses only
-        for addr in &addrs {
-            self.listen_on(addr.clone())?;
-        }
-
-        self.set_advertised_addrs(cfg, filter_private_addrs, &addrs)
-    }
-
-    /// Advertises the external IP / hostname from `cfg` on the ports of
-    /// `listen_addrs`, together with `listen_addrs` themselves.
-    ///
-    /// Replaces everything the node advertises, including addresses added
-    /// through [`Node::add_external_address`].
-    ///
-    /// Callers that listen on port 0 should call this again once libp2p has
-    /// reported the kernel-assigned ports: the configured addresses advertise
-    /// port 0, which is not dialable.
-    pub fn set_advertised_addrs(
-        &mut self,
-        cfg: &P2PConfig,
-        filter_private_addrs: bool,
-        listen_addrs: &[Multiaddr],
-    ) -> Result<()> {
-        let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
-
-        // Advertise filtered addresses (external + optionally filtered
-        // internal)
-        let advertised_addrs = utils::filter_advertised_addresses(
-            utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(listen_addrs.to_vec()),
-            filter_private_addrs,
-        );
-
-        for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
-            self.swarm.remove_external_address(&addr);
-        }
-
-        for addr in advertised_addrs {
-            self.swarm.add_external_address(addr);
+        for addr in addrs {
+            self.listen_on(addr)?;
         }
 
         Ok(())
+    }
+
+    /// Re-derives the advertised set from the listen addresses libp2p reports:
+    /// the external IP / hostname on their ports plus the addresses themselves,
+    /// private ones withheld when configured. Relay circuit listeners are
+    /// skipped: their ports are the relay's, and identify lists them anyway.
+    /// Only the difference to the previous set is applied, so addresses the
+    /// swarm confirmed by other means (AutoNAT) survive.
+    fn readvertise(&mut self) {
+        let listen_addrs: Vec<Multiaddr> = self
+            .swarm
+            .listeners()
+            .filter(|addr| !utils::is_relay_addr(addr))
+            .cloned()
+            .collect();
+
+        let external_addrs = utils::external_multiaddrs_on(
+            self.external_ip,
+            self.external_host.as_deref(),
+            &listen_addrs,
+        );
+
+        let next = utils::filter_advertised_addresses(
+            utils::ExternalAddresses(external_addrs),
+            utils::InternalAddresses(listen_addrs),
+            self.filter_private_addrs,
+        );
+
+        for addr in &self.advertised_addrs {
+            if !next.contains(addr) {
+                self.swarm.remove_external_address(addr);
+            }
+        }
+        for addr in &next {
+            if !self.advertised_addrs.contains(addr) {
+                self.swarm.add_external_address(addr.clone());
+            }
+        }
+
+        self.advertised_addrs = next;
     }
 
     fn bind_local_peer_id(p2p_context: &P2PContext, local_peer_id: PeerId) -> Result<()> {
@@ -517,6 +545,10 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            external_ip: None,
+            external_host: None,
+            filter_private_addrs: false,
+            advertised_addrs: Vec::new(),
         })
     }
 
@@ -552,6 +584,10 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            external_ip: None,
+            external_host: None,
+            filter_private_addrs: false,
+            advertised_addrs: Vec::new(),
         })
     }
 
@@ -669,13 +705,16 @@ impl<B: NetworkBehaviour> Node<B> {
                 }
             }
 
-            // Listen address changes
+            // Listener changes drive what the node advertises.
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!(%address, "listening on new address");
+                self.readvertise();
             }
             SwarmEvent::ExpiredListenAddr { address, .. } => {
                 info!(%address, "listen address expired");
+                self.readvertise();
             }
+            SwarmEvent::ListenerClosed { .. } => self.readvertise(),
 
             // External address discovery
             SwarmEvent::ExternalAddrConfirmed { address } => {
