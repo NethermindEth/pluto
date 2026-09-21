@@ -5,7 +5,7 @@ use std::{collections::HashMap, io::Write, time::Duration};
 use reqwest::{Method, StatusCode};
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{Instrument as _, info};
 
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
@@ -203,11 +203,14 @@ async fn test_all_mevs(
         let endpoint = endpoint.clone();
         let token = token.clone();
 
-        join_set.spawn(async move {
-            let results = test_single_mev(&queued_tests, &conf, &endpoint, token).await;
-            let relay_name = format_mev_relay_name(&endpoint);
-            (relay_name, results)
-        });
+        join_set.spawn(
+            async move {
+                let results = test_single_mev(&queued_tests, &conf, &endpoint, token).await;
+                let relay_name = format_mev_relay_name(&endpoint);
+                (relay_name, results)
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     let all_results = join_set.join_all().await;
@@ -228,18 +231,21 @@ async fn test_single_mev(
         let conf = conf.clone();
         let target = target.to_string();
 
-        join_set.spawn(async move {
-            let tc_name = test_case.test_case_name();
-            tokio::select! {
-                _ = token.cancelled() => {
-                    let tr = TestResult::new(tc_name.name);
-                    tr.fail(CliError::TimeoutInterrupted)
-                }
-                r = test_case.run(&target, &conf) => {
-                    r
+        join_set.spawn(
+            async move {
+                let tc_name = test_case.test_case_name();
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        let tr = TestResult::new(tc_name.name);
+                        tr.fail(CliError::TimeoutInterrupted)
+                    }
+                    r = test_case.run(&target, &conf) => {
+                        r
+                    }
                 }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
     }
 
     join_set.join_all().await
@@ -574,7 +580,7 @@ async fn create_mev_block(
                 break;
             }
 
-            Err(CliError::MevTest(MevTestError::StatusCodeNot200)) => {
+            Err(CliError::MevTest(ref e)) if matches!(**e, MevTestError::StatusCodeNot200) => {
                 let elapsed = start_iteration.elapsed();
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))

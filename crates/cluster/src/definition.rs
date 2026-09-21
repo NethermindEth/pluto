@@ -3,15 +3,12 @@ use std::collections::HashSet;
 use pluto_ssz::{Hasher, serde_utils::HexBytes};
 
 use crate::{
-    eip712sigs::{
-        EIP712Error, digest_eip712, eip712_creator_config_hash, eip712_enr,
-        get_operator_eip712_type,
-    },
-    helpers::from_0x_hex_str,
+    eip712sigs::{self, EIP712Error},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
-    ssz::{SSZ_MAX_VALIDATORS, SSZError, hash_definition},
+    ssz::{self, SSZ_MAX_VALIDATORS, SSZError},
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
+use bon::bon;
 use chrono::{DateTime, Timelike, Utc};
 use libp2p::PeerId;
 use pluto_eth1wrap::{EthClient, EthClientError};
@@ -25,7 +22,7 @@ use serde_with::{
 };
 use uuid::Uuid;
 
-use crate::helpers::{VerifySigError, verify_sig};
+use crate::helpers::{self, VerifySigError};
 
 /// Length of the fork version in bytes.
 pub const FORK_VERSION_LEN: usize = 4;
@@ -237,6 +234,7 @@ impl<'de> Deserialize<'de> for Definition {
 }
 
 /// DefinitionError is an error type for definition errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DefinitionError {
     /// Multiple withdrawal or fee recipient addresses found
@@ -417,12 +415,10 @@ pub enum InvalidGasLimitError {
     GasLimitNotSet,
 }
 
+#[bon]
 impl Definition {
     /// Create a new cluster definition.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "constructor mirrors the full cluster definition field set"
-    )]
+    #[builder]
     pub fn new(
         name: String,
         num_validators: u64,
@@ -436,7 +432,7 @@ impl Definition {
         consensus_protocol: String,
         target_gas_limit: u64,
         compounding: bool,
-        opts: Vec<fn(&mut Self) -> Self>,
+        #[builder(default)] opts: Vec<fn(&mut Self) -> Self>,
     ) -> Result<Self, DefinitionError> {
         if u64::try_from(fee_recipient_addresses.len())
             .map_err(|_| DefinitionError::FailedToConvertLength)?
@@ -488,7 +484,7 @@ impl Definition {
             })
             .collect();
 
-        def.fork_version = from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
+        def.fork_version = helpers::from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
 
         for opt in opts {
             opt(&mut def);
@@ -522,7 +518,7 @@ impl Definition {
         }
 
         let timestamp = serde_json::from_str::<DateTime<Utc>>(&self.timestamp)
-            .map_err(DefinitionError::FailedToConvertTimestamp)?;
+            .map_err(|e| DefinitionError::FailedToConvertTimestamp(e.into()))?;
 
         Ok(Some(timestamp))
     }
@@ -559,8 +555,8 @@ impl Definition {
             };
         }
 
-        let operator_config_hash_digest = digest_eip712(
-            &get_operator_eip712_type(self.version.as_str())?,
+        let operator_config_hash_digest = eip712sigs::digest_eip712(
+            &eip712sigs::get_operator_eip712_type(self.version.as_str())?,
             self,
             &Operator::default(),
         )?;
@@ -591,7 +587,7 @@ impl Definition {
             }
 
             // Check that we have a valid config signature for each operator.
-            let is_valid_operator_config_sig = verify_sig(
+            let is_valid_operator_config_sig = helpers::verify_sig(
                 operator.address.as_str(),
                 operator_config_hash_digest.as_slice(),
                 operator.config_signature.as_slice(),
@@ -612,9 +608,9 @@ impl Definition {
             }
 
             // Check that we have a valid enr signature for each operator.
-            let enr_digest = digest_eip712(&eip712_enr(), self, operator)?;
+            let enr_digest = eip712sigs::digest_eip712(&eip712sigs::eip712_enr(), self, operator)?;
 
-            let is_valid_operator_enr_sig = verify_sig(
+            let is_valid_operator_enr_sig = helpers::verify_sig(
                 operator.address.as_str(),
                 enr_digest.as_slice(),
                 operator.enr_signature.as_slice(),
@@ -654,10 +650,13 @@ impl Definition {
                 return Err(DefinitionError::EmptyCreatorConfigSignature);
             }
 
-            let creator_config_hash_digest =
-                digest_eip712(&eip712_creator_config_hash(), self, &Operator::default())?;
+            let creator_config_hash_digest = eip712sigs::digest_eip712(
+                &eip712sigs::eip712_creator_config_hash(),
+                self,
+                &Operator::default(),
+            )?;
 
-            let is_valid_creator_sig = verify_sig(
+            let is_valid_creator_sig = helpers::verify_sig(
                 self.creator.address.as_str(),
                 creator_config_hash_digest.as_slice(),
                 self.creator.config_signature.as_slice(),
@@ -737,13 +736,13 @@ impl Definition {
 
     /// Sets the definition hashes.
     pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
-        let config_hash =
-            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let config_hash = ssz::hash_definition(self, true)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         self.config_hash = config_hash.to_vec();
 
-        let definition_hash =
-            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let definition_hash = ssz::hash_definition(self, false)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         self.definition_hash = definition_hash.to_vec();
 
@@ -753,8 +752,8 @@ impl Definition {
     /// `verify_hashes` returns an error if hashes populated from json object
     /// doesn't matches actual hashes.
     pub fn verify_hashes(&self) -> Result<(), DefinitionError> {
-        let config_hash =
-            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let config_hash = ssz::hash_definition(self, true)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         if config_hash != self.config_hash.as_slice() {
             return Err(DefinitionError::InvalidConfigHash {
@@ -763,8 +762,8 @@ impl Definition {
             });
         }
 
-        let definition_hash =
-            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+        let definition_hash = ssz::hash_definition(self, false)
+            .map_err(|e| DefinitionError::SSZError(Box::new(e).into()))?;
 
         if definition_hash != self.definition_hash.as_slice() {
             return Err(DefinitionError::InvalidDefinitionHash {
@@ -805,7 +804,7 @@ impl Definition {
 
         eth1.verify_smart_contract_based_signature(contract_address, digest_hash, sig)
             .await
-            .map_err(DefinitionError::FailedToVerifyContractSignature)
+            .map_err(|e| DefinitionError::FailedToVerifyContractSignature(e.into()))
     }
 
     /// Returns true if the provided definition version supports partial
@@ -1843,21 +1842,21 @@ mod tests {
 
     impl NewArgs {
         fn build(self) -> Result<Definition, DefinitionError> {
-            Definition::new(
-                "test".to_owned(),
-                self.num_validators,
-                2,
-                self.fee_recipient_addresses,
-                self.withdrawal_addresses,
-                "0x00000000".to_owned(),
-                Creator::default(),
-                Vec::new(),
-                self.deposit_amounts,
-                String::new(),
-                self.target_gas_limit,
-                self.compounding,
-                self.opts,
-            )
+            Definition::builder()
+                .name("test".to_owned())
+                .num_validators(self.num_validators)
+                .threshold(2)
+                .fee_recipient_addresses(self.fee_recipient_addresses)
+                .withdrawal_addresses(self.withdrawal_addresses)
+                .fork_version_hex("0x00000000".to_owned())
+                .creator(Creator::default())
+                .operators(Vec::new())
+                .deposit_amounts(self.deposit_amounts)
+                .consensus_protocol(String::new())
+                .target_gas_limit(self.target_gas_limit)
+                .compounding(self.compounding)
+                .opts(self.opts)
+                .build()
         }
     }
 
@@ -1944,9 +1943,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(DefinitionError::InvalidTargetGasLimit(
-                InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit
-            ))
+            Err(DefinitionError::InvalidTargetGasLimit(ref e)) if matches!(**e, InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit)
         ));
     }
 
@@ -1961,9 +1958,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(DefinitionError::InvalidTargetGasLimit(
-                InvalidGasLimitError::GasLimitNotSet
-            ))
+            Err(DefinitionError::InvalidTargetGasLimit(ref e)) if matches!(**e, InvalidGasLimitError::GasLimitNotSet)
         ));
     }
 

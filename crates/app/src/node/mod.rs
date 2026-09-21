@@ -22,8 +22,9 @@ pub mod wire;
 pub use config::AppConfig;
 
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    collections::HashMap,
+    future::Future,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -37,9 +38,9 @@ use pluto_testutil::{
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use behaviour::{CoreBehaviour, CoreHandles};
-use pluto_core::types::PubKey;
 use wire::{ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, WiredComponents};
 
 use crate::{health, monitoringapi, privkeylock};
@@ -61,6 +62,7 @@ const SIMNET_SYNC_COMM_DUTIES: (u64, u64) = (2, 8);
 const SIMNET_VMOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors raised while constructing or running a distributed-validator node.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// Failed to load or verify the cluster lock.
@@ -127,7 +129,7 @@ pub enum AppError {
     #[error("priority: {0}")]
     Priority(#[from] pluto_priority::Error),
 
-    /// A beacon node API request failed.
+    /// Building the beacon node API client or a request through it failed.
     #[error("beacon node api: {0}")]
     BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
 
@@ -153,10 +155,6 @@ pub enum AppError {
         /// hex representation if it matches no known network).
         beacon_node_network: String,
     },
-
-    /// Beacon node client construction failed.
-    #[error("beacon client: {0}")]
-    BeaconClient(#[source] anyhow::Error),
 
     /// Duty gater construction failed.
     #[error("duty gater: {0}")]
@@ -224,8 +222,32 @@ impl App {
     }
 }
 
+/// Puts a long-lived background task under the `app-start` topic.
+///
+/// Charon's lifecycle manager hands every background hook a
+/// `log.WithTopic(context.Background(), "app-start")` context
+/// (`app/lifecycle/hook.go`), so a task that never sets a topic of its own
+/// still reports under `app-start`. `tokio::spawn` has no such inheritance —
+/// it starts the task with an empty span stack — so the span is attached here
+/// instead, at the one place background tasks are started.
+///
+/// Tasks that open their own topic span (`sched`, `tracker`, `health`, …)
+/// shadow this one, exactly as a nested `log.WithTopic` does in Go.
+fn background<F: Future>(task: F) -> tracing::instrument::Instrumented<F> {
+    task.instrument(tracing::debug_span!("app-start", topic = "app-start"))
+}
+
 /// Loads the cluster lock + key, builds the consensus component and P2P
 /// behaviours, wires the core workflow, and drives the node.
+///
+/// Carries the `app-start` topic as the catch-all for log metrics not
+/// attributed to a more specific component (mirrors charon's `app.Run`).
+#[tracing::instrument(
+    name = "app-start",
+    level = "debug",
+    skip_all,
+    fields(topic = "app-start")
+)]
 async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- (1) Load cluster lock + key, derive peers and this node's index ----
     //
@@ -298,9 +320,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // Per-validator data for this node.
     let validators = build_validators(&lock, share_idx)?;
 
-    // DV root pubkeys + count for the monitoring readiness + health checkers,
-    // captured before `validators` is moved into the core-workflow wiring.
-    let monitoring_pubkeys: Vec<PubKey> = validators.iter().map(|v| v.pubkey).collect();
+    // Validator count for the monitoring health checker, captured before
+    // `validators` is moved into the core-workflow wiring.
     let num_validators = validators.len();
 
     // Global labels stamped onto every exported metric (Charon parity).
@@ -382,7 +403,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     }
 
     // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_client = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -418,7 +439,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
-        .get(&pluto_eth2api::ConsensusVersion::Electra)
+        .get(&pluto_eth2api::spec::DataVersion::Electra)
         .map(|schedule| schedule.epoch)
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);
@@ -427,30 +448,20 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // ---- Consensus (controller-owned) ----
     //
-    // Resolve the broadcaster<->behaviour construction cycle with the
-    // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
+    // Break the broadcaster<->behaviour construction cycle by creating the
+    // QBFT broadcast channel first: `Consensus` needs a broadcaster, the
+    // broadcaster is backed by the qbft p2p `Handle`, and the p2p behaviour
+    // needs the `Arc<Consensus>`. The channel exists before either component,
+    // so anything broadcast before the swarm is running queues instead of
+    // hitting an uninitialized handle.
     let (cons_deadliner, cons_expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
         "consensus.qbft",
         Arc::clone(&deadline_calc),
     );
 
-    // TODO: the `Arc<OnceLock<Handle>>` pattern is awkward; explore
-    // alternatives.
-    let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
-    let broadcaster: qbft::Broadcaster = {
-        let handle_slot = Arc::clone(&handle_slot);
-        Arc::new(move |_ct, msg| {
-            let handle_slot = Arc::clone(&handle_slot);
-            Box::pin(async move {
-                let handle = handle_slot
-                    .get()
-                    .expect("qbft p2p handle initialized before broadcast")
-                    .clone();
-                handle.broadcast(msg).await
-            })
-        })
-    };
+    let (qbft_handle, qbft_broadcast_queue) = qbft::p2p::broadcast_channel();
+    let broadcaster: qbft::Broadcaster = qbft_handle.broadcaster();
 
     // The controller owns the default QBFT impl and the swappable wrapper the
     // duty path runs through. QBFTv2 is the only protocol today, so no swap
@@ -483,6 +494,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         p2p_config: config.p2p.clone(),
         peers,
         consensus: consensus_controller.default_qbft(),
+        consensus_broadcast_queue: qbft_broadcast_queue,
         // Priority quorum = cluster signing threshold (Charon's
         // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
@@ -497,10 +509,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         cancellation: ct.clone(),
     })
     .await?;
-    // Complete the broadcaster<->behaviour cycle.
-    handle_slot
-        .set(handles.consensus.clone())
-        .map_err(|_| AppError::ConsensusP2P(qbft::p2p::Error::BehaviourClosed))?;
 
     // ---- Wire the core workflow ----
     let upstream_url = reqwest::Url::parse(&beacon_node_addr)?;
@@ -509,26 +517,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Aggregated-signature verifier: verifies the reconstructed group signature
     // against the beacon-node signing domain.
-    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     // The readiness checker uses its own beacon-client clone, taken before
     // `eth2_cl` is moved into the workflow inputs below.
     let monitoring_beacon = eth2_cl.clone();
-
-    // Readiness observes which DV root pubkeys the validator client references
-    // on the validator API, so `/readyz` can tell whether the VC is exercising
-    // every validator. A deduped set (not a channel) keeps this bounded by the
-    // validator count on the request path: repeated validator-API calls just
-    // re-insert, and the ready checker drains the set each slot.
-    let seen_pubkeys: Arc<Mutex<HashSet<PubKey>>> = Arc::new(Mutex::new(HashSet::new()));
-    let seen_pubkeys_observer: pluto_core::validatorapi::SeenPubkeysFn = {
-        let seen_pubkeys = Arc::clone(&seen_pubkeys);
-        Arc::new(move |pubkey: PubKey| {
-            if let Ok(mut set) = seen_pubkeys.lock() {
-                set.insert(pubkey);
-            }
-        })
-    };
 
     // Simnet validator mock: drives this node's own validator API with the
     // share keys. Built here (while `eth2_cl`/`validators` are in scope) so
@@ -556,7 +549,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             threshold,
             share_idx,
             eth2_cl,
-            submission_api,
+            submission_client,
             validators,
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
@@ -567,7 +560,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             graffiti_builder,
             electra_slot,
             fetch_only_comm_idx0,
-            seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
             peers: tracker_peers,
             feature_set,
@@ -589,11 +581,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         MonitoringInputs {
             addr: config.monitoring_addr,
             beacon_node: monitoring_beacon,
-            pubkeys: monitoring_pubkeys,
             num_validators,
             num_peers,
             quorum_peers,
-            seen_pubkeys,
             labels: monitoring_labels,
         },
         ct,
@@ -608,17 +598,12 @@ struct MonitoringInputs {
     addr: std::net::SocketAddr,
     /// Beacon client the readiness checker queries for sync/peer/version state.
     beacon_node: pluto_eth2api::EthBeaconNodeApiClient,
-    /// DV root public keys tracked by the readiness checker.
-    pubkeys: Vec<PubKey>,
     /// Number of validators (health-checker cardinality + metadata).
     num_validators: usize,
     /// Number of cluster peers (health-checker metadata).
     num_peers: i64,
     /// Peers required for quorum (health-checker metadata).
     quorum_peers: i64,
-    /// Shared, deduped set of DV root pubkeys observed on the validator API,
-    /// drained each slot by the readiness checker.
-    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     /// Global labels stamped onto every metric in the `/metrics` exposition.
     labels: Vec<(String, String)>,
 }
@@ -667,7 +652,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
                     .broadcast(duty, set)
                     .await
                     .map(|_| ())
-                    .map_err(AppError::ParSigEx)
+                    .map_err(|e| AppError::ParSigEx(e.into()))
             })
         }),
         subscribe: Box::new(move |received| {
@@ -732,37 +717,37 @@ async fn run_lifecycle(
 
     // Supervise the scheduler actor alongside the other long-lived tasks so
     // its exit triggers node shutdown (it only exits on cancellation).
-    tasks.extend([async move {
+    tasks.extend([background(async move {
         let _ = scheduler_task.await;
         Ok::<(), AppError>(())
-    }]);
+    })]);
 
     // Swarm drive loop (push-based routing inside behaviours).
     {
         let ct = ct.clone();
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             drive_network(node, ct).await;
             Ok(())
-        });
+        }));
     }
 
     // ParSigDB trim task.
     {
         let parsigdb = Arc::clone(&parsigdb);
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
             Ok(())
-        });
+        }));
     }
 
     // Networked inclusion checker: polls the beacon node once per due slot and
     // resolves each tracked duty's on-chain inclusion step.
     {
         let ct = ct.clone();
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             inclusion_checker.run(ct).await;
             Ok(())
-        });
+        }));
     }
 
     // Private-key lock maintenance loop. Only spawn `run` when locking is
@@ -772,7 +757,9 @@ async fn run_lifecycle(
         let svc = Arc::clone(svc);
         // A lock-maintenance failure fails the run (Charon parity); a graceful
         // `close()` returns `Ok`.
-        tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
+        tasks.spawn(background(async move {
+            svc.run().await.map_err(|e| AppError::PrivKeyLock(e.into()))
+        }));
     }
 
     // ---- Monitoring API ----
@@ -783,11 +770,9 @@ async fn run_lifecycle(
     let MonitoringInputs {
         addr: monitoring_addr,
         beacon_node: monitoring_beacon,
-        pubkeys: monitoring_pubkeys,
         num_validators,
         num_peers,
         quorum_peers,
-        seen_pubkeys,
         labels: monitoring_labels,
     } = monitoring;
 
@@ -795,14 +780,9 @@ async fn run_lifecycle(
     // signal. Non-blocking sends drop when the buffer is full.
     let (vapi_calls_tx, vapi_calls_rx) = tokio::sync::mpsc::channel::<()>(VAPI_CALLS_BUFFER);
 
-    // `seen_pubkeys` collects the DV root pubkeys the validator client
-    // references on the validator API (via the component's observer); the
-    // checker drains it each slot so readiness knows every validator is served.
     let readiness = monitoringapi::start_ready_checker(
         handles.p2p_context.clone(),
         monitoring_beacon,
-        monitoring_pubkeys,
-        seen_pubkeys,
         vapi_calls_rx,
         ct.clone(),
     );
@@ -819,10 +799,10 @@ async fn run_lifecycle(
             Box::new(health::ViseGatherer),
             num_validators,
         );
-        tasks.spawn(async move {
+        tasks.spawn(background(async move {
             checker.run(ct).await;
             Ok(())
-        });
+        }));
     }
 
     // Validator API axum server. Each request bumps the readiness "vc
@@ -836,20 +816,20 @@ async fn run_lifecycle(
             }
         },
     ));
-    tasks.spawn(serve_validator_api(
+    tasks.spawn(background(serve_validator_api(
         validator_api_addr,
         validator_api_router,
         ct.clone(),
-    ));
+    )));
 
     // Monitoring HTTP server (metrics + livez + readyz).
-    tasks.spawn(serve_monitoring_api(
+    tasks.spawn(background(serve_monitoring_api(
         monitoring_addr,
         monitoringapi::router_with_state(
             monitoringapi::MonitoringState::new(readiness).with_labels(monitoring_labels),
         ),
         ct.clone(),
-    ));
+    )));
 
     // Supervise: stop on cancellation or first task completion. A failed task
     // fails the whole run (Charon parity).
@@ -1107,9 +1087,10 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| AppError::BeaconClient(e.into()))?;
-    pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
-        .map_err(AppError::BeaconClient)
+        .map_err(|e| pluto_eth2api::EthBeaconNodeApiClientError::Transport(e.into()))?;
+    Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
+        base_url, http,
+    )?)
 }
 
 /// Adapts the simnet validator mock into the abstract [`wire::SlotTickFn`] seam

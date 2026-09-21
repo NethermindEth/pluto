@@ -43,14 +43,20 @@ pub const SUPPORTED_VERSIONS: [&str; 11] = [
 /// Returns true if the provided cluster definition version supports
 /// pre-generated builder registrations.
 #[must_use]
-pub fn support_pregen_registrations(version: &str) -> bool {
-    !matches!(version, V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6)
+pub fn support_pregen_registrations(version: impl AsRef<str>) -> bool {
+    !matches!(
+        version.as_ref(),
+        V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
+    )
 }
 
 /// Returns true if the provided cluster lock version supports node signatures.
 #[must_use]
-pub fn support_node_signatures(version: &str) -> bool {
-    !matches!(version, V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6)
+pub fn support_node_signatures(version: impl AsRef<str>) -> bool {
+    !matches!(
+        version.as_ref(),
+        V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
+    )
 }
 
 #[cfg(test)]

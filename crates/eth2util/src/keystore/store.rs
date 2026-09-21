@@ -197,7 +197,7 @@ async fn check_dir(dir: impl AsRef<Path>) -> Result<()> {
                 path: dir.to_path_buf(),
             }
         } else {
-            KeystoreError::Io(e)
+            KeystoreError::Io(e.into())
         }
     })?;
 

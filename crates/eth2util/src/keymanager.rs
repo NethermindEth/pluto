@@ -6,6 +6,7 @@ use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
 /// Errors that can occur when using the keymanager client.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum KeymanagerError {
     /// Keystores and passwords have mismatching lengths.

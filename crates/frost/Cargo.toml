@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 blst.workspace = true
+pluto-stacktrace.workspace = true
 rand_core.workspace = true
 sha2.workspace = true
 subtle.workspace = true

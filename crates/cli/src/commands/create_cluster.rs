@@ -40,13 +40,12 @@ use pluto_eth2util::{
     network, registration as eth2util_registration,
 };
 use pluto_p2p::k1 as p2p_k1;
-use pluto_ssz::to_0x_hex;
 use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
     commands::{
-        address_validation::validate_addresses,
+        address_validation,
         constants::{MIN_NODES, MIN_THRESHOLD},
         create_dkg,
     },
@@ -526,7 +525,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
     def.operators = ops;
     def.set_definition_hashes()
-        .map_err(CreateClusterError::DefinitionError)?;
+        .map_err(|e| CreateClusterError::DefinitionError(e.into()))?;
 
     let keys_to_disk = args.keymanager_addrs.is_empty();
 
@@ -582,13 +581,14 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         ..Default::default()
     };
 
-    lock.set_lock_hash().map_err(CreateClusterError::from)?;
+    lock.set_lock_hash()
+        .map_err(|e| CreateClusterError::LockError(e.into()))?;
 
     lock.signature_aggregate = agg_sign(&share_sets, &lock.lock_hash)?;
 
     for op_key in &node_keys {
-        let node_sig =
-            pluto_k1util::sign(op_key, &lock.lock_hash).map_err(CreateClusterError::K1UtilError)?;
+        let node_sig = pluto_k1util::sign(op_key, &lock.lock_hash)
+            .map_err(|e| CreateClusterError::K1UtilError(e.into()))?;
         lock.node_signatures.push(node_sig.to_vec());
     }
 
@@ -606,7 +606,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
     if args.zipped {
         app_utils::bundle_output(&args.cluster_dir, "cluster.tar.gz")
-            .map_err(CreateClusterError::BundleOutputError)?;
+            .map_err(|e| CreateClusterError::BundleOutputError(e.into()))?;
     }
 
     if args.split_keys {
@@ -634,16 +634,16 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
 async fn write_lock_to_api(publish_addr: &str, lock: &Lock) -> Result<String> {
     let client = obolapi::Client::new(publish_addr, obolapi::ClientOptions::default())
-        .map_err(CreateClusterError::ObolApiError)?;
+        .map_err(|e| CreateClusterError::ObolApiError(e.into()))?;
     match client.publish_lock(lock.clone()).await {
         Ok(()) => {
             info!(addr = publish_addr, "Published lock file");
             match client.launchpad_url_for_lock(lock) {
                 Ok(url) => Ok(url),
-                Err(err) => Err(CreateClusterError::ObolApiError(err)),
+                Err(err) => Err(CreateClusterError::ObolApiError(err.into())),
             }
         }
-        Err(err) => Err(CreateClusterError::ObolApiError(err)),
+        Err(err) => Err(CreateClusterError::ObolApiError(err.into())),
     }
 }
 
@@ -938,7 +938,7 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         return Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile);
     }
 
-    let (fee_recipient_addrs, withdrawal_addrs) = validate_addresses(
+    let (fee_recipient_addrs, withdrawal_addrs) = address_validation::validate_addresses(
         num_validators,
         &args.fee_recipient_addrs,
         &args.withdrawal_addrs,
@@ -969,21 +969,20 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
 
     let consensus_protocol = args.consensus_protocol.clone().unwrap_or_default();
 
-    let def = pluto_cluster::definition::Definition::new(
-        name,
-        num_validators,
-        threshold,
-        fee_recipient_addrs,
-        withdrawal_addrs,
-        fork_version,
-        pluto_cluster::definition::Creator::default(),
-        operators,
-        deposit::eths_to_gweis(&args.deposit_amounts),
-        consensus_protocol,
-        args.target_gas_limit,
-        args.compounding,
-        vec![],
-    )?;
+    let def = pluto_cluster::definition::Definition::builder()
+        .name(name)
+        .num_validators(num_validators)
+        .threshold(threshold)
+        .fee_recipient_addresses(fee_recipient_addrs)
+        .withdrawal_addresses(withdrawal_addrs)
+        .fork_version_hex(fork_version)
+        .creator(pluto_cluster::definition::Creator::default())
+        .operators(operators)
+        .deposit_amounts(deposit::eths_to_gweis(&args.deposit_amounts))
+        .consensus_protocol(consensus_protocol)
+        .target_gas_limit(args.target_gas_limit)
+        .compounding(args.compounding)
+        .build()?;
     Ok(def)
 }
 
@@ -1106,8 +1105,8 @@ fn validate_create_config(args: &CreateClusterArgs) -> Result<()> {
     }
 
     for addr in &args.keymanager_addrs {
-        let keymanager_url =
-            url::Url::parse(addr).map_err(CreateClusterError::InvalidKeymanagerUrl)?;
+        let keymanager_url = url::Url::parse(addr)
+            .map_err(|e| CreateClusterError::InvalidKeymanagerUrl(e.into()))?;
 
         if keymanager_url.scheme() == HTTP_SCHEME {
             warn!(addr, "Keymanager URL does not use https protocol");
@@ -1204,7 +1203,7 @@ async fn load_definition(
 
         info!(
             url = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition downloaded from URL"
         );
 
@@ -1216,7 +1215,7 @@ async fn load_definition(
 
         info!(
             path = def_file,
-            definition_hash = to_0x_hex(&def.definition_hash),
+            definition_hash = pluto_ssz::to_0x_hex(&def.definition_hash),
             "Cluster definition loaded from disk",
         );
 
@@ -2342,7 +2341,7 @@ mod tests {
         // "insufficient fee recipient addresses": 0 addrs for 4 validators →
         // error
         {
-            let err = super::validate_addresses(4, &[], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(4, &[], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --fee-recipient-addresses"),
@@ -2354,7 +2353,7 @@ mod tests {
         // validator → error
         {
             let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
-            let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
+            let err = address_validation::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
             let err_str = format!("{err}");
             assert!(
                 err_str.contains("mismatching --num-validators and --withdrawal-addresses"),
@@ -2392,6 +2391,20 @@ mod tests {
         "/../cluster/src/examples/cluster-definition-005.json"
     );
 
+    /// The target-gas-limit failure nested inside `err`, if that is what it is.
+    fn invalid_target_gas_limit(err: &CliError) -> Option<&InvalidGasLimitError> {
+        let CliError::CreateClusterError(err) = err else {
+            return None;
+        };
+        let CreateClusterError::DefinitionError(err) = &**err else {
+            return None;
+        };
+        let DefinitionError::InvalidTargetGasLimit(err) = &**err else {
+            return None;
+        };
+        Some(err)
+    }
+
     #[test_case::test_case(
         Some(DEF_PATH_005), 0, 0, None
         ; "target gas limit from unsupported version"
@@ -2407,8 +2420,8 @@ mod tests {
     #[test_case::test_case(
         None, 0, 0,
         Some(CliError::CreateClusterError(CreateClusterError::DefinitionError(
-            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet)
-        )))
+            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet.into()).into()
+        ).into()))
         ; "no target gas limit with default version"
     )]
     #[tokio::test]
@@ -2453,18 +2466,10 @@ mod tests {
 
         if let Some(expected) = expected_err {
             let actual = result.unwrap_err();
+            let actual_gas_limit = invalid_target_gas_limit(&actual);
             assert!(
-                matches!(
-                    (&actual, &expected),
-                    (
-                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
-                            DefinitionError::InvalidTargetGasLimit(a)
-                        )),
-                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
-                            DefinitionError::InvalidTargetGasLimit(b)
-                        )),
-                    ) if a == b
-                ),
+                actual_gas_limit.is_some()
+                    && actual_gas_limit == invalid_target_gas_limit(&expected),
                 "expected {expected:?}, got {actual:?}"
             );
             return;
@@ -2864,7 +2869,7 @@ mod tests {
     /// `CHARON_*` env var. Charon binds env for all commands generically
     /// (viper `SetEnvPrefix`+`AutomaticEnv`), so tooling that configures a
     /// cluster purely through the environment — the compose harness in
-    /// `test-infra/compose` — works against charon and pluto alike.
+    /// `crates/test-compose` — works against charon and pluto alike.
     #[test]
     fn create_cluster_flags_use_charon_env_prefix() {
         use clap::CommandFactory as _;

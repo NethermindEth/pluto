@@ -28,6 +28,7 @@ pub enum Error<E: std::error::Error> {
 }
 
 /// Error type returned when decoding a hex string of an expected byte length.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum HexDecodeError {
     /// The string is not valid hex.

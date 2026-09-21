@@ -53,6 +53,7 @@ pub type HashFuncWithVersion<T, H> = fn(&T, &mut H, &str) -> Result<(), SSZError
 pub type HashFunc<T, H> = fn(&T, &mut H) -> Result<(), SSZError<H>>;
 
 /// SSZError is an error type for SSZ errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SSZError<H: HashWalker> {
     /// Invalid length
@@ -112,7 +113,9 @@ impl<H: HashWalker> From<PlutoSszError<<H as HashWalker>::Error>> for SSZError<H
                 expected,
             },
             PlutoSszError::HashWalkerError(error) => Self::HashWalkerError(error),
-            PlutoSszError::FailedToConvertHexString(error) => Self::FailedToConvertHexString(error),
+            PlutoSszError::FailedToConvertHexString(error) => {
+                Self::FailedToConvertHexString(error.into())
+            }
         }
     }
 }

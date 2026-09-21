@@ -10,6 +10,7 @@ use pluto_core::{
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Handler-to-behaviour failure.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// Stream negotiation or operation timed out.
@@ -39,7 +40,9 @@ impl Clone for Failure {
             Self::InvalidPayload => Self::InvalidPayload,
             Self::InvalidDuty => Self::InvalidDuty,
             Self::InvalidPartialSignature(error) => Self::InvalidPartialSignature(error.clone()),
-            Self::Io(error) => Self::Io(std::io::Error::new(error.kind(), error.to_string())),
+            Self::Io(error) => {
+                Self::Io(std::io::Error::new(error.kind(), error.as_ref().to_string()).into())
+            }
             Self::Codec(error) => Self::Codec(error.clone()),
         }
     }
@@ -65,11 +68,12 @@ pub enum VerifyError {
         duty: Duty,
         /// Underlying verification failure.
         #[source]
-        source: Eth2SignedDataError,
+        source: Box<Eth2SignedDataError>,
     },
 }
 
 /// Error type for partial signature exchange operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Message conversion failed.

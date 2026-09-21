@@ -18,7 +18,19 @@ permissions:
   attestations: write
 
 jobs:
+  # Gates v* tag releases on the compose smoke suite so a functionally broken
+  # image cannot ship: no registry write happens until this job is green.
+  # Main-push publishes stay ungated (a smoke run is ~50 min) for cadence.
+  smoke:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/smoke-tests.yml
+    permissions:
+      contents: read
+      actions: read
+
   build:
+    needs: smoke
+    if: ${{ !cancelled() && (needs.smoke.result == 'success' || needs.smoke.result == 'skipped') }}
     # Multiplatform builds: https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners
     strategy:
       fail-fast: false

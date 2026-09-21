@@ -10,7 +10,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
-use super::state::{MockState, last_path_segment_u64, read_lock};
+use super::state::{self, MockState};
 
 pub(crate) const ZERO_ROOT: &str =
     "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -226,13 +226,13 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     // (`produce_block_v3` → GET /eth/v3/validator/blocks/{slot}). Returns a
     // deterministic Deneb proposal (identical across nodes for a given
     // slot, so QBFT can agree on the proposer duty). Distinct from the
-    // signed-block *retrieval* endpoint above; without it the fetcher gets
-    // `UnexpectedResponse` and the proposer duty never decides.
+    // signed-block *retrieval* endpoint above; without it the fetcher gets a
+    // 404 and the proposer duty never decides.
     mount_json(
         server,
         "GET",
         r"^/eth/v3/validator/blocks/[0-9]+$",
-        |request| produce_block_response(last_path_segment_u64(request.url.path())),
+        |request| produce_block_response(state::last_path_segment_u64(request.url.path())),
     )
     .await;
 
@@ -244,15 +244,15 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
 
     // Block publish: the broadcaster POSTs the group-signed proposal here after
     // proposer consensus decides. A real beacon node just acks; without a mount
-    // the POST 404s and the broadcaster sees `Unknown`. The blinded variant is
-    // mounted for parity.
+    // the POST 404s and the broadcaster fails with `Error::Client`. The
+    // blinded variant is mounted for parity.
     mount_status(server, "POST", "/eth/v2/beacon/blocks", 200).await;
     mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
 
     // Sync-committee submissions: the broadcaster POSTs sync-committee messages
     // and (for aggregators) contribution-and-proofs after sync consensus. A
-    // real beacon node just acks; without these the broadcaster sees
-    // `Unknown`.
+    // real beacon node just acks; without these the POSTs 404 and the
+    // broadcaster fails with `Error::Client`.
     mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
     mount_status(
         server,
@@ -280,8 +280,8 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
 
     // Aggregate-and-proofs submit: same broadcaster path for the group-signed
     // aggregate; a real beacon node just acks. Without this mount wiremock 404s
-    // and every aggregator duty's final broadcast fails with "submit aggregate
-    // attestations: Unknown".
+    // and every aggregator duty's final broadcast fails with `Error::Client`
+    // in the "submit aggregate attestations" context.
     mount_status(
         server,
         "POST",
@@ -367,18 +367,7 @@ pub(crate) async fn mount_status(
 }
 
 fn validators_response(state: &MockState) -> Value {
-    let data: Vec<Value> = read_lock(&state.validator_set)
-        .validators()
-        .into_iter()
-        .map(|validator| {
-            json!({
-                "index": validator.index.to_string(),
-                "balance": validator.balance.to_string(),
-                "status": validator.status,
-                "validator": validator.validator,
-            })
-        })
-        .collect();
+    let data = state::read_lock(&state.validator_set).validators();
 
     json!({
         "data": data,
@@ -472,7 +461,7 @@ fn sync_committee_contribution_response(request: &Request) -> Value {
 }
 
 fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
-    let Some(factor) = *read_lock(&state.deterministic_attester_duties) else {
+    let Some(factor) = *state::read_lock(&state.deterministic_attester_duties) else {
         return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
@@ -480,7 +469,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
     let mut indices = indices_from_body(request);
     indices.sort_unstable();
 
-    let validator_set = read_lock(&state.validator_set).clone();
+    let validator_set = state::read_lock(&state.validator_set).clone();
     let slots_per_epoch = match slots_per_epoch(state) {
         Ok(value) => value,
         Err(message) => return error_response(500, message),
@@ -500,7 +489,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
                 .checked_add(slot_offset)?;
 
             Some(json!({
-                "pubkey": validator.validator.pubkey,
+                "pubkey": state::hex_0x(validator.validator.pubkey),
                 "slot": slot.to_string(),
                 "validator_index": index.to_string(),
                 "committee_index": index.to_string(),
@@ -515,7 +504,7 @@ fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTem
 }
 
 fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
-    let Some(factor) = *read_lock(&state.deterministic_proposer_duties) else {
+    let Some(factor) = *state::read_lock(&state.deterministic_proposer_duties) else {
         return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
@@ -526,7 +515,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
     };
     // Only validators with an Active* status are eligible to propose, so the
     // deterministic assignment iterates active validators only.
-    let validators: Vec<_> = read_lock(&state.validator_set)
+    let validators: Vec<_> = state::read_lock(&state.validator_set)
         .validators()
         .into_iter()
         .filter(|validator| validator.status.is_active())
@@ -558,7 +547,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
         };
 
         data.push(json!({
-            "pubkey": validator.validator.pubkey,
+            "pubkey": state::hex_0x(validator.validator.pubkey),
             "slot": slot.to_string(),
             "validator_index": validator.index.to_string(),
         }));
@@ -641,7 +630,7 @@ fn duties_response(data: Vec<Value>) -> Value {
 }
 
 fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value {
-    let Some((n, k)) = *read_lock(&state.deterministic_sync_comm_duties) else {
+    let Some((n, k)) = *state::read_lock(&state.deterministic_sync_comm_duties) else {
         return sync_duties_response(Vec::new());
     };
 
@@ -654,7 +643,7 @@ fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value
     }
 
     let indices = indices_from_body(request);
-    let validator_set = read_lock(&state.validator_set).clone();
+    let validator_set = state::read_lock(&state.validator_set).clone();
 
     let data = indices
         .into_iter()
@@ -662,7 +651,7 @@ fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value
         .filter_map(|(position, index)| {
             let validator = validator_set.by_index(index)?;
             Some(json!({
-                "pubkey": validator.validator.pubkey,
+                "pubkey": state::hex_0x(validator.validator.pubkey),
                 "validator_index": index.to_string(),
                 "validator_sync_committee_indices": [position.to_string()],
             }))
@@ -691,13 +680,13 @@ fn indices_from_body(request: &Request) -> Vec<ValidatorIndex> {
 }
 
 fn epoch_from_path(path: &str) -> Epoch {
-    last_path_segment_u64(path)
+    state::last_path_segment_u64(path)
 }
 
 /// Reads `SLOTS_PER_EPOCH` from the spec, surfacing an error when the key is
 /// missing or not a positive integer rather than silently defaulting.
 pub(crate) fn slots_per_epoch(state: &MockState) -> Result<u64, &'static str> {
-    read_lock(&state.spec)
+    state::read_lock(&state.spec)
         .get("SLOTS_PER_EPOCH")
         .and_then(Value::as_str)
         .and_then(|value| value.parse().ok())
@@ -729,7 +718,8 @@ fn static_endpoint_data(endpoint: &str) -> serde_json::Map<String, Value> {
         .unwrap_or_default()
 }
 
-pub(crate) fn default_spec() -> Value {
+/// The simnet spec served by the default mock.
+pub fn default_spec() -> Value {
     // Start from the Holesky snapshot baseline (~80 mainnet keys) and overlay
     // the simnet overrides used by tests.
     let mut spec = static_endpoint_data("/eth/v1/config/spec");
@@ -778,6 +768,18 @@ pub(crate) fn default_spec() -> Value {
     Value::Object(spec)
 }
 
+/// [`default_spec`] with the keys of `overrides` replaced.
+pub fn default_spec_with(overrides: Value) -> Value {
+    let mut spec = default_spec();
+    let Some(overrides) = overrides.as_object() else {
+        panic!("spec overrides must be a JSON object");
+    };
+    for (key, value) in overrides {
+        spec[key] = value.clone();
+    }
+    spec
+}
+
 pub(crate) fn default_genesis() -> Value {
     json!({
         "genesis_time": default_genesis_time().timestamp().to_string(),
@@ -796,10 +798,7 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::beaconmock::BeaconMock;
-    use pluto_eth2api::types::{
-        ConsensusVersion, GetBlockV2Request, GetBlockV2Response, GetPeerCountRequest,
-        GetPeerCountResponse,
-    };
+    use pluto_eth2api::spec::DataVersion;
 
     #[test]
     fn default_spec_contains_load_bearing_keys() {
@@ -821,9 +820,8 @@ mod tests {
         }
     }
 
-    /// The inclusion checker consumes this endpoint through the generated
-    /// client, which requires `execution_optimistic` and `finalized` — the
-    /// beacon-API spec marks both required and non-nullable.
+    /// The inclusion checker consumes this endpoint through the client, which
+    /// decodes the block by its `version`.
     #[tokio::test]
     async fn block_endpoint_serves_a_decodable_bellatrix_block() {
         let mock = BeaconMock::builder()
@@ -836,16 +834,13 @@ mod tests {
         // The `block_id` segment is opaque to the mock; "head" and a numeric
         // id both exercise the path_regex match.
         for block_id in ["head", "123"] {
-            let request = GetBlockV2Request::builder()
-                .block_id(block_id.to_string())
-                .build()
-                .expect("block request");
-
-            let response = client.get_block_v2(request).await.expect("get_block_v2");
-            let GetBlockV2Response::Ok(block) = response else {
-                panic!("expected a decoded 200 for {block_id}, got {response:?}");
-            };
-            assert_eq!(block.version, ConsensusVersion::Bellatrix);
+            let response = client
+                .get_block_v2(block_id)
+                .await
+                .expect("get_block_v2")
+                .expect("block exists");
+            assert_eq!(response.version, DataVersion::Bellatrix);
+            assert_eq!(response.data.version(), DataVersion::Bellatrix);
         }
     }
 
@@ -861,20 +856,9 @@ mod tests {
 
         let client = mock.client();
 
-        let response = client
-            .get_peer_count(GetPeerCountRequest {})
-            .await
-            .expect("get_peer_count");
-        let GetPeerCountResponse::Ok(peers) = response else {
-            panic!("expected a decoded 200, got {response:?}");
-        };
-        let connected_peers: u64 = peers
-            .data
-            .connected
-            .parse()
-            .expect("connected parses as u64");
+        let peers = client.get_peer_count().await.expect("get_peer_count");
         assert!(
-            connected_peers > 0,
+            peers.connected > 0,
             "zero connected peers fails the readiness check"
         );
     }

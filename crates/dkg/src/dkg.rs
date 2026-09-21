@@ -1,13 +1,13 @@
 use std::{collections::HashMap, ffi::OsStr, fmt, num::TryFromIntError, path, time::Duration};
 
-use bon::Builder;
+use bon::{Builder, builder};
 use futures::StreamExt;
 use libp2p::PeerId;
 use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument as _, Span, debug, error, info, warn};
 
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
@@ -33,9 +33,7 @@ use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
-use pluto_p2p::{
-    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
-};
+use pluto_p2p::{bootnode::BootnodeError, config::P2PConfig, k1, p2p::P2PError, peer::Peer};
 use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
@@ -46,6 +44,7 @@ const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DkgError {
     /// Shutdown was requested before the DKG entrypoint started.
@@ -365,6 +364,7 @@ fn default_p2p_config() -> P2PConfig {
 }
 
 /// Runs the DKG entrypoint.
+#[tracing::instrument(name = "dkg", level = "debug", skip_all, fields(topic = "dkg"))]
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     if ct.is_cancelled() {
         return Err(DkgError::ShutdownRequestedBeforeStartup);
@@ -389,18 +389,21 @@ async fn start_private_key_lock(
     );
     let lock_ct = CancellationToken::new();
     let task_ct = lock_ct.clone();
-    let task = tokio::spawn(async move {
-        let run_svc = lock_svc.clone();
-        let mut run_task = tokio::spawn(async move { run_svc.run().await });
+    let task = tokio::spawn(
+        async move {
+            let run_svc = lock_svc.clone();
+            let mut run_task = tokio::spawn(async move { run_svc.run().await });
 
-        select! {
-            _ = task_ct.cancelled() => {
-                lock_svc.close().await;
-                log_private_key_lock_result(run_task.await);
+            select! {
+                _ = task_ct.cancelled() => {
+                    lock_svc.close().await;
+                    log_private_key_lock_result(run_task.await);
+                }
+                result = &mut run_task => log_private_key_lock_result(result),
             }
-            result = &mut run_task => log_private_key_lock_result(result),
         }
-    });
+        .instrument(Span::current()),
+    );
 
     Ok((lock_ct, task))
 }
@@ -419,7 +422,7 @@ fn log_private_key_lock_result(
 }
 
 fn private_key_lock_path(data_dir: &path::Path) -> path::PathBuf {
-    let mut lock_path = key_path(data_dir);
+    let mut lock_path = k1::key_path(data_dir);
     let file_name = lock_path
         .file_name()
         .and_then(OsStr::to_str)
@@ -544,7 +547,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
             DefinitionError::PeerNotFound { peer_id } => {
                 DkgError::LocalPeerNotInDefinition { peer_id }
             }
-            other => DkgError::Definition(other),
+            other => DkgError::Definition(other.into()),
         })?;
 
     let peer_ids = def.peer_ids()?;
@@ -582,29 +585,35 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let sync_clients = handlers.sync.clone();
     let sync_server = handlers.sync_server.clone();
     let network_ct = ct.child_token();
-    let network_task = tokio::spawn(drive_dkg_network(node, network_ct.clone()));
+    // A bare `tokio::spawn` starts the driver with an empty span stack, which
+    // would drop the `dkg` topic set by `run` and count the driver's warnings
+    // on `app_log_warn_total{topic=""}`. Re-attach the current span so the
+    // subtask keeps it, mirroring charon passing `context.Context` into the
+    // goroutine.
+    let network_task =
+        tokio::spawn(drive_dkg_network(node, network_ct.clone()).instrument(Span::current()));
 
-    let result = run_ceremony(
-        &conf,
-        &eth1,
-        ct.child_token(),
-        def,
-        total_validators,
-        new_validators,
-        new_withdrawal_addresses,
-        new_fee_recipient_addresses,
-        network,
-        def_hash,
-        key,
-        node_idx,
-        peers,
-        exchanger,
-        &mut frost_transport,
-        node_sig_caster,
-        sync_server,
-        sync_clients,
-    )
-    .await;
+    let result = run_ceremony()
+        .conf(&conf)
+        .eth1(&eth1)
+        .ct(ct.child_token())
+        .def(def)
+        .total_validators(total_validators)
+        .new_validators(new_validators)
+        .new_withdrawal_addresses(new_withdrawal_addresses)
+        .new_fee_recipient_addresses(new_fee_recipient_addresses)
+        .network(network)
+        .def_hash(def_hash)
+        .key(key)
+        .node_idx(node_idx)
+        .peers(peers)
+        .exchanger(exchanger)
+        .frost_transport(&mut frost_transport)
+        .node_sig_caster(node_sig_caster)
+        .sync_server(sync_server)
+        .sync_clients(sync_clients)
+        .call()
+        .await;
 
     network_ct.cancel();
     network_task.await?;
@@ -612,7 +621,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     result
 }
 
-#[expect(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+#[builder]
 async fn run_ceremony<T: frost::FTransport>(
     conf: &Config,
     eth1: &EthClient,
@@ -903,20 +912,23 @@ async fn start_sync_protocol(
         let client = client.clone();
         let client_ct = cancellation.child_token();
         let cancel_on_error = cancellation.clone();
-        tasks.push(tokio::spawn(async move {
-            if let Err(error) = client.run(client_ct).await
-                && !matches!(error, crate::sync::Error::Canceled)
-            {
-                error!(%error, "Sync failed to peer");
-                cancel_on_error.cancel();
+        tasks.push(tokio::spawn(
+            async move {
+                if let Err(error) = client.run(client_ct).await
+                    && !matches!(error, crate::sync::Error::Canceled)
+                {
+                    error!(?error, "Sync failed to peer");
+                    cancel_on_error.cancel();
+                }
             }
-        }));
+            .instrument(Span::current()),
+        ));
     }
 
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
     loop {
         if let Some(error) = server.err().await {
-            return Err(DkgError::Sync(error));
+            return Err(DkgError::Sync(error.into()));
         }
 
         let connected_count = clients
@@ -1241,7 +1253,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            DkgError::PeerError(pluto_p2p::peer::PeerError::UnknownPublicKey)
+            DkgError::PeerError(ref e) if matches!(**e, pluto_p2p::peer::PeerError::UnknownPublicKey)
         ));
     }
 
@@ -1269,7 +1281,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            DkgError::Disk(crate::disk::DiskError::MissingRequiredFiles { .. })
+            DkgError::Disk(ref e) if matches!(**e, crate::disk::DiskError::MissingRequiredFiles { .. })
         ));
     }
 

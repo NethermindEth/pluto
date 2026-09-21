@@ -6,19 +6,17 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use bon::builder;
 use chrono::Utc;
 use k256::{PublicKey, SecretKey};
 use libp2p::PeerId;
-use pluto_consensus::qbft::msg::hash_proto;
+use pluto_consensus::qbft::msg;
 use pluto_core::{
     corepb::v1::priority::{PriorityMsg, PriorityTopicProposal, PriorityTopicResult},
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::Duty,
 };
-use pluto_p2p::{
-    p2p_context::P2PContext,
-    peer::{peer_id_from_key, peer_id_to_public_key},
-};
+use pluto_p2p::{p2p_context::P2PContext, peer};
 use prost::Message;
 use prost_types::{Any, Value, value::Kind};
 use tokio_util::sync::CancellationToken;
@@ -84,7 +82,7 @@ pub fn sign_msg(msg: &PriorityMsg, privkey: &SecretKey) -> Result<PriorityMsg> {
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let sig = pluto_k1util::sign(privkey, &hash).map_err(Error::Sign)?;
 
     clone.signature = sig.to_vec().into();
@@ -104,7 +102,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
     let mut clone = msg.clone();
     clone.signature = Default::default();
 
-    let hash = hash_proto(&clone).map_err(Error::HashProto)?;
+    let hash = msg::hash_proto(&clone).map_err(Error::HashProto)?;
     let recovered = pluto_k1util::recover(&hash, &msg.signature).map_err(Error::Recover)?;
 
     Ok(&recovered == pubkey)
@@ -118,7 +116,7 @@ pub(crate) fn verify_msg_sig(msg: &PriorityMsg, pubkey: &PublicKey) -> Result<bo
 pub(crate) fn new_msg_verifier(peers: &[PeerId]) -> Result<MsgVerifier> {
     let mut keys: HashMap<String, PublicKey> = HashMap::with_capacity(peers.len());
     for peer in peers {
-        let pk = peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
+        let pk = peer::peer_id_to_public_key(peer).map_err(Error::PeerKey)?;
         keys.insert(peer.to_string(), pk);
     }
 
@@ -255,10 +253,7 @@ pub struct Component {
 /// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
 /// to a no-op handler, its exchange silently skipped, and the instance could
 /// reach consensus on a partial message set after the exchange timeout.)
-#[expect(
-    clippy::too_many_arguments,
-    reason = "constructor wires together the full priority component; each argument is a distinct collaborator"
-)]
+#[builder]
 pub fn new_component(
     peers: Vec<PeerId>,
     min_required: i64,
@@ -278,23 +273,23 @@ pub fn new_component(
 
     // Derive the local peer id from the signing key so the message `peer_id`
     // and its signature always agree (peers verify the two against each other).
-    let local_id = peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
+    let local_id = peer::peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
 
     let verifier = new_msg_verifier(&peers)?;
     let calculator: Arc<dyn DeadlineCalculator> = Arc::new(calculator);
 
     let (deadliner, expired) = DeadlinerTask::start(ct, "priority", calculator.clone());
 
-    let (prioritiser, behaviour) = Prioritiser::new_internal(
-        local_id,
-        peers,
-        min_required,
-        consensus,
-        verifier,
-        exchange_timeout,
-        deadliner,
-        p2p_context,
-    );
+    let (prioritiser, behaviour) = Prioritiser::new_internal()
+        .local_id(local_id)
+        .peers(peers)
+        .min_required(min_required)
+        .consensus(consensus)
+        .msg_validator(verifier)
+        .exchange_timeout(exchange_timeout)
+        .deadliner(deadliner)
+        .p2p_context(p2p_context)
+        .call();
 
     let component = Component {
         peer_id: local_id,
@@ -393,6 +388,7 @@ impl Component {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use pluto_core::corepb::v1::{core::Duty, priority::PriorityScoredResult};
 
     use super::*;
@@ -604,7 +600,7 @@ mod tests {
     #[test]
     fn new_component_rejects_peer_absent_from_context() {
         struct NoopConsensus;
-        #[async_trait::async_trait]
+        #[async_trait]
         impl Consensus for NoopConsensus {
             async fn propose_priority(
                 &self,
@@ -629,16 +625,16 @@ mod tests {
         let consensus: Arc<dyn Consensus> = Arc::new(NoopConsensus);
         // `(Component, Behaviour)` is not `Debug`, so match the result directly
         // rather than via `expect_err`.
-        let result = new_component(
-            peers,
-            2,
-            consensus,
-            Duration::from_secs(3600),
-            key,
-            pluto_core::deadline::NeverExpiringCalculator,
-            p2p_context,
-            CancellationToken::new(),
-        );
+        let result = new_component()
+            .peers(peers)
+            .min_required(2)
+            .consensus(consensus)
+            .exchange_timeout(Duration::from_secs(3600))
+            .privkey(key)
+            .calculator(pluto_core::deadline::NeverExpiringCalculator)
+            .p2p_context(p2p_context)
+            .ct(CancellationToken::new())
+            .call();
 
         assert!(
             matches!(result, Err(Error::PeerNotInContext { peer }) if peer == absent),

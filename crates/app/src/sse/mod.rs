@@ -17,8 +17,9 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
+use tracing::Instrument as _;
 
-use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventstreamRequestQueryTopic};
+use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventTopic};
 
 use crate::sse::{
     metrics::SSE_METRICS,
@@ -38,14 +39,15 @@ const CHANNEL_BUFFER_SIZE: usize = 1024;
 const DEFAULT_RETRY: Duration = Duration::from_secs(1);
 
 /// Topics the listener subscribes to.
-const TOPICS: [EventstreamRequestQueryTopic; 4] = [
-    EventstreamRequestQueryTopic::Head,
-    EventstreamRequestQueryTopic::ChainReorg,
-    EventstreamRequestQueryTopic::BlockGossip,
-    EventstreamRequestQueryTopic::Block,
+const TOPICS: [EventTopic; 4] = [
+    EventTopic::Head,
+    EventTopic::ChainReorg,
+    EventTopic::BlockGossip,
+    EventTopic::Block,
 ];
 
 /// Errors that can occur while setting up or running the SSE listener.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SseListenerError {
     /// Beacon Node API client error.
@@ -103,7 +105,7 @@ impl SseListenerBuilder {
             .await
             .ok_or(SseListenerError::Terminated)??;
 
-        let addr = client.base_url.to_string();
+        let addr = client.base_url().to_string();
 
         let actor = SseListenerActor {
             addr: addr.clone(),
@@ -117,8 +119,9 @@ impl SseListenerBuilder {
         let (events_tx, events_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()));
-        tokio::spawn(actor.run(events_rx, msg_rx, ct));
+        let span = tracing::Span::current();
+        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()).instrument(span.clone()));
+        tokio::spawn(actor.run(events_rx, msg_rx, ct).instrument(span));
 
         Ok(SseListenerHandle { sender: msg_tx })
     }

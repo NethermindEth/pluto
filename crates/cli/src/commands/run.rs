@@ -31,7 +31,7 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use pluto_eth2util::helpers::validate_http_headers;
+use pluto_eth2util::helpers;
 use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -697,7 +697,7 @@ impl TryFrom<RunArgs> for RunConfig {
             warn!("Jaeger flags are disabled and will be removed in a future release");
         }
 
-        validate_http_headers(&general.beacon_node_headers)
+        helpers::validate_http_headers(&general.beacon_node_headers)
             .map_err(|err| CliError::Other(err.to_string()))?;
 
         let max_graffiti_bytes = if general.graffiti_disable_client_append {

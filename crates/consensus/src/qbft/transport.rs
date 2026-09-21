@@ -44,6 +44,7 @@ pub(crate) struct BroadcastRequest {
 }
 
 /// Errors returned by the QBFT consensus transport.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// Hash was not available in the value cache.
@@ -397,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn create_msg_preserves_unknown_message_type() {
+    fn create_msg_writes_unknown_message_type_as_zero() {
         let key = secret_key();
         let duty = duty();
         let mut request = create_msg_request(&duty, &key);
@@ -405,9 +406,11 @@ mod tests {
         request.peer_idx = 2;
         request.round = 3;
 
+        assert_eq!(request.type_, qbft::MessageType::Unknown);
+
         let msg = create_msg(request).unwrap();
 
-        assert_eq!(msg.msg().r#type, 99);
+        assert_eq!(msg.msg().r#type, 0);
     }
 
     #[test]

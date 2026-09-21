@@ -5,10 +5,7 @@ use pluto_cluster::{
     distvalidator::DistValidator,
     registration::{BuilderRegistration, Registration},
 };
-use pluto_core::{
-    signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::SignedData,
-};
+use pluto_core::signeddata::{SignedDataError, VersionedSignedValidatorRegistration};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 
 use crate::share::{Share, ShareMsg};
@@ -17,6 +14,7 @@ use crate::share::{Share, ShareMsg};
 pub type Result<T> = std::result::Result<T, ValidatorsError>;
 
 /// Error type for DKG validator helpers.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorsError {
     /// Builder registration payload is missing.

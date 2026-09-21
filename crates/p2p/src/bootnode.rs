@@ -6,12 +6,12 @@ use backon::Retryable;
 use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{Instrument as _, info, warn};
 use url::Url;
 
 use crate::{
     config::RelayAddr,
-    peer::{AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key},
+    peer::{self, AddrInfo, MutablePeer, Peer, PeerError},
 };
 
 /// Polling interval for relay address updates.
@@ -32,6 +32,7 @@ const RELAY_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_MAX_BODY: usize = 1024 * 1024;
 
 /// Bootnode error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum BootnodeError {
     /// Failed to get peer from multiaddr.
@@ -127,9 +128,13 @@ pub async fn new_relays(
                 let mutable_clone = mutable.clone();
                 let cancel_clone = cancel.child_token();
 
-                tokio::spawn(async move {
-                    resolve_relay(cancel_clone, url, hash, mutable_clone).await;
-                });
+                let span = tracing::debug_span!("relay", topic = "relay");
+                tokio::spawn(
+                    async move {
+                        resolve_relay(cancel_clone, url, hash, mutable_clone).await;
+                    }
+                    .instrument(span),
+                );
 
                 resp.push(mutable);
             }
@@ -193,7 +198,7 @@ async fn resolve_relay(
         {
             Ok(addrs) => addrs,
             Err(e) => {
-                tracing::error!(err = %e, url = %relay_url, "Failed resolving relay addresses from URL");
+                tracing::error!(err = ?e, url = %relay_url, "Failed resolving relay addresses from URL");
                 return;
             }
         };
@@ -206,7 +211,7 @@ async fn resolve_relay(
         if prev_addrs != new_addrs {
             prev_addrs = new_addrs;
 
-            match addr_infos_from_p2p_addrs(&addrs) {
+            match peer::addr_infos_from_p2p_addrs(&addrs) {
                 Ok(infos) if infos.len() != 1 => {
                     tracing::error!(
                         n = infos.len(),
@@ -224,7 +229,7 @@ async fn resolve_relay(
                     mutable.set(peer);
                 }
                 Err(e) => {
-                    tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");
+                    tracing::error!(err = ?e, addrs = ?addrs, "Failed resolving relay ID from addresses");
                 }
             }
         }
@@ -272,7 +277,7 @@ async fn query_relay_addrs(
             .await
             .map_err(|e| {
                 tracing::warn!(err = %e, "Failure querying relay addresses (will try again)");
-                BootnodeError::NewRequest(e)
+                BootnodeError::NewRequest(e.into())
             })?;
 
         if !resp.status().is_success() {
@@ -340,7 +345,7 @@ async fn read_relay_body_capped(resp: reqwest::Response, max: usize) -> Result<S
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             tracing::warn!(err = %e, "Failure reading relay addresses (will try again)");
-            BootnodeError::NewRequest(e)
+            BootnodeError::NewRequest(e.into())
         })?;
         if buf.len().saturating_add(chunk.len()) > max {
             tracing::warn!(max, "Relay address body too large (will try again)");
@@ -362,10 +367,10 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
     let ip = record.ip().ok_or(BootnodeError::EnrNoIp)?;
 
     let public_key = record.public_key.ok_or(BootnodeError::GetPeerIdFromEnrKey(
-        PeerError::MissingPublicKeyInEnr,
+        PeerError::MissingPublicKeyInEnr.into(),
     ))?;
 
-    let peer_id = peer_id_from_key(public_key)?;
+    let peer_id = peer::peer_id_from_key(public_key)?;
 
     let mut addrs = Vec::new();
 
@@ -397,7 +402,7 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
 /// This is a convenience wrapper around `addr_infos_from_p2p_addrs` for a
 /// single address.
 fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, PeerError> {
-    let mut infos = addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
+    let mut infos = peer::addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
 
     infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
 }
@@ -422,7 +427,7 @@ mod tests {
     /// relay serves for it.
     fn relay_fixture() -> (PeerId, String) {
         let key = k256::SecretKey::random(&mut OsRng);
-        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
         let body = serde_json::to_string(&[format!("/ip4/10.0.0.1/tcp/3610/p2p/{peer_id}")])
             .expect("serialize relay addrs");
 
@@ -558,7 +563,7 @@ mod tests {
     #[test]
     fn multi_addr_from_enr_str_maps_ports_to_transports() {
         let key = k256::SecretKey::random(&mut OsRng);
-        let peer_id = peer_id_from_key(key.public_key()).expect("peer id from key");
+        let peer_id = peer::peer_id_from_key(key.public_key()).expect("peer id from key");
         let ip = EnrEntry::Ipv4(Ipv4Addr::new(1, 2, 3, 4));
 
         // The UDP port is advertised as QUIC, and comes first when both ports

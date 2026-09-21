@@ -17,14 +17,14 @@ use libp2p::{Multiaddr, PeerId, multiaddr};
 use pluto_eth2util::enr::{EnrEntry, Record};
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, warn};
+use tracing::{Instrument as _, Span, debug, info, instrument, warn};
 use vise_exporter::{MetricsExporter, MetricsServer};
 
 use crate::{
     config::EXTERNAL_HOST_RESOLVE_INTERVAL,
     error::{RelayP2PError, Result},
 };
-use pluto_p2p::{config::P2PConfig, manet::Manet, name::peer_name};
+use pluto_p2p::{config::P2PConfig, manet::Manet, name};
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]
@@ -123,16 +123,25 @@ pub async fn enr_server(
 ) -> Result<()> {
     info!("Starting ENR server");
 
-    // Start external host resolver task if configured
+    // Start external host resolver task if configured.
+    //
+    // `tokio::spawn` gives the new task an empty span stack, so the resolver
+    // would lose the `relay` topic this server runs under and its warnings
+    // would land on `app_log_warn_total{topic=""}`. Re-attaching the current
+    // span restores what charon gets for free by handing the goroutine its
+    // `context.Context`.
     let resolver_handle = state.p2p_config.external_host.clone().map(|external_host| {
         let state = state.clone();
         let ct = ct.child_token();
-        tokio::spawn(resolve_external_host_periodically(state, external_host, ct))
+        tokio::spawn(
+            resolve_external_host_periodically(state, external_host, ct)
+                .instrument(Span::current()),
+        )
     });
 
     info!(
         "Relay started {peer_name} on {tcp_addrs} and {udp_addrs}",
-        peer_name = peer_name(&state.peer_id),
+        peer_name = name::peer_name(&state.peer_id),
         tcp_addrs = state.p2p_config.tcp_addrs.join(", "),
         udp_addrs = state.p2p_config.udp_addrs.join(", "),
     );
@@ -235,9 +244,12 @@ pub async fn enr_handler(
 
     for addr in &sorted_addrs {
         if tcp_addr.is_none() && utils::is_tcp_addr(addr) {
-            if let Some((ip, port)) = utils::extract_ip_and_tcp_port(addr) {
+            if let Some((ip, port)) =
+                utils::extract_ip_and_port(addr, utils::TransportProtocol::Tcp)
+            {
                 tcp_addr = Some((apply_ip_override(&state, ip).await, port));
-            } else if let Some((_host, port)) = utils::extract_dns_and_tcp_port(addr)
+            } else if let Some((_host, port)) =
+                utils::extract_dns_and_port(addr, utils::TransportProtocol::Tcp)
                 && let Some(resolved) = state.get_external_host_ip().await
             {
                 tcp_addr = Some((resolved, port));
@@ -245,9 +257,12 @@ pub async fn enr_handler(
         }
 
         if udp_addr.is_none() && utils::is_quic_addr(addr) {
-            if let Some((ip, port)) = utils::extract_ip_and_udp_port(addr) {
+            if let Some((ip, port)) =
+                utils::extract_ip_and_port(addr, utils::TransportProtocol::Quic)
+            {
                 udp_addr = Some((apply_ip_override(&state, ip).await, port));
-            } else if let Some((_host, port)) = utils::extract_dns_and_udp_port(addr)
+            } else if let Some((_host, port)) =
+                utils::extract_dns_and_port(addr, utils::TransportProtocol::Quic)
                 && let Some(resolved) = state.get_external_host_ip().await
             {
                 udp_addr = Some((resolved, port));

@@ -39,15 +39,16 @@ use pluto_core::{
     },
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
-    validatorapi::{self, Component, Handler, SeenPubkeysFn},
+    validatorapi::{self, Component, Handler},
 };
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient,
+    EthBeaconNodeApiClient,
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     node::AppError,
@@ -312,7 +313,7 @@ async fn calculate_tracker_delay(
     let genesis = eth2_cl
         .fetch_genesis_time()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
 
     let elapsed = chrono::Utc::now()
         .signed_duration_since(genesis)
@@ -349,10 +350,11 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node API client for everything except broadcasting.
+    /// Beacon node API client used for scheduling, fetching, dutydb and
+    /// validatorapi.
     pub eth2_cl: EthBeaconNodeApiClient,
-    /// Beacon node API client for broadcasting, built with the submit timeout.
-    pub submission_api: EthBeaconNodeApiClient,
+    /// Beacon node API client used for broadcasting, with the submit timeout.
+    pub submission_client: EthBeaconNodeApiClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
     /// Current consensus implementation, from the controller. Forwards to the
@@ -384,10 +386,6 @@ pub struct WireInputs {
     /// Whether to fetch only committee index 0 at/after `electra_slot`
     /// (`Feature::FetchOnlyCommIdx0`).
     pub fetch_only_comm_idx0: bool,
-    /// Observer invoked with each DV root pubkey the validator client
-    /// references on the validator API, feeding the monitoring readiness
-    /// checker. `None` disables the signal (e.g. tests).
-    pub seen_pubkeys: Option<SeenPubkeysFn>,
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
@@ -521,7 +519,7 @@ pub async fn wire_core_workflow(
         threshold,
         share_idx,
         eth2_cl,
-        submission_api,
+        submission_client,
         validators,
         consensus,
         builder_enabled,
@@ -532,7 +530,6 @@ pub async fn wire_core_workflow(
         graffiti_builder,
         electra_slot,
         fetch_only_comm_idx0,
-        seen_pubkeys,
         slot_tick,
         peers,
         feature_set,
@@ -549,18 +546,18 @@ pub async fn wire_core_workflow(
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
 
+    // One pubkey-scoped validator cache shared by the scheduler, the
+    // broadcaster and the validator API, so every consumer resolves the same
+    // cluster validator set. `ValidatorCache` clones share state, so the
+    // per-epoch trim + refresh subscriber registered below refreshes every
+    // consumer at once.
+    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
+    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
         Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
     };
-
-    // ---- Beacon node clients ----
-    // Both clients, the per-epoch refresher and the validator API share one
-    // validator cache, so a single refresh serves every consumer.
-    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
-    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone(), validator_cache.clone());
-    let submission_client = BeaconNodeClient::new(submission_api, validator_cache.clone());
 
     // ---- Deadliners (one per component) ----
     //
@@ -584,7 +581,7 @@ pub async fn wire_core_workflow(
     let (slot_duration, _slots_per_epoch) = eth2_cl
         .fetch_slots_config()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
     let tracker_lag = slot_duration
         .saturating_mul(u32::try_from(INCL_MISSED_LAG + INCL_CHECK_LAG).unwrap_or(u32::MAX));
 
@@ -608,16 +605,16 @@ pub async fn wire_core_workflow(
     let tracker_feature_set = tracker_feature_set(feature_set);
 
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
-    let tracker = TrackerService::start(
-        ct.clone(),
-        tracker_analyser,
-        AnalyserRx(tracker_analyser_rx),
-        tracker_deleter,
-        DeleterRx(tracker_deleter_rx),
-        peers,
-        track_from,
-        tracker_feature_set,
-    );
+    let tracker = TrackerService::start()
+        .cancel(ct.clone())
+        .analyser(tracker_analyser)
+        .analyser_rx(AnalyserRx(tracker_analyser_rx))
+        .deleter(tracker_deleter)
+        .deleter_rx(DeleterRx(tracker_deleter_rx))
+        .peers(peers)
+        .from_slot(track_from)
+        .feature_set(tracker_feature_set)
+        .call();
 
     // Resolves the terminal `ChainInclusion` step; without it every duty with
     // an inclusion step would stall unresolved and be reported as failed.
@@ -632,14 +629,18 @@ pub async fn wire_core_workflow(
                     let duty = duty.clone();
                     // The core's callback is sync but `inclusion_checked` is
                     // async, so hand the event to the runtime.
-                    tokio::spawn(async move {
-                        tracker.inclusion_checked(duty, pubkey, err).await;
-                    });
+                    let span = tracing::Span::current();
+                    tokio::spawn(
+                        async move {
+                            tracker.inclusion_checked(duty, pubkey, err).await;
+                        }
+                        .instrument(span),
+                    );
                 }),
                 tracker_feature_set,
             )
             .await
-            .map_err(AppError::BeaconApi)?,
+            .map_err(|e| AppError::BeaconApi(e.into()))?,
         )
     };
 
@@ -664,7 +665,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
             Box::pin(async move {
-                let signed: Box<dyn SignedData> = aggsigdb.wait_for(duty, pubkey).await?;
+                let signed: SignedData = aggsigdb.wait_for(duty, pubkey).await?;
                 Ok(signed)
             })
         })
@@ -770,26 +771,35 @@ pub async fn wire_core_workflow(
             move |duty: Duty, value: pbcore::UnsignedDataSet| {
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
-                tokio::spawn(async move {
-                    let core_set =
-                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                // `tokio::spawn` starts the task with an empty span stack, so
+                // re-attach the caller's span.
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let core_set = match unsigneddata::unsigned_data_set_from_proto(
+                            &duty.duty_type,
+                            &value,
+                        ) {
                             Ok(set) => set,
                             Err(err) => {
                                 tracing::warn!(?err, "dutydb: decode unsigned data set");
                                 return;
                             }
                         };
-                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                    // Logged before the error moves into the tracker's `Arc`.
-                    let step_err = match dutydb.store(duty.clone(), core_set).await {
-                        Ok(()) => None,
-                        Err(err) => {
-                            tracing::warn!(?err, "dutydb: store");
-                            Some(owned_step_err(err))
-                        }
-                    };
-                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-                });
+                        let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                        // Logged before the error moves into the tracker's
+                        // `Arc`.
+                        let step_err = match dutydb.store(duty.clone(), core_set).await {
+                            Ok(()) => None,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: store");
+                                Some(owned_step_err(err))
+                            }
+                        };
+                        tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                    }
+                    .instrument(span),
+                );
                 Ok(())
             },
         ));
@@ -882,7 +892,7 @@ pub async fn wire_core_workflow(
     }
     // ---- (11) Broadcaster ----
     let broadcaster = Arc::new(
-        Broadcaster::new(submission_client)
+        Broadcaster::new(submission_client, validator_cache.clone())
             .await
             .map_err(AppError::Broadcaster)?,
     );
@@ -1179,7 +1189,7 @@ pub async fn wire_core_workflow(
     }
 
     let (scheduler, scheduler_task) = sched_builder
-        .build(beacon_client, ct.clone())
+        .build(eth2_cl.clone(), validator_cache.clone(), ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
 
@@ -1192,7 +1202,7 @@ pub async fn wire_core_workflow(
     // pubkey-by-attestation lookups, and the scheduler-backed
     // duty-definition lookup.
     let mut vapi = Component::new(
-        Arc::new(eth2_cl.clone()),
+        eth2_cl.clone(),
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
@@ -1290,11 +1300,6 @@ pub async fn wire_core_workflow(
         });
     }
 
-    // Feed the monitoring readiness checker the pubkeys the VC references.
-    if let Some(observer) = seen_pubkeys {
-        vapi.register_seen_pubkeys(observer);
-    }
-
     let validator_api_router = validatorapi::new_router(
         Arc::new(vapi) as Arc<dyn Handler>,
         builder_enabled,
@@ -1354,6 +1359,7 @@ where
 
 /// Failure driving a duty's consensus instance: either the deadline could not
 /// be computed or the consensus round itself failed.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum DutyConsensusError {
     #[error(transparent)]
@@ -1469,15 +1475,14 @@ mod tests {
     use super::*;
     use pluto_core::types::SlotNumber;
     use pluto_eth2api::{
-        BlindedBlock400Response, GetStateValidatorsResponseResponse,
-        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+        ErrorBody, ValidatorsResponse,
+        spec::phase0,
+        v1::{Validator, ValidatorStatus},
     };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
-
-    const FAR_FUTURE_EPOCH: &str = "18446744073709551615";
 
     fn test_pubkey(seed: u8) -> BLSPubKey {
         let mut bytes = [0u8; 48];
@@ -1485,50 +1490,38 @@ mod tests {
         bytes
     }
 
-    fn format_pubkey(pubkey: &BLSPubKey) -> String {
-        format!("0x{}", hex::encode(pubkey))
-    }
-
-    fn test_datum(
-        index: u64,
-        pubkey: &BLSPubKey,
-        status: ValidatorStatus,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+    fn test_datum(index: u64, pubkey: &BLSPubKey, status: ValidatorStatus) -> Validator {
+        Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: format_pubkey(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: "0".to_string(),
-                exit_epoch: FAR_FUTURE_EPOCH.to_string(),
-                withdrawable_epoch: FAR_FUTURE_EPOCH.to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning `data`.
-    fn post_validators_ok(
-        state_id: impl AsRef<str>,
-        data: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> Mock {
+    fn post_validators_ok(state_id: impl AsRef<str>, data: Vec<Validator>) -> Mock {
         Mock::given(method("POST"))
             .and(path(format!(
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data,
-                },
-            ))
+                }),
+            )
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning 404, so
@@ -1539,13 +1532,11 @@ mod tests {
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
-                    code: 404.0,
-                    message: "State not found".to_string(),
-                    stacktraces: None,
-                }),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(ErrorBody {
+                code: Some(404),
+                message: "State not found".to_string(),
+                ..ErrorBody::default()
+            }))
     }
 
     fn test_cache(server: &MockServer, pubkeys: Vec<BLSPubKey>) -> ValidatorCache {

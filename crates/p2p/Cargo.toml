@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bon.workspace = true
 chrono.workspace = true
 either.workspace = true
 futures.workspace = true
@@ -16,6 +17,7 @@ prost.workspace = true
 k256.workspace = true
 pluto-eth2util.workspace = true
 pluto-k1util.workspace = true
+pluto-stacktrace.workspace = true
 vise.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

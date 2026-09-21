@@ -6,12 +6,14 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use k256::{PublicKey, SecretKey};
 use prost::{Message, Name};
 use prost_types::Any;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     instance::InstanceIo,
@@ -113,6 +115,7 @@ pub(crate) enum DecodedValue {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Component construction and inbound admission errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Peer order did not fit the wire index type.
@@ -431,9 +434,10 @@ impl Consensus {
             return Err(Error::InvalidConsensusMessage);
         }
 
-        if !qbft::MessageType::from_wire(msg.r#type).valid() {
-            return Err(Error::InvalidConsensusMessageType);
-        }
+        // The conversion is the admission check: `TryFrom` accepts exactly the
+        // wire values `MessageType::valid` accepted, so there is no separate
+        // validity test to keep in sync.
+        qbft::MessageType::try_from(msg.r#type).map_err(|_| Error::InvalidConsensusMessageType)?;
 
         let duty = msg.duty.as_ref().ok_or(Error::InvalidConsensusMessage)?;
         let duty_type =
@@ -475,22 +479,26 @@ impl Consensus {
             .expect("start must be called exactly once");
         let instances = Arc::clone(&self.instances);
 
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = ct.cancelled() => return,
-                    duty = expired_rx.recv() => match duty {
-                        Some(duty) => {
-                            instances
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .remove(&duty);
-                        }
-                        None => return,
-                    },
+        let span = tracing::debug_span!("qbft", topic = "qbft");
+        tokio::spawn(
+            async move {
+                loop {
+                    tokio::select! {
+                        () = ct.cancelled() => return,
+                        duty = expired_rx.recv() => match duty {
+                            Some(duty) => {
+                                instances
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .remove(&duty);
+                            }
+                            None => return,
+                        },
+                    }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Returns existing instance I/O for `duty`, or creates an empty one.
@@ -598,6 +606,7 @@ impl Consensus {
     }
 }
 
+#[async_trait]
 impl crate::wrapper::Consensus for Consensus {
     fn protocol_id(&self) -> String {
         self.protocol_id().to_string()
@@ -607,29 +616,21 @@ impl crate::wrapper::Consensus for Consensus {
         drop(Consensus::start(self, ct));
     }
 
-    fn participate(
-        &self,
-        ct: CancellationToken,
-        duty: Duty,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::participate(self, duty, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    async fn participate(&self, ct: CancellationToken, duty: Duty) -> crate::wrapper::Result<()> {
+        Consensus::participate(self, duty, &ct)
+            .await
+            .map_err(|err| err.into())
     }
 
-    fn propose(
+    async fn propose(
         &self,
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::propose(self, duty, value, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    ) -> crate::wrapper::Result<()> {
+        Consensus::propose(self, duty, value, &ct)
+            .await
+            .map_err(|err| err.into())
     }
 
     fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {

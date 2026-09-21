@@ -3,48 +3,35 @@
 mod metrics;
 mod recast;
 
-use std::{any::Any, error::Error as StdError};
-
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::tbls;
 use pluto_eth2api::{
-    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
-    GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
     spec::{altair, phase0},
+    v1,
+    valcache::{ValidatorCache, ValidatorCacheError},
     versioned,
 };
 use tree_hash::TreeHash;
 
 pub use recast::Recaster;
 
-use crate::{
-    bcast::metrics::instrument_duty,
-    signeddata::{
-        SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
-        VersionedAttestation, VersionedSignedAggregateAndProof, VersionedSignedProposal,
-        VersionedSignedValidatorRegistration,
-    },
-    types::{Duty, DutyType, PubKey, SignedData, SignedDataSet},
-};
-
-/// Boxed client/provider error.
-pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
+use crate::types::{Duty, DutyType, PubKey, SignedData, SignedDataSet};
 
 /// Broadcaster result.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Broadcaster error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Beacon client/provider error.
-    #[error("{context}: {source}")]
-    Client {
-        /// Operation context.
-        context: &'static str,
-        /// Underlying error.
-        #[source]
-        source: BoxError,
-    },
+    /// Beacon node client error.
+    #[error(transparent)]
+    Client(#[from] EthBeaconNodeApiClientError),
+
+    /// Validator cache error.
+    #[error(transparent)]
+    ValidatorCache(#[from] ValidatorCacheError),
 
     /// Signed-data conversion error.
     #[error("{context}: {source}")]
@@ -138,28 +125,6 @@ pub enum Error {
     UnsupportedDutyType,
 }
 
-/// Complete validator data needed for Electra attestation repair.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompleteValidator {
-    /// Validator status.
-    pub status: ValidatorStatus,
-    /// Activation epoch.
-    pub activation_epoch: phase0::Epoch,
-}
-
-impl TryFrom<&GetStateValidatorsResponseResponseDatum> for CompleteValidator {
-    type Error = std::num::ParseIntError;
-
-    fn try_from(
-        datum: &GetStateValidatorsResponseResponseDatum,
-    ) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            status: datum.status.clone(),
-            activation_epoch: datum.validator.activation_epoch.parse()?,
-        })
-    }
-}
-
 #[derive(Debug, Clone)]
 struct DelayCalculator {
     genesis_time: DateTime<Utc>,
@@ -222,31 +187,19 @@ impl DelayCalculator {
 
 /// Broadcasts aggregated signed duty data to the beacon node.
 pub struct Broadcaster {
-    client: BeaconNodeClient,
+    client: EthBeaconNodeApiClient,
+    validator_cache: ValidatorCache,
     delay_calculator: DelayCalculator,
 }
 
 impl Broadcaster {
     /// Creates a new broadcaster.
-    pub async fn new(client: BeaconNodeClient) -> Result<Self> {
-        let genesis_time =
-            client
-                .api()
-                .fetch_genesis_time()
-                .await
-                .map_err(|source| Error::Client {
-                    context: "fetch genesis time",
-                    source: Box::new(source),
-                })?;
-        let (slot_duration, _) =
-            client
-                .api()
-                .fetch_slots_config()
-                .await
-                .map_err(|source| Error::Client {
-                    context: "fetch slots config",
-                    source: Box::new(source),
-                })?;
+    pub async fn new(
+        client: EthBeaconNodeApiClient,
+        validator_cache: ValidatorCache,
+    ) -> Result<Self> {
+        let genesis_time = client.fetch_genesis_time().await?;
+        let (slot_duration, _) = client.fetch_slots_config().await?;
         let slot_duration =
             Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
                 context: "slot duration",
@@ -254,6 +207,7 @@ impl Broadcaster {
 
         Ok(Self {
             client,
+            validator_cache,
             delay_calculator: DelayCalculator {
                 genesis_time,
                 slot_duration,
@@ -268,6 +222,7 @@ impl Broadcaster {
     /// success record the broadcast count and submission delay. Internal-only
     /// duties (randao, prepare-aggregator, prepare-sync-contribution) are
     /// no-ops; deprecated and unknown duty types return an error.
+    #[tracing::instrument(name = "bcast", level = "debug", skip_all, fields(topic = "bcast"))]
     pub async fn broadcast(&self, mut duty: Duty, set: SignedDataSet) -> Result<()> {
         match duty.duty_type {
             DutyType::Attester => self.broadcast_attester(&duty, &set).await?,
@@ -278,7 +233,7 @@ impl Broadcaster {
                 // calculations while submitting builder
                 // registrations. This is because builder
                 // registrations are submitted in first slot of every epoch.
-                duty.slot = first_slot_in_current_epoch(self.client.api()).await?;
+                duty.slot = first_slot_in_current_epoch(&self.client).await?;
                 self.broadcast_builder_registration(&duty, &set).await?;
             }
             DutyType::Exit => self.broadcast_exits(&duty, &set).await?,
@@ -304,7 +259,7 @@ impl Broadcaster {
                 tracing::warn!(%error, %duty, "Failed to compute broadcast delay");
             })
             .ok();
-        instrument_duty(&duty, delay);
+        metrics::instrument_duty(&duty, delay);
 
         Ok(())
     }
@@ -345,13 +300,21 @@ impl Broadcaster {
                 .await?;
         }
 
-        match self.client.api().submit_attestations(attestations).await {
+        match self.client.submit_pool_attestations_v2(&attestations).await {
             Ok(()) => Ok(()),
-            Err(source) if source.to_string().contains("PriorAttestationKnown") => Ok(()),
-            Err(source) => Err(Error::Client {
-                context: "submit attestations",
-                source: Box::new(source),
-            }),
+            // Lighthouse is not idempotent: an attestation it already knows is
+            // rejected, not acknowledged.
+            Err(EthBeaconNodeApiClientError::Http(http))
+                if http.body.message.contains("PriorAttestationKnown")
+                    || http
+                        .body
+                        .failures
+                        .iter()
+                        .any(|failure| failure.message.contains("PriorAttestationKnown")) =>
+            {
+                Ok(())
+            }
+            Err(source) => Err(Error::Client(source.into())),
         }?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestations to beacon node");
@@ -364,32 +327,24 @@ impl Broadcaster {
     /// submit via the blinded endpoint, otherwise submit the full proposal.
     async fn broadcast_proposer(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let (pubkey, agg_data) = set_to_one(set)?;
-        let block =
-            downcast_signed_data::<VersionedSignedProposal>(agg_data, Error::InvalidProposal)?;
+        let SignedData::VersionedSignedProposal(block) = agg_data else {
+            return Err(Error::InvalidProposal);
+        };
         let blinded = block.0.blinded;
 
         if blinded {
-            let proposal = block.to_blinded().map_err(|source| Error::SignedData {
-                context: "cannot broadcast, expected blinded proposal",
-                source,
-            })?;
-            self.client
-                .api()
-                .submit_signed_blinded_proposal(proposal)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit blinded proposal",
-                    source: Box::new(source),
+            let proposal = block
+                .clone()
+                .to_blinded()
+                .map_err(|source| Error::SignedData {
+                    context: "cannot broadcast, expected blinded proposal",
+                    source,
                 })?;
+            self.client
+                .publish_blinded_block_v2(&proposal, None)
+                .await?;
         } else {
-            self.client
-                .api()
-                .submit_signed_proposal(block.0)
-                .await
-                .map_err(|source| Error::Client {
-                    context: "submit proposal",
-                    source: Box::new(source),
-                })?;
+            self.client.publish_block_v2(&block.0, None).await?;
         }
 
         tracing::info!(%duty, %pubkey, blinded, "Successfully submitted block proposal to beacon node");
@@ -402,13 +357,8 @@ impl Broadcaster {
     async fn broadcast_builder_registration(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let registrations = set_to_registrations(set)?;
         self.client
-            .api()
             .submit_validator_registrations(registrations)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit validator registrations",
-                source: Box::new(source),
-            })?;
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted validator registrations to beacon node");
         Ok(())
@@ -427,7 +377,7 @@ impl Broadcaster {
         //    failure is always surfaced rather than masked by a later success.
         let mut last_error = None;
         for (pubkey, exit) in set_to_exits(set)? {
-            match self.client.api().submit_voluntary_exit(exit).await {
+            match self.client.submit_pool_voluntary_exit(&exit).await {
                 Ok(()) => {
                     tracing::info!(%duty, %pubkey, "Successfully submitted voluntary exit to beacon node")
                 }
@@ -436,10 +386,7 @@ impl Broadcaster {
         }
 
         if let Some(source) = last_error {
-            return Err(Error::Client {
-                context: "submit voluntary exit",
-                source: Box::new(source),
-            });
+            return Err(Error::Client(source.into()));
         }
 
         Ok(())
@@ -451,13 +398,8 @@ impl Broadcaster {
     async fn broadcast_aggregator(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let aggregate_and_proofs = set_to_agg_and_proof(set)?;
         self.client
-            .api()
-            .submit_aggregate_attestations(aggregate_and_proofs)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit aggregate attestations",
-                source: Box::new(source),
-            })?;
+            .publish_aggregate_and_proofs_v2(&aggregate_and_proofs)
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestation aggregations to beacon node");
         Ok(())
@@ -469,13 +411,8 @@ impl Broadcaster {
     async fn broadcast_sync_messages(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let messages = set_to_sync_messages(set)?;
         self.client
-            .api()
-            .submit_sync_committee_messages(messages)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee messages",
-                source: Box::new(source),
-            })?;
+            .submit_pool_sync_committee_signatures(&messages)
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted sync committee messages to beacon node");
         Ok(())
@@ -487,13 +424,8 @@ impl Broadcaster {
     async fn broadcast_sync_contributions(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let contributions = set_to_sync_contributions(set)?;
         self.client
-            .api()
-            .submit_sync_committee_contributions(contributions)
-            .await
-            .map_err(|source| Error::Client {
-                context: "submit sync committee contributions",
-                source: Box::new(source),
-            })?;
+            .publish_contribution_and_proofs(&contributions)
+            .await?;
 
         tracing::info!(%duty, "Successfully submitted sync committee contributions to beacon node");
         Ok(())
@@ -518,25 +450,12 @@ impl Broadcaster {
         let epoch = att0_data.target.epoch;
         let slot = att0_data.slot;
 
-        let val_idxs = resolve_active_validators_indices(&self.client, epoch).await?;
+        let val_idxs = resolve_active_validators_indices(&self.validator_cache, epoch).await?;
         let duties = self
             .client
-            .api()
             .fetch_attester_duties_for_indices(epoch, val_idxs)
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch attester duties",
-                source: Box::new(source),
-            })?;
-        let domain = self
-            .client
-            .api()
-            .fetch_beacon_attester_domain(epoch)
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch beacon attester domain",
-                source: Box::new(source),
-            })?;
+            .await?;
+        let domain = self.client.fetch_beacon_attester_domain(epoch).await?;
 
         // Try to find the matching attester duty and attestation by verifying
         // the full aggregated signature of the attestation with the
@@ -560,15 +479,7 @@ impl Broadcaster {
     }
 }
 
-fn downcast_signed_data<T>(data: &dyn SignedData, error: Error) -> Result<T>
-where
-    T: SignedData + Clone + 'static,
-{
-    let any = data as &dyn Any;
-    any.downcast_ref::<T>().cloned().ok_or(error)
-}
-
-fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &dyn SignedData)> {
+fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &SignedData)> {
     if set.len() != 1 {
         return Err(Error::ExpectedOneItemInSet);
     }
@@ -577,20 +488,18 @@ fn set_to_one(set: &SignedDataSet) -> Result<(PubKey, &dyn SignedData)> {
         unreachable!("set length checked")
     };
 
-    Ok((*pubkey, data.as_ref()))
+    Ok((*pubkey, data))
 }
 
-fn set_values_to<T, U, E, M>(set: &SignedDataSet, error: E, map: M) -> Result<Vec<U>>
+/// Maps every entry of the set through `map`, which selects the payload the
+/// duty expects; entries of any other [`SignedData`] variant yield `error()`.
+fn set_values_to<U, E, M>(set: &SignedDataSet, error: E, map: M) -> Result<Vec<U>>
 where
-    T: SignedData + Clone + 'static,
     E: Fn() -> Error,
-    M: Fn(T) -> U,
+    M: Fn(&SignedData) -> Option<U>,
 {
     set.values()
-        .map(|data| {
-            let value = downcast_signed_data::<T>(data.as_ref(), error())?;
-            Ok(map(value))
-        })
+        .map(|data| map(data).ok_or_else(&error))
         .collect()
 }
 
@@ -598,7 +507,10 @@ fn set_to_attestations(set: &SignedDataSet) -> Result<Vec<versioned::VersionedAt
     set_values_to(
         set,
         || Error::InvalidAttestation,
-        |attestation: VersionedAttestation| attestation.0,
+        |data| match data {
+            SignedData::VersionedAttestation(attestation) => Some(attestation.0.clone()),
+            _ => None,
+        },
     )
 }
 
@@ -608,15 +520,20 @@ fn set_to_registrations(
     set_values_to(
         set,
         || Error::InvalidRegistration,
-        |registration: VersionedSignedValidatorRegistration| registration.0,
+        |data| match data {
+            SignedData::VersionedSignedValidatorRegistration(registration) => {
+                Some(registration.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
 fn set_to_exits(set: &SignedDataSet) -> Result<Vec<(PubKey, phase0::SignedVoluntaryExit)>> {
     set.iter()
-        .map(|(pubkey, data)| {
-            downcast_signed_data::<SignedVoluntaryExit>(data.as_ref(), Error::InvalidExit)
-                .map(|exit| (*pubkey, exit.0))
+        .map(|(pubkey, data)| match data {
+            SignedData::SignedVoluntaryExit(exit) => Ok((*pubkey, exit.0.clone())),
+            _ => Err(Error::InvalidExit),
         })
         .collect()
 }
@@ -627,7 +544,12 @@ fn set_to_agg_and_proof(
     set_values_to(
         set,
         || Error::InvalidAggregateAndProof,
-        |aggregate_and_proof: VersionedSignedAggregateAndProof| aggregate_and_proof.0,
+        |data| match data {
+            SignedData::VersionedSignedAggregateAndProof(aggregate_and_proof) => {
+                Some(aggregate_and_proof.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
@@ -635,7 +557,10 @@ fn set_to_sync_messages(set: &SignedDataSet) -> Result<Vec<altair::SyncCommittee
     set_values_to(
         set,
         || Error::InvalidSyncCommitteeMessage,
-        |message: SignedSyncMessage| message.0,
+        |data| match data {
+            SignedData::SignedSyncMessage(message) => Some(message.0.clone()),
+            _ => None,
+        },
     )
 }
 
@@ -645,13 +570,18 @@ fn set_to_sync_contributions(
     set_values_to(
         set,
         || Error::InvalidSyncCommitteeContribution,
-        |contribution: SignedSyncContributionAndProof| contribution.0,
+        |data| match data {
+            SignedData::SignedSyncContributionAndProof(contribution) => {
+                Some(contribution.0.clone())
+            }
+            _ => None,
+        },
     )
 }
 
 fn attestations_need_validator_indices(attestations: &[versioned::VersionedAttestation]) -> bool {
     for attestation in attestations {
-        if data_version_is_before_electra(attestation.version) {
+        if attestation.version.is_before_electra() {
             break;
         }
 
@@ -664,24 +594,14 @@ fn attestations_need_validator_indices(attestations: &[versioned::VersionedAttes
 }
 
 async fn resolve_active_validators_indices(
-    client: &BeaconNodeClient,
+    validator_cache: &ValidatorCache,
     epoch: phase0::Epoch,
 ) -> Result<Vec<phase0::ValidatorIndex>> {
-    let validators = client
-        .complete_validators()
-        .await
-        .map_err(|source| Error::Client {
-            context: "complete validators",
-            source: Box::new(source),
-        })?;
+    let (_, validators) = validator_cache.get_by_head().await?;
     let mut indices = Vec::new();
 
-    for (index, datum) in validators.iter() {
-        let validator =
-            CompleteValidator::try_from(datum).map_err(|_| Error::InvalidValidatorField {
-                context: "activation epoch",
-            })?;
-        if !validator.status.is_active() && validator.activation_epoch != epoch {
+    for (index, validator) in validators.iter() {
+        if !validator.status.is_active() && validator.validator.activation_epoch != epoch {
             continue;
         }
 
@@ -693,7 +613,7 @@ async fn resolve_active_validators_indices(
 
 fn attestation_matches_duty(
     attestation: &versioned::VersionedAttestation,
-    attester_duty: &AttesterDuty,
+    attester_duty: &v1::AttesterDuty,
     domain: phase0::Domain,
 ) -> Result<bool> {
     let payload = attestation
@@ -722,21 +642,8 @@ fn attestation_matches_duty(
 async fn first_slot_in_current_epoch(
     client: &EthBeaconNodeApiClient,
 ) -> Result<crate::types::SlotNumber> {
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .map_err(|source| Error::Client {
-            context: "fetch genesis time",
-            source: Box::new(source),
-        })?;
-    let (slot_duration, slots_per_epoch) =
-        client
-            .fetch_slots_config()
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch slots config",
-                source: Box::new(source),
-            })?;
+    let genesis_time = client.fetch_genesis_time().await?;
+    let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
     let slot_duration =
         Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
             context: "slot duration",
@@ -803,9 +710,9 @@ mod tests {
     };
 
     use pluto_eth2api::{
-        GetStateValidatorsResponseResponse, ValidatorResponseValidator,
+        ValidatorsResponse,
         spec::{bellatrix, electra, phase0},
-        v1,
+        v1::{self, ValidatorStatus},
         valcache::ValidatorCache,
         versioned::{self, AttestationPayload},
     };
@@ -833,55 +740,49 @@ mod tests {
         pubkey: &phase0::BLSPubKey,
         status: ValidatorStatus,
         activation_epoch: u64,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+    ) -> v1::Validator {
+        v1::Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: hex0x(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: activation_epoch.to_string(),
-                exit_epoch: "18446744073709551615".to_string(),
-                withdrawable_epoch: "18446744073709551615".to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
-    /// Builds a [`BeaconNodeClient`] whose validator cache is backed by the
-    /// `head` validators endpoint returning `datums`.
-    async fn cached_client(
-        beacon: &BeaconMock,
-        datums: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> BeaconNodeClient {
+    /// Builds a [`ValidatorCache`] backed by the `head` validators endpoint
+    /// returning `datums`.
+    async fn cached_validators(beacon: &BeaconMock, datums: Vec<v1::Validator>) -> ValidatorCache {
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data: datums,
-                },
-            ))
+                }),
+            )
             .with_priority(1)
             .mount(beacon.server())
             .await;
 
-        let api = beacon.client().clone();
-        let cache = ValidatorCache::new(api.clone(), vec![]);
-        BeaconNodeClient::new(api, cache)
+        ValidatorCache::new(beacon.client().clone(), vec![])
     }
 
     fn pubkey(byte: u8) -> PubKey {
         PubKey::from([byte; 48])
     }
 
-    fn signed_set(pubkey: PubKey, data: impl SignedData + 'static) -> SignedDataSet {
-        HashMap::from([(pubkey, Box::new(data) as Box<dyn SignedData>)])
+    fn signed_set(pubkey: PubKey, data: impl Into<SignedData>) -> SignedDataSet {
+        HashMap::from([(pubkey, data.into())])
     }
 
     fn hex0x(bytes: impl AsRef<[u8]>) -> String {
@@ -891,10 +792,10 @@ mod tests {
     async fn new_broadcaster() -> (BeaconMock, Broadcaster) {
         let beacon = BeaconMock::builder().build().await.expect("beacon mock");
         mount_submit_successes(beacon.server()).await;
-        let broadcaster = Broadcaster::new(BeaconNodeClient::new(
+        let broadcaster = Broadcaster::new(
             beacon.client().clone(),
             ValidatorCache::new(beacon.client().clone(), vec![]),
-        ))
+        )
         .await
         .expect("broadcaster");
 
@@ -921,19 +822,41 @@ mod tests {
         }
     }
 
-    async fn mount_prior_attestation_known(server: &MockServer) {
+    /// Broadcasts one Deneb attestation against a node answering the pool
+    /// submit with a 400 carrying `body`, and returns the POSTed paths.
+    async fn broadcast_attester_rejected_with(body: Value) -> Vec<String> {
+        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
         Mock::given(method("POST"))
             .and(path("/eth/v2/beacon/pool/attestations"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "code": 400,
-                "message": "invalid attestation",
-                "failures": [
-                    { "index": 0, "message": "Verification: PriorAttestationKnown" }
-                ]
-            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(body))
             .with_priority(1)
-            .mount(server)
+            .mount(beacon.server())
             .await;
+        let broadcaster = Broadcaster::new(
+            beacon.client().clone(),
+            ValidatorCache::new(beacon.client().clone(), vec![]),
+        )
+        .await
+        .expect("broadcaster");
+        let set = signed_set(
+            pubkey(1),
+            VersionedAttestation::new(deneb_attestation()).expect("attestation"),
+        );
+
+        broadcaster
+            .broadcast(Duty::new_attester_duty(SlotNumber::new(1)), set)
+            .await
+            .expect("prior known swallowed");
+
+        beacon
+            .server()
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST")
+            .map(|request| request.url.path().to_string())
+            .collect()
     }
 
     fn attester_duties_body(
@@ -957,7 +880,7 @@ mod tests {
     }
 
     fn deterministic_electra_spec() -> Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "SECONDS_PER_SLOT": "12",
             "SLOTS_PER_EPOCH": "16",
             "GENESIS_FORK_VERSION": "0x01017000",
@@ -975,7 +898,7 @@ mod tests {
             "FULU_FORK_EPOCH": u64::MAX.to_string(),
             "DOMAIN_BEACON_ATTESTER": "0x01000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-        })
+        }))
     }
 
     fn attestation_data(slot: u64, epoch: u64) -> phase0::AttestationData {
@@ -1191,34 +1114,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_attester_submits_and_swallows_prior_known() {
-        let beacon = BeaconMock::builder().build().await.expect("beacon mock");
-        mount_prior_attestation_known(beacon.server()).await;
-        let broadcaster = Broadcaster::new(BeaconNodeClient::new(
-            beacon.client().clone(),
-            ValidatorCache::new(beacon.client().clone(), vec![]),
-        ))
-        .await
-        .expect("broadcaster");
-        let set = signed_set(
-            pubkey(1),
-            VersionedAttestation::new(deneb_attestation()).expect("attestation"),
-        );
+    async fn broadcast_attester_swallows_prior_known_in_failures() {
+        let post_paths = broadcast_attester_rejected_with(json!({
+            "code": 400,
+            "message": "invalid attestation",
+            "failures": [
+                { "index": 0, "message": "Verification: PriorAttestationKnown" }
+            ]
+        }))
+        .await;
+        assert_eq!(post_paths, vec!["/eth/v2/beacon/pool/attestations"]);
+    }
 
-        broadcaster
-            .broadcast(Duty::new_attester_duty(SlotNumber::new(1)), set)
-            .await
-            .expect("prior known swallowed");
-
-        let post_paths = beacon
-            .server()
-            .received_requests()
-            .await
-            .expect("requests")
-            .into_iter()
-            .filter(|request| request.method.as_str() == "POST")
-            .map(|request| request.url.path().to_string())
-            .collect::<Vec<_>>();
+    #[tokio::test]
+    async fn broadcast_attester_swallows_prior_known_in_message() {
+        let post_paths = broadcast_attester_rejected_with(json!({
+            "code": 400,
+            "message": "Verification: PriorAttestationKnown"
+        }))
+        .await;
         assert_eq!(post_paths, vec!["/eth/v2/beacon/pool/attestations"]);
     }
 
@@ -1240,7 +1154,7 @@ mod tests {
             .fetch_beacon_attester_domain(3)
             .await
             .expect("domain");
-        let client = cached_client(
+        let client = cached_validators(
             &beacon,
             vec![validator_datum(
                 99,
@@ -1251,17 +1165,17 @@ mod tests {
         )
         .await;
         let attestation = signed_electra_attestation(&secret, domain, 12, 3);
+        let duty = v1::AttesterDuty {
+            pubkey: public_key,
+            validator_index: 99,
+            committee_index: 0,
+            committee_length: 1,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
+            slot: 12,
+        };
         assert!(
-            attestation_matches_duty(
-                &attestation,
-                &AttesterDuty {
-                    slot: 12,
-                    validator_index: 99,
-                    pubkey: public_key,
-                },
-                domain,
-            )
-            .expect("matching attestation")
+            attestation_matches_duty(&attestation, &duty, domain).expect("matching attestation")
         );
         assert_eq!(
             beacon
@@ -1269,11 +1183,7 @@ mod tests {
                 .fetch_attester_duties_for_indices(3, vec![99])
                 .await
                 .expect("duties"),
-            vec![AttesterDuty {
-                slot: 12,
-                validator_index: 99,
-                pubkey: public_key,
-            }]
+            vec![duty]
         );
         assert_eq!(
             beacon
@@ -1283,7 +1193,9 @@ mod tests {
                 .expect("domain"),
             domain
         );
-        let broadcaster = Broadcaster::new(client).await.expect("broadcaster");
+        let broadcaster = Broadcaster::new(beacon.client().clone(), client)
+            .await
+            .expect("broadcaster");
 
         let mut attestations = vec![attestation];
         broadcaster
@@ -1473,7 +1385,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_active_validators_indices_filters_active_and_activation_epoch() {
         let beacon = BeaconMock::builder().build().await.expect("beacon mock");
-        let client = cached_client(
+        let client = cached_validators(
             &beacon,
             vec![
                 // active -> included
@@ -1495,7 +1407,7 @@ mod tests {
 
     /// Builds a recaster whose active-validator set resolves to `pubkey(1)`.
     async fn active_recaster(beacon: &BeaconMock) -> Recaster {
-        let client = cached_client(
+        let client = cached_validators(
             beacon,
             vec![validator_datum(
                 1,

@@ -60,7 +60,16 @@ pub(crate) fn create_relay_config(config: &Config) -> relay::Config {
         max_reservations: config.max_conns,
         max_reservations_per_peer: config.max_res_per_peer,
         reservation_duration: Duration::from_secs(ONE_HOUR_SECONDS),
-        max_circuits: config.max_res_per_peer,
+        // rust-libp2p splits circuit limits into a global ceiling
+        // (`max_circuits`) and a per-peer one (`max_circuits_per_peer`);
+        // go-libp2p's `Resources.MaxCircuits` is only the per-peer limit and
+        // has no global counterpart (go-libp2p@v0.41.1
+        // p2p/protocol/circuitv2/relay/relay.go:293,301 checks the source and
+        // destination peer counts only). So only the per-peer value mirrors
+        // Charon's `MaxCircuits = MaxResPerPeer`; the global ceiling is sized
+        // from the connection budget instead, keeping a safety valve
+        // go-libp2p lacks without throttling total relay throughput.
+        max_circuits: config.max_conns,
         max_circuits_per_peer: config.max_res_per_peer,
         max_circuit_duration: Duration::from_secs(ONE_HOUR_SECONDS),
         max_circuit_bytes: MB_32,
@@ -110,7 +119,8 @@ mod tests {
         let relay_config = create_relay_config(&test_config(64, 8));
         assert_eq!(relay_config.max_reservations, 64);
         assert_eq!(relay_config.max_reservations_per_peer, 8);
-        assert_eq!(relay_config.max_circuits, 8);
+        // Global circuit ceiling tracks `max_conns`, not `max_res_per_peer`.
+        assert_eq!(relay_config.max_circuits, 64);
         assert_eq!(relay_config.max_circuits_per_peer, 8);
         assert_eq!(
             relay_config.reservation_duration,
@@ -121,6 +131,15 @@ mod tests {
             Duration::from_secs(ONE_HOUR_SECONDS)
         );
         assert_eq!(relay_config.max_circuit_bytes, MB_32);
+    }
+
+    #[test]
+    fn global_circuit_ceiling_is_decoupled_from_per_peer_limit() {
+        // CLI defaults (`crates/cli/src/commands/relay.rs`), matching Charon's
+        // `p2p-max-reservations` / `p2p-max-connections`.
+        let relay_config = create_relay_config(&test_config(16384, 512));
+        assert_eq!(relay_config.max_circuits, 16384);
+        assert_eq!(relay_config.max_circuits_per_peer, 512);
     }
 
     #[test]
