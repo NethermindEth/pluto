@@ -715,7 +715,15 @@ impl<B: NetworkBehaviour> Node<B> {
                 info!(%address, "listen address expired");
                 self.readvertise();
             }
-            SwarmEvent::ListenerClosed { .. } => self.readvertise(),
+            SwarmEvent::ListenerClosed {
+                addresses, reason, ..
+            } => {
+                match reason {
+                    Ok(()) => info!(?addresses, "listener closed"),
+                    Err(error) => warn!(?addresses, %error, "listener closed"),
+                }
+                self.readvertise();
+            }
 
             // External address discovery
             SwarmEvent::ExternalAddrConfirmed { address } => {
