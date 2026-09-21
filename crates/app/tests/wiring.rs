@@ -33,6 +33,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use pluto_app::node::{
     AppError,
     wire::{
@@ -960,6 +961,7 @@ struct RecordingConsensus {
     proposed: Arc<StdMutex<Vec<Duty>>>,
 }
 
+#[async_trait]
 impl pluto_consensus::wrapper::Consensus for RecordingConsensus {
     fn protocol_id(&self) -> String {
         "/pluto/test/consensus/1.0.0".to_string()
@@ -967,25 +969,22 @@ impl pluto_consensus::wrapper::Consensus for RecordingConsensus {
 
     fn start(&self, _ct: CancellationToken) {}
 
-    fn participate(
+    async fn participate(
         &self,
         _ct: CancellationToken,
         _duty: Duty,
-    ) -> futures::future::BoxFuture<'_, pluto_consensus::wrapper::Result<()>> {
-        Box::pin(async { Ok(()) })
+    ) -> pluto_consensus::wrapper::Result<()> {
+        Ok(())
     }
 
-    fn propose(
+    async fn propose(
         &self,
         _ct: CancellationToken,
         duty: Duty,
         _value: pluto_core::corepb::v1::core::UnsignedDataSet,
-    ) -> futures::future::BoxFuture<'_, pluto_consensus::wrapper::Result<()>> {
-        self.proposed
-            .lock()
-            .expect("proposed lock")
-            .push(duty.clone());
-        Box::pin(async { Ok(()) })
+    ) -> pluto_consensus::wrapper::Result<()> {
+        self.proposed.lock().expect("proposed lock").push(duty);
+        Ok(())
     }
 
     fn subscribe(&self, _subscriber: pluto_consensus::wrapper::Subscriber) {}
@@ -1019,7 +1018,8 @@ async fn retry_wrapper_recovers_transient_fetch_failure() {
         .await;
 
     let eth2_cl = mock.client().clone();
-    let pubkey = PubKey::new([9u8; PK_LEN]);
+    let pubkey_bytes = [9u8; PK_LEN];
+    let pubkey = PubKey::new(pubkey_bytes);
     let proposed: Arc<StdMutex<Vec<Duty>>> = Arc::default();
     let consensus = Arc::new(ConsensusWrapper::new(Arc::new(RecordingConsensus {
         proposed: Arc::clone(&proposed),
@@ -1035,16 +1035,14 @@ async fn retry_wrapper_recovers_transient_fetch_failure() {
 
     let def = DutyDefinitionSet::from([(
         pubkey,
-        DutyDefinition::Attester(pluto_core::types::AttesterDutyDefinition {
-            pubkey,
-            duty: pluto_core::signeddata::AttesterDuty {
-                slot: SLOT,
-                validator_index: 2,
-                committee_index: 0,
-                committee_length: 8,
-                committees_at_slot: 1,
-                validator_committee_index: 0,
-            },
+        DutyDefinition::Attester(v1::AttesterDuty {
+            pubkey: pubkey_bytes,
+            slot: SLOT,
+            validator_index: 2,
+            committee_index: 0,
+            committee_length: 8,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
         }),
     )]);
     let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));

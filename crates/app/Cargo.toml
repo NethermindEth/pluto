@@ -58,6 +58,7 @@ pluto-testutil.workspace = true
 pluto-build-proto.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 libp2p.workspace = true
 wiremock.workspace = true
 test-case.workspace = true
