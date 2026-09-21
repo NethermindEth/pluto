@@ -8,11 +8,7 @@
 //!
 //! These utilities are primarily used internally by the [`crate::p2p`] module.
 
-use std::{
-    collections::HashSet,
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::{collections::HashSet, net::IpAddr, time::Duration};
 
 use libp2p::{
     Multiaddr,
@@ -22,10 +18,7 @@ use libp2p::{
 
 use crate::metrics::{ConnectionType, Protocol};
 
-use crate::{
-    config::{self, P2PConfig},
-    manet::Manet,
-};
+use crate::{config::P2PConfig, manet::Manet};
 
 /// A transport a node can listen on and advertise.
 ///
@@ -39,49 +32,32 @@ pub enum TransportProtocol {
     Quic,
 }
 
-/// Returns the external IP and Hostname fields as `proto` multiaddrs on
-/// `ports`.
-///
-/// `ports` must be the ports the node actually listens on: a configured port of
-/// 0 means the kernel picks one, so the configured value would advertise
-/// nothing dialable.
-fn external_proto_multiaddrs(
-    cfg: &P2PConfig,
-    ports: &[u16],
-    proto: TransportProtocol,
-) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut resp = vec![];
-
-    if let Some(external_ip) = cfg.external_ip.as_ref() {
-        let ip = external_ip.parse::<IpAddr>()?;
-
-        for port in ports {
-            let maddr = config::multi_addr_from_socket_addr(SocketAddr::new(ip, *port), proto)?;
-
-            resp.push(maddr);
-        }
-    }
-
-    if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in ports {
-            resp.push(match proto {
-                TransportProtocol::Tcp => multiaddr::multiaddr!(Dns(external_host), Tcp(*port)),
-                TransportProtocol::Quic => {
-                    multiaddr::multiaddr!(Dns(external_host), Udp(*port), QuicV1)
-                }
-            });
-        }
-    }
-
-    Ok(resp)
-}
-
-/// Returns the external IP and Hostname fields as multiaddrs on the ports of
-/// `listen_addrs`, TCP forms first.
+/// Returns the external IP and hostname from `cfg` as multiaddrs on the ports
+/// of `listen_addrs`, TCP forms first.
 pub fn external_multiaddrs(
     cfg: &P2PConfig,
     listen_addrs: &[Multiaddr],
 ) -> crate::p2p::Result<Vec<Multiaddr>> {
+    let external_ip = cfg
+        .external_ip
+        .as_deref()
+        .map(str::parse::<IpAddr>)
+        .transpose()?;
+
+    Ok(external_multiaddrs_on(
+        external_ip,
+        cfg.external_host.as_deref(),
+        listen_addrs,
+    ))
+}
+
+/// Returns `external_ip` and `external_host` as multiaddrs on the ports of
+/// `listen_addrs`, TCP forms first.
+pub(crate) fn external_multiaddrs_on(
+    external_ip: Option<IpAddr>,
+    external_host: Option<&str>,
+    listen_addrs: &[Multiaddr],
+) -> Vec<Multiaddr> {
     let mut addrs = Vec::new();
 
     for proto in [TransportProtocol::Tcp, TransportProtocol::Quic] {
@@ -90,10 +66,32 @@ pub fn external_multiaddrs(
             .filter_map(|addr| addr_port(addr, proto))
             .collect();
 
-        addrs.extend(external_proto_multiaddrs(cfg, &ports, proto)?);
+        if let Some(ip) = external_ip {
+            addrs.extend(
+                ports
+                    .iter()
+                    .map(|&port| with_transport(Multiaddr::from(ip), port, proto)),
+            );
+        }
+
+        if let Some(host) = external_host {
+            addrs.extend(
+                ports
+                    .iter()
+                    .map(|&port| with_transport(multiaddr::multiaddr!(Dns(host)), port, proto)),
+            );
+        }
     }
 
-    Ok(addrs)
+    addrs
+}
+
+/// Appends the `proto` transport on `port` to `base`.
+pub(crate) fn with_transport(base: Multiaddr, port: u16, proto: TransportProtocol) -> Multiaddr {
+    match proto {
+        TransportProtocol::Tcp => base.with(MaProtocol::Tcp(port)),
+        TransportProtocol::Quic => base.with(MaProtocol::Udp(port)).with(MaProtocol::QuicV1),
+    }
 }
 
 /// Returns the port `addr` carries for `proto`, if any.
@@ -192,11 +190,6 @@ pub fn is_quic_addr(addr: &Multiaddr) -> bool {
 /// Returns true if the multiaddr is TCP.
 pub fn is_tcp_addr(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, MaProtocol::Tcp(_)))
-}
-
-/// Returns true if the node has QUIC enabled (listening on QUIC addresses).
-pub fn is_quic_enabled<'a>(listen_addrs: impl Iterator<Item = &'a Multiaddr>) -> bool {
-    listen_addrs.into_iter().any(is_quic_addr)
 }
 
 /// Returns true if there is a direct (non-relay) QUIC connection among the
@@ -332,16 +325,6 @@ mod tests {
 
         assert_eq!(filter_direct_quic_addrs(candidates.into_iter()), vec![quic]);
         assert!(filter_direct_quic_addrs(std::iter::empty()).is_empty());
-    }
-
-    #[test]
-    fn quic_is_enabled_only_while_listening_on_quic() {
-        let tcp = addr("/ip4/1.2.3.4/tcp/3610");
-        let quic = addr("/ip4/1.2.3.4/udp/3610/quic-v1");
-
-        assert!(is_quic_enabled([&tcp, &quic].into_iter()));
-        assert!(!is_quic_enabled([&tcp].into_iter()));
-        assert!(!is_quic_enabled(std::iter::empty()));
     }
 
     #[test]

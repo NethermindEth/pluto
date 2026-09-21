@@ -64,10 +64,6 @@ pub async fn spawn_relay_server(key: SecretKey) -> (PeerId, Multiaddr, JoinHandl
     .await
     .expect("timed out waiting for the relay listen address");
 
-    // Without a reachable advertised address, reservations are rejected
-    // client-side with `NoAddressesInReservation`.
-    node.add_external_address(addr.clone());
-
     let handle = tokio::spawn(async move {
         loop {
             node.select_next_some().await;

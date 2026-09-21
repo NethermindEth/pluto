@@ -1,16 +1,11 @@
 //! # Charon P2P Configuration
 
-use std::{
-    fmt,
-    net::{IpAddr, SocketAddr},
-    str::FromStr,
-    time::Duration,
-};
+use std::{fmt, net::SocketAddr, str::FromStr, time::Duration};
 
 use libp2p::{Multiaddr, multiaddr, ping};
 use url::Url;
 
-use crate::utils::TransportProtocol;
+use crate::utils::{self, TransportProtocol};
 
 /// Shared default relay endpoints used by commands and P2P-facing configs.
 pub const DEFAULT_RELAYS: [&str; 5] = [
@@ -113,7 +108,6 @@ impl fmt::Display for RelayAddr {
 }
 
 /// P2P configuration error.
-#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum P2PConfigError {
     /// Failed to parse the TCP addresses.
@@ -123,10 +117,6 @@ pub enum P2PConfigError {
     /// Failed to parse the UDP addresses.
     #[error("Failed to parse the UDP addresses")]
     FailedToParseUdpAddresses(std::net::AddrParseError),
-
-    /// Failed to parse the multiaddress.
-    #[error("Failed to parse the multiaddress")]
-    FailedToParseMultiaddr(#[from] multiaddr::Error),
 }
 
 // Note: this is only for testing purposes!
@@ -142,10 +132,6 @@ impl PartialEq for P2PConfigError {
                 P2PConfigError::FailedToParseUdpAddresses(x),
                 P2PConfigError::FailedToParseUdpAddresses(y),
             ) if x == y => true,
-            (
-                P2PConfigError::FailedToParseMultiaddr(x),
-                P2PConfigError::FailedToParseMultiaddr(y),
-            ) if x.to_string() == y.to_string() => true,
             _ => false,
         }
     }
@@ -203,10 +189,11 @@ impl P2PConfig {
 
     /// Returns the configured listen multiaddresses for `proto`.
     pub fn multiaddrs(&self, proto: TransportProtocol) -> Result<Vec<Multiaddr>> {
-        self.parse_addrs(proto)?
+        Ok(self
+            .parse_addrs(proto)?
             .into_iter()
             .map(|addr| multi_addr_from_socket_addr(addr, proto))
-            .collect()
+            .collect())
     }
 }
 
@@ -241,27 +228,13 @@ fn resolve_listen_addr(addr: impl AsRef<str>, proto: TransportProtocol) -> Resul
 }
 
 /// Renders `socket_addr` as a `proto` multiaddr.
-pub(crate) fn multi_addr_from_socket_addr(
-    socket_addr: SocketAddr,
-    proto: TransportProtocol,
-) -> Result<Multiaddr> {
-    let typ = match socket_addr.ip() {
-        IpAddr::V4(_) => "ip4",
-        IpAddr::V6(_) => "ip6",
-    };
-
-    let transport = match proto {
-        TransportProtocol::Tcp => format!("tcp/{}", socket_addr.port()),
-        TransportProtocol::Quic => format!("udp/{}/quic-v1", socket_addr.port()),
-    };
-
-    Multiaddr::from_str(&format!("/{}/{}/{}", typ, socket_addr.ip(), transport))
-        .map_err(|e| P2PConfigError::FailedToParseMultiaddr(e.into()))
+fn multi_addr_from_socket_addr(socket_addr: SocketAddr, proto: TransportProtocol) -> Multiaddr {
+    utils::with_transport(Multiaddr::from(socket_addr.ip()), socket_addr.port(), proto)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
 
