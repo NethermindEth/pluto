@@ -17,8 +17,9 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
+use tracing::Instrument as _;
 
-use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventstreamRequestQueryTopic};
+use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventTopic};
 
 use crate::sse::{
     metrics::SSE_METRICS,
@@ -38,14 +39,15 @@ const CHANNEL_BUFFER_SIZE: usize = 1024;
 const DEFAULT_RETRY: Duration = Duration::from_secs(1);
 
 /// Topics the listener subscribes to.
-const TOPICS: [EventstreamRequestQueryTopic; 4] = [
-    EventstreamRequestQueryTopic::Head,
-    EventstreamRequestQueryTopic::ChainReorg,
-    EventstreamRequestQueryTopic::BlockGossip,
-    EventstreamRequestQueryTopic::Block,
+const TOPICS: [EventTopic; 4] = [
+    EventTopic::Head,
+    EventTopic::ChainReorg,
+    EventTopic::BlockGossip,
+    EventTopic::Block,
 ];
 
 /// Errors that can occur while setting up or running the SSE listener.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SseListenerError {
     /// Beacon Node API client error.
@@ -103,7 +105,7 @@ impl SseListenerBuilder {
             .await
             .ok_or(SseListenerError::Terminated)??;
 
-        let addr = client.base_url.to_string();
+        let addr = client.base_url().to_string();
 
         let actor = SseListenerActor {
             addr: addr.clone(),
@@ -117,8 +119,9 @@ impl SseListenerBuilder {
         let (events_tx, events_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()));
-        tokio::spawn(actor.run(events_rx, msg_rx, ct));
+        let span = tracing::Span::current();
+        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()).instrument(span.clone()));
+        tokio::spawn(actor.run(events_rx, msg_rx, ct).instrument(span));
 
         Ok(SseListenerHandle { sender: msg_tx })
     }
@@ -304,7 +307,8 @@ impl SseListenerActor {
         };
         let slot = gossip.slot;
 
-        // A block should be received via gossip between 0/3 and 1/3 of the slot.
+        // A block should be received via gossip between 0/3 and 1/3 of the
+        // slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
         let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
         let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
@@ -329,8 +333,8 @@ impl SseListenerActor {
         };
         let slot = block.slot;
 
-        // A block should be imported into fork choice between 0/3 and 1/3 of the
-        // slot.
+        // A block should be imported into fork choice between 0/3 and 1/3 of
+        // the slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
         let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
         let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
@@ -373,8 +377,9 @@ impl SseListenerActor {
         event_ts: DateTime<Utc>,
         delay_ok: impl Fn(chrono::Duration) -> bool,
     ) -> (chrono::Duration, bool) {
-        // Slot times are small in practice (slot duration is a few whole
-        // seconds), so saturate on the unreachable overflow.
+        // Slot times are small in practice, so saturate on the unreachable
+        // overflow: a clamped slot start falls back to the event timestamp and
+        // the delay reads zero.
         let slot = i64::try_from(slot).unwrap_or(i64::MAX);
         let ms_per_slot = i64::try_from(self.slot_duration.as_millis()).unwrap_or(i64::MAX);
         let offset = chrono::Duration::milliseconds(slot.saturating_mul(ms_per_slot));
@@ -433,9 +438,10 @@ async fn run_pump(
         match stream_once(&client, &addr, &events_tx, &ct).await {
             StreamOutcome::Cancelled | StreamOutcome::ChannelClosed => break,
             StreamOutcome::Ended { productive } | StreamOutcome::Error { productive } => {
-                // Reset the backoff only after a productive connection (one that
-                // forwarded at least one event). Otherwise a server that accepts
-                // and immediately closes the connection — or fails to connect —
+                // Reset the backoff only after a productive connection (one
+                // that forwarded at least one event). Otherwise
+                // a server that accepts and immediately closes
+                // the connection — or fails to connect —
                 // would drive a tight reconnect loop with no rate limiting.
                 if productive {
                     backoff = reconnect_backoff().build();
@@ -472,7 +478,7 @@ async fn stream_once(
             return StreamOutcome::Error { productive: false };
         }
     };
-    futures::pin_mut!(stream);
+    let mut stream = std::pin::pin!(stream);
 
     let mut productive = false;
     loop {
@@ -606,8 +612,8 @@ mod tests {
 
     #[test]
     fn chain_reorg_epoch_zero_first_event_is_deduped() {
-        // Parity with Charon: `last_reorg_epoch` starts at 0, so a first reorg at
-        // epoch 0 is treated as a duplicate and not notified.
+        // Parity with Charon: `last_reorg_epoch` starts at 0, so a first reorg
+        // at epoch 0 is treated as a duplicate and not notified.
         let (tx, mut rx) = sync::mpsc::channel(8);
         let mut actor = test_actor(vec![tx]);
 
@@ -736,7 +742,8 @@ mod tests {
     #[tokio::test]
     async fn run_loop_stops_when_event_channel_closes() {
         // The pump dropping its sender must stop the actor, not leave it parked
-        // forever with no events and no reconnection (the token is never fired).
+        // forever with no events and no reconnection (the token is never
+        // fired).
         let ct = CancellationToken::new();
         let (events_tx, events_rx) = sync::mpsc::channel(8);
         let (_msg_tx, msg_rx) = sync::mpsc::channel(8);

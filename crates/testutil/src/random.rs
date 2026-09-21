@@ -6,13 +6,9 @@ use k256::{
     SecretKey,
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use pluto_crypto::{tbls, types::PrivateKey};
 use pluto_eth2api::{
     spec::phase0,
-    types::{
-        AltairBeaconStateCurrentJustifiedCheckpoint, Data,
-        GetBlockAttestationsV2ResponseResponseDataArray2,
-    },
     versioned::{self, AttestationPayload},
 };
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::index};
@@ -68,12 +64,10 @@ pub fn random_bytes32_seed(seed: u8) -> Vec<u8> {
 
 /// Generates a deterministic BLS private key for testing.
 pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
-    let tbls = BlstImpl;
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let rng = StdRng::from_seed(seed_bytes);
-    tbls.generate_secret_key(rng)
-        .expect("deterministic key generation should not fail")
+    tbls::generate_secret_key(rng).expect("deterministic key generation should not fail")
 }
 
 /// Generates a random BLS signature as a hex string for testing.
@@ -154,21 +148,20 @@ pub fn random_bit_list(length: usize) -> String {
 }
 
 /// Generates a random checkpoint for testing.
-fn random_checkpoint() -> AltairBeaconStateCurrentJustifiedCheckpoint {
-    let mut rng = rand::thread_rng();
-    AltairBeaconStateCurrentJustifiedCheckpoint {
-        epoch: rng.r#gen::<u64>().to_string(),
-        root: random_root(),
+fn random_checkpoint() -> phase0::Checkpoint {
+    phase0::Checkpoint {
+        epoch: rand::thread_rng().r#gen(),
+        root: random_root_bytes(),
     }
 }
 
 /// Generates random attestation data for Phase 0.
-fn random_attestation_data_phase0() -> Data {
+fn random_attestation_data_phase0() -> phase0::AttestationData {
     let mut rng = rand::thread_rng();
-    Data {
-        slot: rng.r#gen::<u64>().to_string(),
-        index: rng.r#gen::<u64>().to_string(),
-        beacon_block_root: random_root(),
+    phase0::AttestationData {
+        slot: rng.r#gen(),
+        index: rng.r#gen(),
+        beacon_block_root: random_root_bytes(),
         source: random_checkpoint(),
         target: random_checkpoint(),
     }
@@ -176,13 +169,14 @@ fn random_attestation_data_phase0() -> Data {
 
 /// Generates a random Phase 0 attestation.
 ///
-/// Returns an attestation with random aggregation bits, attestation data, and
-/// signature.
-pub fn random_phase0_attestation() -> GetBlockAttestationsV2ResponseResponseDataArray2 {
-    GetBlockAttestationsV2ResponseResponseDataArray2 {
-        aggregation_bits: random_bit_list(1),
+/// Returns an attestation with one random aggregation bit set out of 256,
+/// random attestation data, and a random signature.
+pub fn random_phase0_attestation() -> phase0::Attestation {
+    let bit = rand::thread_rng().gen_range(0..256);
+    phase0::Attestation {
+        aggregation_bits: phase0::BitList::with_bits(256, &[bit]),
         data: random_attestation_data_phase0(),
-        signature: random_eth2_signature(),
+        signature: random_eth2_signature_bytes(),
     }
 }
 
@@ -345,7 +339,8 @@ mod tests {
             // Decode to bytes and verify bit count
             let bytes = hex::decode(&bitlist[2..]).unwrap();
             let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
-            // Bit count must be <= length (collisions possible for large lengths)
+            // Bit count must be <= length (collisions possible for large
+            // lengths)
             assert!(bit_count <= u32::try_from(length).unwrap());
         }
 
@@ -360,12 +355,12 @@ mod tests {
     fn random_phase0_attestation_works() {
         let att = random_phase0_attestation();
 
-        // Check that all fields are populated
-        assert!(att.aggregation_bits.starts_with("0x"));
-        assert!(att.signature.starts_with("0x"));
-        assert!(att.data.beacon_block_root.starts_with("0x"));
-        assert!(!att.data.slot.is_empty());
-        assert!(!att.data.index.is_empty());
+        // Exactly one aggregation bit is set and the JSON uses the wire form.
+        assert_eq!(att.aggregation_bits.to_ssz_bytes().len(), 33);
+        let json = serde_json::to_value(&att).expect("serialize attestation");
+        assert!(json["aggregation_bits"].as_str().unwrap().starts_with("0x"));
+        assert!(json["signature"].as_str().unwrap().starts_with("0x"));
+        assert!(json["data"]["slot"].is_string());
     }
 
     #[test]

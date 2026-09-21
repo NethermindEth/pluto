@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bon.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 serde.workspace = true
@@ -23,9 +24,10 @@ pluto-eth2util.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-k1util.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 k256.workspace = true
 tokio.workspace = true
-futures.workspace = true
+tokio-stream.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 # Workaround to use test code from different crate.

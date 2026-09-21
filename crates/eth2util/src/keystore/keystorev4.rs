@@ -155,8 +155,8 @@ impl TryFrom<String> for HexBytes {
     type Error = String;
 
     fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
-        // Left-pad with a zero if there is not an even number of hex digits to ensure
-        // `hex::decode` doesn't return an error.
+        // Left-pad with a zero if there is not an even number of hex digits to
+        // ensure `hex::decode` doesn't return an error.
         let s = if s.len().is_multiple_of(2) {
             s
         } else {
@@ -308,16 +308,16 @@ fn validate_aes_iv(iv: &[u8]) -> Result<()> {
 fn validate_parameters(kdf: &Kdf) -> Result<()> {
     match kdf {
         Kdf::Pbkdf2(params) => {
-            // We always compute a derived key of 32 bytes so reject anything that says
-            // otherwise.
+            // We always compute a derived key of 32 bytes so reject anything
+            // that says otherwise.
             if params.dklen as usize != DKLEN {
                 return Err(KeystoreError::InvalidPbkdf2Param);
             }
 
-            // NIST Recommends suggests potential use cases where `c` of 10,000,000 is
-            // desireable. As it is 10 years old this has been increased to
-            // 80,000,000. Larger values will take over 1 minute to execute on
-            // an average machine.
+            // NIST Recommends suggests potential use cases where `c` of
+            // 10,000,000 is desireable. As it is 10 years old this
+            // has been increased to 80,000,000. Larger values will
+            // take over 1 minute to execute on an average machine.
             //
             // Reference:
             //
@@ -346,7 +346,8 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
             validate_salt(params.salt.as_bytes())?;
         }
         Kdf::Scrypt(params) => {
-            // RFC7914 declares that all these parameters must be greater than 1:
+            // RFC7914 declares that all these parameters must be greater than
+            // 1:
             //
             // - `N`: costParameter.
             // - `r`: blockSize.
@@ -359,8 +360,8 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
                 return Err(KeystoreError::InvalidScryptParam);
             }
 
-            // We always compute a derived key of 32 bytes so reject anything that says
-            // otherwise.
+            // We always compute a derived key of 32 bytes so reject anything
+            // that says otherwise.
             if params.dklen as usize != DKLEN {
                 return Err(KeystoreError::InvalidScryptParam);
             }

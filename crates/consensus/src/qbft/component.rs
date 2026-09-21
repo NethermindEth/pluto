@@ -6,12 +6,14 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use k256::{PublicKey, SecretKey};
 use prost::{Message, Name};
 use prost_types::Any;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     instance::InstanceIo,
@@ -97,7 +99,7 @@ pub struct Config {
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
     /// Injected feature set, resolved once at construction.
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
 }
 
 /// Decoded consensus value supported by this component.
@@ -113,6 +115,7 @@ pub(crate) enum DecodedValue {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Component construction and inbound admission errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Peer order did not fit the wire index type.
@@ -290,7 +293,7 @@ pub struct Consensus {
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,
     compare_attestations: bool,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
     subscribers: SubscriberSet,
     instances: Arc<Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>>,
 }
@@ -373,9 +376,10 @@ impl Consensus {
             return Err(Error::InvalidDuty);
         }
 
-        // Bound the number of justifications before any secp256k1 recovery runs:
-        // a 32MB message could otherwise pack a huge number of small entries,
-        // each forcing a recovery. Honest QBFT never exceeds O(node_count).
+        // Bound the number of justifications before any secp256k1 recovery
+        // runs: a 32MB message could otherwise pack a huge number of
+        // small entries, each forcing a recovery. Honest QBFT never
+        // exceeds O(node_count).
         let max_justifications = MAX_JUSTIFICATIONS_PER_NODE.saturating_mul(self.node_count());
         if pb_msg.justification.len() > max_justifications {
             return Err(Error::TooManyJustifications {
@@ -430,9 +434,10 @@ impl Consensus {
             return Err(Error::InvalidConsensusMessage);
         }
 
-        if !qbft::MessageType::from_wire(msg.r#type).valid() {
-            return Err(Error::InvalidConsensusMessageType);
-        }
+        // The conversion is the admission check: `TryFrom` accepts exactly the
+        // wire values `MessageType::valid` accepted, so there is no separate
+        // validity test to keep in sync.
+        qbft::MessageType::try_from(msg.r#type).map_err(|_| Error::InvalidConsensusMessageType)?;
 
         let duty = msg.duty.as_ref().ok_or(Error::InvalidConsensusMessage)?;
         let duty_type =
@@ -474,22 +479,26 @@ impl Consensus {
             .expect("start must be called exactly once");
         let instances = Arc::clone(&self.instances);
 
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = ct.cancelled() => return,
-                    duty = expired_rx.recv() => match duty {
-                        Some(duty) => {
-                            instances
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .remove(&duty);
-                        }
-                        None => return,
-                    },
+        let span = tracing::debug_span!("qbft", topic = "qbft");
+        tokio::spawn(
+            async move {
+                loop {
+                    tokio::select! {
+                        () = ct.cancelled() => return,
+                        duty = expired_rx.recv() => match duty {
+                            Some(duty) => {
+                                instances
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .remove(&duty);
+                            }
+                            None => return,
+                        },
+                    }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Returns existing instance I/O for `duty`, or creates an empty one.
@@ -597,6 +606,7 @@ impl Consensus {
     }
 }
 
+#[async_trait]
 impl crate::wrapper::Consensus for Consensus {
     fn protocol_id(&self) -> String {
         self.protocol_id().to_string()
@@ -606,29 +616,21 @@ impl crate::wrapper::Consensus for Consensus {
         drop(Consensus::start(self, ct));
     }
 
-    fn participate(
-        &self,
-        ct: CancellationToken,
-        duty: Duty,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::participate(self, duty, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    async fn participate(&self, ct: CancellationToken, duty: Duty) -> crate::wrapper::Result<()> {
+        Consensus::participate(self, duty, &ct)
+            .await
+            .map_err(|err| err.into())
     }
 
-    fn propose(
+    async fn propose(
         &self,
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
-        Box::pin(async move {
-            Consensus::propose(self, duty, value, &ct)
-                .await
-                .map_err(Into::into)
-        })
+    ) -> crate::wrapper::Result<()> {
+        Consensus::propose(self, duty, value, &ct)
+            .await
+            .map_err(|err| err.into())
     }
 
     fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {
@@ -984,7 +986,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn handle_accepts_max_justifications() {
-        // Exactly `max` justifications must not trip the cap (guards `>` vs `>=`).
+        // Exactly `max` justifications must not trip the cap (guards `>` vs
+        // `>=`).
         let consensus = consensus(0, true);
         let inst = consensus.get_instance_io(duty());
         let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();
@@ -1395,14 +1398,14 @@ pub(crate) mod tests {
         consensus_with_feature_set(
             local_peer_idx,
             duty_allowed,
-            Arc::new(pluto_featureset::FeatureSet::new()),
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new())),
         )
     }
 
     pub(crate) fn consensus_with_feature_set(
         local_peer_idx: i64,
         duty_allowed: bool,
-        feature_set: Arc<pluto_featureset::FeatureSet>,
+        feature_set: &'static pluto_featureset::FeatureSet,
     ) -> Consensus {
         Consensus::new(Config {
             peers: peers(),
@@ -1426,7 +1429,8 @@ pub(crate) mod tests {
             DeadlinerTask::start(cancel, "qbft-test", FutureCalculator)
         };
 
-        let fs = Arc::new(pluto_featureset::FeatureSet::new());
+        let fs: &pluto_featureset::FeatureSet =
+            Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
         Config {
             peers: vec![],
             local_peer_idx: 0,
@@ -1437,7 +1441,7 @@ pub(crate) mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: false,
-            timer_func: get_round_timer_func(fs.clone()),
+            timer_func: get_round_timer_func(fs),
             feature_set: fs,
         }
     }

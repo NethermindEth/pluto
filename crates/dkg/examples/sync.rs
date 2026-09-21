@@ -343,7 +343,7 @@ fn log_sync_event(event: sync::Event, cluster_info: &ClusterInfo) {
             error!(
                 peer_id = %peer_id,
                 peer_label = %cluster_info.peer_label(&peer_id),
-                err = %error,
+                err = ?error,
                 "Sync message rejected"
             );
         }
@@ -734,11 +734,11 @@ async fn main() -> Result<()> {
                         break;
                     }
                     Ok(Err(error)) => {
-                        error!(err = %error, "Sync demo failed");
+                        error!(err = ?error, "Sync demo failed");
                         break;
                     }
                     Err(error) => {
-                        error!(err = %error, "Sync demo task failed");
+                        error!(err = ?error, "Sync demo task failed");
                         break;
                     }
                 }

@@ -120,6 +120,7 @@ where
 }
 
 /// Error type for the memory ParSigDB.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum MemDBError {
     /// Mismatching partial signed data.
@@ -360,15 +361,11 @@ impl MemDB {
             }
         }
 
-        inner
-            .entries
-            .entry(k.clone())
-            .or_insert_with(Vec::new)
-            .push(value);
+        inner.entries.entry(k.clone()).or_default().push(value);
         inner
             .keys_by_duty
             .entry(k.duty.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(k.clone());
 
         if k.duty.duty_type == DutyType::Exit {
@@ -422,7 +419,7 @@ fn get_threshold_matching(
         let root = sig
             .signed_data
             .message_root()
-            .map_err(MemDBError::SignedDataError)?;
+            .map_err(|e| MemDBError::SignedDataError(e.into()))?;
         sigs_by_msg_root.entry(root).or_default().push(sig.clone());
     }
 

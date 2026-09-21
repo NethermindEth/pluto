@@ -156,12 +156,18 @@ impl Hasher {
     fn pad_to_32(buf: &mut Vec<u8>) {
         let rest = buf.len() % 32;
         if rest != 0 {
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "rest is buf.len() % 32 in 1..=31, so 32 - rest cannot underflow"
+            )]
             buf.extend_from_slice(&ZERO_BYTES[..32 - rest]);
         }
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "bit-twiddling round-up; v -= 1 guarded by callers passing v >= 1 and v += 1 cannot overflow reachable chunk counts"
+    )]
     fn next_power_of_two(mut v: usize) -> usize {
         v -= 1;
         v |= v >> 1;
@@ -173,7 +179,10 @@ impl Hasher {
         v
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "d > 1 here so next_power_of_two >= 2 and 64 - leading_zeros - 1 cannot underflow"
+    )]
     fn get_depth(d: usize) -> usize {
         if d <= 1 {
             return 0;
@@ -249,7 +258,10 @@ impl HashWalker for Hasher {
             return Err(HasherError::InvalidBufferLength);
         }
         let mut result = [0; 32];
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "buf.len() >= 32 checked above, so buf.len() - 32 cannot underflow"
+        )]
         result.copy_from_slice(&self.buf[self.buf.len() - 32..]);
         Ok(result)
     }
@@ -356,11 +368,12 @@ impl HashWalker for Hasher {
     }
 
     fn merkleize(&mut self, index: usize) -> Result<(), Self::Error> {
-        // merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
-        // hits an odd chunk length. But if we're at the end of `h.buf` already,
-        // appending to `input` will allocate a new buffer, *not* expand `h.buf`,
-        // so the next invocation will realloc, over and over and over. We can pre-
-        // emptively cater for that by ensuring that an extra 32 bytes is always
+        // merkleizeImpl will expand the `input` by 32 bytes if some hashing
+        // depth hits an odd chunk length. But if we're at the end of
+        // `h.buf` already, appending to `input` will allocate a new
+        // buffer, *not* expand `h.buf`, so the next invocation will
+        // realloc, over and over and over. We can pre- emptively cater
+        // for that by ensuring that an extra 32 bytes is always
         // available.
         if self.buf.len() == self.buf.capacity() {
             self.buf.reserve(32); // Just ensure capacity
@@ -415,10 +428,16 @@ pub fn calculate_limit(max_capacity: usize, num_items: usize, size: usize) -> us
     num_items
 }
 
-#[allow(
-    clippy::cast_lossless,
+// `#[allow]` (not `#[expect]`): the u8->usize widening does not currently
+// trip `cast_lossless` on all targets, so an expectation would be unfulfilled.
+#[allow(clippy::cast_lossless)]
+#[expect(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation
+    reason = "size arithmetic is bounded by the buffer length and msb in 0..=7"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "leading_zeros() is 0..=7 for a non-zero byte, so the u32->u8 cast cannot truncate"
 )]
 fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
     if buf.is_empty() {
@@ -427,14 +446,16 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
 
     let last_byte = buf[buf.len().wrapping_sub(1)];
     if last_byte == 0 {
-        // A valid SSZ bitlist's final byte carries the length-delimiter (sentinel)
-        // bit and is therefore always non-zero. A zero final byte would underflow
-        // `msb` to 255 and trigger `1u8 << 255` (debug panic / masked-shift in
-        // release), so reject it as malformed input.
+        // A valid SSZ bitlist's final byte carries the length-delimiter
+        // (sentinel) bit and is therefore always non-zero. A zero final
+        // byte would underflow `msb` to 255 and trigger `1u8 << 255`
+        // (debug panic / masked-shift in release), so reject it as
+        // malformed input.
         return Err(HasherError::InvalidBitlistDelimiter);
     }
 
-    // `last_byte != 0` => leading_zeros() in 0..=7 => msb in 0..=7, no overflow.
+    // `last_byte != 0` => leading_zeros() in 0..=7 => msb in 0..=7, no
+    // overflow.
     let msb = 8u8
         .wrapping_sub(last_byte.leading_zeros() as u8)
         .wrapping_sub(1);

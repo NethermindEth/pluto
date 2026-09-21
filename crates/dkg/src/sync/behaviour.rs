@@ -247,9 +247,8 @@ impl NetworkBehaviour for Behaviour {
 
 #[cfg(test)]
 mod tests {
-    use std::task::Context;
+    use std::task::{Context, Waker};
 
-    use futures::task::noop_waker_ref;
     use libp2p::{
         core::{ConnectedPoint, Endpoint, transport::PortUse},
         swarm::{
@@ -281,8 +280,7 @@ mod tests {
     }
 
     fn assert_next_dial(behaviour: &mut Behaviour, peer_id: PeerId, message: &str) {
-        let waker = noop_waker_ref();
-        let mut cx = Context::from_waker(waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let poll = NetworkBehaviour::poll(behaviour, &mut cx);
 
         let Poll::Ready(ToSwarm::Dial { opts }) = poll else {
@@ -292,8 +290,7 @@ mod tests {
     }
 
     fn assert_pending(behaviour: &mut Behaviour, message: &str) {
-        let waker = noop_waker_ref();
-        let mut cx = Context::from_waker(waker);
+        let mut cx = Context::from_waker(Waker::noop());
         assert!(
             NetworkBehaviour::poll(behaviour, &mut cx).is_pending(),
             "{message}"

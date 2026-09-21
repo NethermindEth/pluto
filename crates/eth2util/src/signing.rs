@@ -1,11 +1,10 @@
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PublicKey, Signature},
 };
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
-    spec::phase0::{Domain, Epoch, Root, SigningData},
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, Spec,
+    spec::phase0::{Domain, DomainType, Epoch, Root, SigningData},
     versioned::VersionedSignedAggregateAndProof,
 };
 use tree_hash::TreeHash;
@@ -35,8 +34,6 @@ pub enum DomainName {
     ContributionAndProof,
     /// `DOMAIN_DEPOSIT`
     Deposit,
-    /// `DOMAIN_BLOB_SIDECAR`
-    BlobSidecar,
 }
 
 impl std::fmt::Display for DomainName {
@@ -60,12 +57,29 @@ impl DomainName {
             Self::SyncCommitteeSelectionProof => "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF",
             Self::ContributionAndProof => "DOMAIN_CONTRIBUTION_AND_PROOF",
             Self::Deposit => "DOMAIN_DEPOSIT",
-            Self::BlobSidecar => "DOMAIN_BLOB_SIDECAR",
+        }
+    }
+
+    /// Returns the domain type `spec` assigns to this domain.
+    pub const fn domain_type(self, spec: &Spec) -> DomainType {
+        match self {
+            Self::BeaconProposer => spec.domain_beacon_proposer,
+            Self::BeaconAttester => spec.domain_beacon_attester,
+            Self::Randao => spec.domain_randao,
+            Self::VoluntaryExit => spec.domain_voluntary_exit,
+            Self::ApplicationBuilder => spec.domain_application_builder,
+            Self::SelectionProof => spec.domain_selection_proof,
+            Self::AggregateAndProof => spec.domain_aggregate_and_proof,
+            Self::SyncCommittee => spec.domain_sync_committee,
+            Self::SyncCommitteeSelectionProof => spec.domain_sync_committee_selection_proof,
+            Self::ContributionAndProof => spec.domain_contribution_and_proof,
+            Self::Deposit => spec.domain_deposit,
         }
     }
 }
 
 /// Signing error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Beacon-node domain lookup failed.
@@ -107,7 +121,8 @@ pub async fn get_domain(
     name: DomainName,
     epoch: Epoch,
 ) -> Result<Domain> {
-    let domain_type = client.fetch_domain_type(name.as_spec_key()).await?;
+    let spec = client.fetch_spec().await?;
+    let domain_type = name.domain_type(&spec);
 
     if name == DomainName::ApplicationBuilder {
         return Ok(client.fetch_genesis_domain(domain_type).await?);
@@ -139,13 +154,16 @@ pub async fn verify(
     signature: &Signature,
     pubkey: &PublicKey,
 ) -> Result<()> {
+    // Screen the signature before resolving the domain: that round trip cannot
+    // rescue an all-zero signature, and with the node down this reports the
+    // zero sig rather than a transport error no retry can fix.
     if *signature == [0; 96] {
         return Err(SigningError::ZeroSignature);
     }
 
     let signing_root = get_data_root(client, domain_name, epoch, message_root).await?;
 
-    BlstImpl.verify(pubkey, &signing_root, signature)?;
+    tbls::verify(pubkey, &signing_root, signature)?;
 
     Ok(())
 }
@@ -166,7 +184,7 @@ pub fn verify_with_domain(
 
     let signing_root = compute_signing_root(message_root, domain);
 
-    BlstImpl.verify(pubkey, &signing_root, signature)?;
+    tbls::verify(pubkey, &signing_root, signature)?;
 
     Ok(())
 }
@@ -201,7 +219,6 @@ pub async fn verify_aggregate_and_proof_selection(
 mod tests {
     use super::*;
     use chrono::DateTime;
-    use pluto_crypto::tbls::Tbls;
     use pluto_eth2api::{
         compute_builder_domain, compute_domain,
         spec::{bellatrix::ExecutionAddress, phase0::Version},
@@ -218,7 +235,7 @@ mod tests {
     }
 
     fn spec_fixture() -> serde_json::Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
             "DOMAIN_APPLICATION_BUILDER": "0x00000001",
@@ -234,7 +251,7 @@ mod tests {
             "ELECTRA_FORK_EPOCH": "50",
             "FULU_FORK_VERSION": "0x06070809",
             "FULU_FORK_EPOCH": "60"
-        })
+        }))
     }
 
     async fn mock_beacon_client() -> BeaconMock {
@@ -355,7 +372,7 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let fee_recipient: ExecutionAddress =
             hex::decode("000000000000000000000000000000000000dead")
                 .unwrap()
@@ -372,7 +389,7 @@ mod tests {
         let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         verify(
             client,
@@ -411,13 +428,13 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let message_root = [0x55; 32];
         let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
             .await
             .unwrap();
         let signing_root = compute_signing_root(message_root, domain);
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         verify_with_domain(domain, message_root, &signature, &pubkey).unwrap();
     }
@@ -444,12 +461,12 @@ mod tests {
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let wrong_secret =
             secret_key("01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d");
-        let pubkey = BlstImpl.secret_to_public_key(&wrong_secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&wrong_secret).unwrap();
         let message_root = [0x55; 32];
         let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let err = verify(
             client,
@@ -471,7 +488,7 @@ mod tests {
         let client = mock.client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
         let signed_message_root = [0x55; 32];
         let verified_message_root = [0x66; 32];
         let signing_root = get_data_root(
@@ -482,7 +499,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let err = verify(
             client,

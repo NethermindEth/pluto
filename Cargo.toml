@@ -3,6 +3,7 @@ members = [
     "crates/app",
     "crates/parsigex",
     "crates/build-proto",
+    "crates/proto",
     "crates/cli",
     "crates/cluster",
     "crates/consensus",
@@ -17,12 +18,15 @@ members = [
     "crates/relay-server",
     "crates/p2p",
     "crates/ssz",
+    "crates/stacktrace",
+    "crates/stacktrace/macros",
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
     "crates/frost",
     "crates/priority",
     "crates/infosync",
+    "crates/test-compose",
 ]
 # Vendored fork consumed only via [patch.crates-io]; excluded so it builds/tests
 # standalone (its upstream code isn't written to this workspace's lints) without
@@ -38,19 +42,17 @@ license = "BUSL-1.1"
 publish = false
 
 [workspace.dependencies]
-async-trait = "0.1.89"
+async-trait = "0.1"
 alloy = { version = "2.4", features = ["essentials"] }
-built = { version = "0.8.0", features = ["git2", "chrono", "cargo-lock"] }
+built = { version = "0.8", features = ["git2", "chrono", "cargo-lock"] }
 blst = "0.3"
 bytes = "1"
 anyhow = "1"
-axum = "0.8.6"
+axum = "0.8"
 cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
+clap = { version = "4.5", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
-dyn-clone = "1.0"
-dyn-eq = "0.1.3"
 either = "1.13"
 eventsource-stream = "0.2"
 futures = "0.3"
@@ -58,18 +60,29 @@ futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"
+nix = { version = "0.30", features = ["user"] }
+proc-macro2 = "1.0"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
+quote = "1.0"
+# Deliberately pinned to 0.8/0.6: rand 0.9 and rand_core 0.9 are already in the
+# graph, but the old generation is held there by the entire libp2p, alloy, and
+# k256/elliptic-curve stack (which still depend on rand 0.8 / rand_core 0.6).
+# Bumping our pins would not drop those transitive copies, only add a second
+# generation to our crates, and the 0.8->0.9 API break is non-trivial across the
+# 14 crates that use it. Revisit once those ecosystems move to rand 0.9.
 rand = { version = "0.8", features = ["std_rng"] }
 rand_core = "0.6"
 regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde_json = { version = "1.0", features = ["raw_value"] }
+serde_path_to_error = "0.1"
+syn = "3.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = "0.7.11"
+tokio-util = "0.7"
 # Explicit feature list (not "full"): only the protocols Pluto actually wires.
 # Dropping "full" removes unused stacks (floodsub/gossipsub/kad/mdns/dcutr/
 # websocket/webrtc/…) and, with them, `cuckoofilter`→`rand 0.7.3` (RUSTSEC-2026-0097).
@@ -90,13 +103,19 @@ libp2p = { version = "0.56", features = [
 ] }
 url = "2.5"
 percent-encoding = "2.3"
-aes = "0.8.4"
-ctr = "0.9.2"
-cipher = "0.4.4"
-pbkdf2 = "0.12.2"
+# RustCrypto stack deliberately held at this generation (digest 0.10 /
+# cipher 0.4 era): the newer generation exists but sha2 0.10, digest 0.10, and
+# cipher 0.4 are pinned there by k256, elliptic-curve, ecdsa, curve25519-dalek,
+# hmac/hkdf, ethereum_hashing, and ethereum_ssz. Bumping our pins would add a
+# second generation rather than drop the shared one, and the bump is API-
+# breaking. Revisit when the alloy/k256/ssz stack moves to digest 0.11.
+aes = "0.8"
+ctr = "0.9"
+cipher = "0.4"
+pbkdf2 = "0.12"
 pin-project = "1"
-sha2 = "0.10.9"
-scrypt = "0.11.0"
+sha2 = "0.10"
+scrypt = "0.11"
 subtle = "2.6"
 unicode-normalization = "0.1.25"
 zeroize = "1.8.2"
@@ -105,22 +124,19 @@ uuid = { version = "1.19", features = ["serde", "v4"] }
 unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
-sha3 = "0.10"
+sha3 = "0.11"
 walkdir = "2"
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
-tracing = "0.1.32"
-tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
-tracing-loki = "0.2.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 # todo: remove this once vise is published https://github.com/NethermindEth/pluto/issues/126
 vise = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 vise-exporter = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
-criterion = "0.8.0"
+criterion = "0.8"
 reqwest = "0.13"
-http = "1.4"
 tempfile = "3.24"
 assert-json-diff = "2.0"
-validator = { version = "0.20", features = ["derive"] }
-oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"
@@ -139,6 +155,7 @@ quick-xml = { version = "0.41", features = ["serialize"] }
 pluto-app = { path = "crates/app" }
 pluto-parsigex = { path = "crates/parsigex" }
 pluto-build-proto = { path = "crates/build-proto" }
+pluto-proto = { path = "crates/proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
 pluto-consensus = { path = "crates/consensus" }
@@ -152,6 +169,8 @@ pluto-featureset = { path = "crates/featureset" }
 pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-ssz = { path = "crates/ssz" }
+pluto-stacktrace = { path = "crates/stacktrace" }
+pluto-stacktrace-macros = { path = "crates/stacktrace/macros" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
@@ -159,6 +178,7 @@ pluto-peerinfo = { path = "crates/peerinfo" }
 pluto-frost = { path = "crates/frost" }
 pluto-priority = { path = "crates/priority" }
 pluto-infosync = { path = "crates/infosync" }
+pluto-test-compose = { path = "crates/test-compose" }
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -175,6 +195,13 @@ needless_return = "deny"
 panicking_overflow_checks = "deny"
 redundant_test_prefix = "deny"
 unwrap_used = "deny"
+
+# Thin LTO + a single codegen unit measured ~6-12% faster on pure-Rust hot
+# paths (SSZ, k1util) with no effect on blst-bound ones; measured in the
+# closed PR #551 benchmark harness.
+[profile.release]
+lto = "thin"
+codegen-units = 1
 
 # Optimize crypto dependencies in test builds for faster tests
 [profile.test.package.scrypt]

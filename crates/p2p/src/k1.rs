@@ -11,6 +11,7 @@ const KEY_BACKUP_DIR: &str = "charon-enr-private-key-backups";
 type Result<T> = std::result::Result<T, K1Error>;
 
 /// An error that can occur when loading a private key.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum K1Error {
     /// K1 utility error.
@@ -20,6 +21,10 @@ pub enum K1Error {
     /// IOError.
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// The backup path already exists as a directory.
+    #[error("backup path is a directory: {0}")]
+    BackupPathIsDir(PathBuf),
 }
 
 /// Returns the charon-enr-private-key path relative to the data dir.
@@ -29,7 +34,7 @@ pub fn key_path(data_dir: &Path) -> PathBuf {
 
 /// Loads the private key from the data dir.
 pub fn load_priv_key(data_dir: &Path) -> Result<SecretKey> {
-    pluto_k1util::load(&key_path(data_dir)).map_err(K1Error::K1UtilError)
+    pluto_k1util::load(key_path(data_dir)).map_err(|e| K1Error::K1UtilError(e.into()))
 }
 
 /// Generates a new private key and saves it to the data dir.
@@ -40,7 +45,7 @@ pub fn new_saved_priv_key(data_dir: &Path) -> Result<SecretKey> {
 
     let key = SecretKey::random(&mut OsRng);
 
-    pluto_k1util::save(&key, &key_path(data_dir)).map_err(K1Error::K1UtilError)?;
+    pluto_k1util::save(&key, key_path(data_dir)).map_err(|e| K1Error::K1UtilError(e.into()))?;
 
     Ok(key)
 }
@@ -58,21 +63,23 @@ fn backup_priv_key(data_dir: &Path) -> Result<()> {
 
     let current_time = chrono::Utc::now();
     let nonce = OsRng.next_u64();
-    let backup_path = data_dir.join(KEY_BACKUP_DIR).join(format!(
+    let backup_dir = data_dir.join(KEY_BACKUP_DIR);
+    let backup_path = backup_dir.join(format!(
         "{}_{}",
         current_time.format("%Y-%m-%d_%H-%M-%S_%f"),
         nonce
     ));
-    std::fs::create_dir_all(
-        backup_path
-            .parent()
-            .expect("Backup path parent should exist"),
-    )
-    .map_err(K1Error::IoError)?;
+    std::fs::create_dir_all(&backup_dir).map_err(|e| K1Error::IoError(e.into()))?;
+    copy_backup(&key_path, &backup_path)
+}
+
+/// Copies the private key to `backup_path`, which must not already exist as a
+/// directory.
+fn copy_backup(key_path: &Path, backup_path: &Path) -> Result<()> {
     if backup_path.is_dir() {
-        panic!("Backup path is a directory: {:?}", backup_path);
+        return Err(K1Error::BackupPathIsDir(backup_path.to_path_buf()));
     }
-    std::fs::copy(key_path, backup_path).map_err(K1Error::IoError)?;
+    std::fs::copy(key_path, backup_path).map_err(|e| K1Error::IoError(e.into()))?;
     Ok(())
 }
 
@@ -89,7 +96,7 @@ mod tests {
 
     fn create_test_key_file(data_dir: &Path) -> Result<SecretKey> {
         let key = SecretKey::random(&mut OsRng);
-        pluto_k1util::save(&key, &key_path(data_dir))?;
+        pluto_k1util::save(&key, key_path(data_dir))?;
         Ok(key)
     }
 
@@ -222,6 +229,20 @@ mod tests {
             NUM_BACKUPS,
             "Should have 5 unique backup names"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn copy_backup_rejects_existing_directory() -> Result<()> {
+        let temp_dir = setup_temp_dir();
+        let key = key_path(temp_dir.path());
+        fs::write(&key, "key")?;
+        let backup_path = temp_dir.path().join("backup");
+        fs::create_dir(&backup_path)?;
+
+        let err = copy_backup(&key, &backup_path).expect_err("directory must be rejected");
+        assert!(matches!(err, K1Error::BackupPathIsDir(_)));
 
         Ok(())
     }

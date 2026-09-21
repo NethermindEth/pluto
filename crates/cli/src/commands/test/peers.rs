@@ -17,22 +17,22 @@ use libp2p::{
 };
 use pluto_cluster::{definition::Definition, lock::Lock};
 use pluto_eth2util::enr::Record;
-use pluto_k1util::load as load_key;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
-    bootnode::new_relays,
+    bootnode,
     config::{DEFAULT_RELAYS, P2PConfig, RelayAddr},
     gater::ConnGater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    peer::{MutablePeer, Peer, peer_id_from_key, verify_p2p_key},
+    peer::{self, MutablePeer, Peer},
     relay::RelayManager,
-    utils::is_relay_addr,
+    utils,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use super::{
     AllCategoriesResult, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs,
@@ -41,7 +41,7 @@ use super::{
     write_result_to_writer,
 };
 use crate::{
-    commands::common::parse_relay_addrs,
+    commands::common,
     duration::Duration as CliDuration,
     error::{CliError, Result},
 };
@@ -57,7 +57,13 @@ struct TestBehaviour {
 #[derive(Debug)]
 enum TestBehaviourEvent {
     Relay(relay::client::Event),
-    RelayManager(#[allow(dead_code)] pluto_p2p::relay::RelayManagerEvent),
+    RelayManager(
+        #[expect(
+            dead_code,
+            reason = "event payload is never read; only the variant tag matters"
+        )]
+        pluto_p2p::relay::RelayManagerEvent,
+    ),
 }
 
 impl From<relay::client::Event> for TestBehaviourEvent {
@@ -98,9 +104,10 @@ pub struct TestPeersArgs {
     pub test_config: TestConfigArgs,
 
     /// [REQUIRED] Comma-separated list of each peer ENR address.
-    // Doc comment doubles as clap help text, so the brackets must stay
-    // literal rather than becoming a rustdoc link.
-    #[allow(rustdoc::broken_intra_doc_links)]
+    #[expect(
+        rustdoc::broken_intra_doc_links,
+        reason = "doc comment doubles as clap help text, so the brackets must stay literal rather than becoming a rustdoc link"
+    )]
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
 
@@ -258,11 +265,11 @@ pub async fn run(
     tracing::debug!("enr_strings: {:?}", enr_strings);
     let cluster_peers = parse_peers(&enr_strings)?;
 
-    let private_key = load_key(&args.private_key_file)?;
+    let private_key = pluto_k1util::load(&args.private_key_file)?;
 
-    verify_p2p_key(&cluster_peers, &private_key)?;
+    peer::verify_p2p_key(&cluster_peers, &private_key)?;
 
-    let self_peer_id = peer_id_from_key(private_key.public_key())?;
+    let self_peer_id = peer::peer_id_from_key(private_key.public_key())?;
 
     if let Some(self_peer) = cluster_peers.iter().find(|p| p.id == self_peer_id) {
         tracing::info!(name = %self_peer.name, "Self p2p name resolved");
@@ -280,7 +287,7 @@ pub async fn run(
         disable_reuse_port: args.p2p_disable_reuseport,
     };
 
-    let relay_addrs = parse_relay_addrs(&args.p2p_relays)?;
+    let relay_addrs = common::parse_relay_addrs(&args.p2p_relays)?;
 
     let (node, relay_peers) = setup_p2p(
         timeout_ct.clone(),
@@ -346,7 +353,8 @@ fn run_self_tests_in_new_task(
     self_tests: Vec<TestCaseName>,
     only_self_tests: bool,
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
-    // Self tests run concurrently with peer tests; give the node a moment to bind.
+    // Self tests run concurrently with peer tests; give the node a moment to
+    // bind.
     tokio::spawn(async move {
         tokio::time::sleep(SELF_TEST_NODE_BIND_DELAY).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
@@ -424,17 +432,23 @@ fn parse_peers(enr_strings: &[String]) -> Result<Vec<Peer>> {
         .collect()
 }
 
-// enr must be ASCII-only
+/// Shortens an ENR to `<first 13 bytes>...<last 4 bytes>` for display.
+///
+/// ENRs are base64 so in practice ASCII, but the string comes from `--enrs`
+/// config input: `str::get` returns `None` mid-code-point, so walk inwards to
+/// the nearest boundary rather than slicing bytes and panicking.
 fn format_enr(enr: &str) -> String {
     if enr.len() <= 17 {
         return enr.to_string();
     }
-    let bytes = enr.as_bytes();
-    format!(
-        "{}...{}",
-        std::str::from_utf8(&bytes[..13]).expect("ENR must be ASCII"),
-        std::str::from_utf8(&bytes[enr.len().saturating_sub(4)..]).expect("ENR must be ASCII"),
-    )
+    let head = (0..=13)
+        .rev()
+        .find_map(|i| enr.get(..i))
+        .unwrap_or_default();
+    let tail = (enr.len().saturating_sub(4)..=enr.len())
+        .find_map(|i| enr.get(i..))
+        .unwrap_or_default();
+    format!("{head}...{tail}")
 }
 
 fn peer_target_name(peer: &Peer, enr_str: &str) -> String {
@@ -464,25 +478,29 @@ async fn run_relay_http_tests(
             let url = relay.to_string();
             let ct = ct.clone();
             let queued = queued.to_vec();
-            tokio::spawn(async move {
-                let key = format!("relay {url}");
-                let mut target_results = Vec::new();
-                for test in &queued {
-                    if ct.is_cancelled() {
-                        target_results
-                            .push(TestResult::new(test.name).fail(CliError::TimeoutInterrupted));
-                        continue;
+            tokio::spawn(
+                async move {
+                    let key = format!("relay {url}");
+                    let mut target_results = Vec::new();
+                    for test in &queued {
+                        if ct.is_cancelled() {
+                            target_results.push(
+                                TestResult::new(test.name).fail(CliError::TimeoutInterrupted),
+                            );
+                            continue;
+                        }
+                        let result = match test.name {
+                            "PingRelay" => relay_ping_test(&url, &ct).await,
+                            "PingMeasureRelay" => relay_ping_measure_test(&url, &ct).await,
+                            _ => TestResult::new(test.name)
+                                .fail(TestResultError::from_string("unsupported relay test")),
+                        };
+                        target_results.push(result);
                     }
-                    let result = match test.name {
-                        "PingRelay" => relay_ping_test(&url, &ct).await,
-                        "PingMeasureRelay" => relay_ping_measure_test(&url, &ct).await,
-                        _ => TestResult::new(test.name)
-                            .fail(TestResultError::from_string("unsupported relay test")),
-                    };
-                    target_results.push(result);
+                    (key, target_results)
                 }
-                (key, target_results)
-            })
+                .instrument(tracing::Span::current()),
+            )
         })
         .collect();
 
@@ -496,9 +514,8 @@ async fn run_relay_http_tests(
 
 async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingRelay");
-    let client = reqwest::Client::new();
     tokio::select! {
-        res = client.get(url).send() => match res {
+        res = super::http_client().get(url).send() => match res {
             Ok(resp) if resp.status().is_success() => result.ok(),
             Ok(resp) => result.fail(TestResultError::from_string(format!("HTTP status {}", resp.status()))),
             Err(e) => result.fail(e),
@@ -651,7 +668,10 @@ struct PeerState {
     identify_received: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "drives the peer test event loop from many independent inputs; grouping them into a struct would not improve clarity"
+)]
 async fn run_peer_event_loop(
     mut node: Node<TestBehaviour>,
     cluster_peers: &[Peer],
@@ -707,7 +727,7 @@ async fn run_peer_event_loop(
                 // Once we have a relay circuit listen address our reservation is
                 // active and other nodes can reach us. Trigger outbound dials.
                 if let SwarmEvent::NewListenAddr { ref address, .. } = event
-                    && is_relay_addr(address)
+                    && utils::is_relay_addr(address)
                     && !dialed_via_relay
                     && !queued_tests.is_empty()
                 {
@@ -800,7 +820,7 @@ fn handle_swarm_event(
         } => {
             if let Some(state) = states.get_mut(&peer_id) {
                 let addr = endpoint_addr(&endpoint);
-                let is_relay = is_relay_addr(addr);
+                let is_relay = utils::is_relay_addr(addr);
 
                 if state.connect_time.is_none() {
                     state.connect_time = Some(Instant::now());
@@ -855,7 +875,7 @@ fn handle_swarm_event(
                         tracing::info!(timeout = ?direct_connection_timeout, target = %peer_target_name(peer, enr_str), "Trying to establish direct connection...");
                     }
                     for addr in &info.listen_addrs {
-                        if !is_relay_addr(addr) {
+                        if !utils::is_relay_addr(addr) {
                             let mut direct_addr = addr.clone();
                             direct_addr.push(Protocol::P2p(peer_id));
                             if let Err(e) = node.dial(direct_addr.clone()) {
@@ -938,9 +958,10 @@ fn build_peer_results(
             }
             "PingMeasure" => {
                 let r = TestResult::new("PingMeasure");
-                // Use the most recent ping rather than the first: we cannot issue
-                // an on-demand ping (pings are driven by the libp2p keepalive schedule),
-                // so .last() is the closest approximation to a fresh measurement.
+                // Use the most recent ping rather than the first: we cannot
+                // issue an on-demand ping (pings are driven by
+                // the libp2p keepalive schedule), so .last() is
+                // the closest approximation to a fresh measurement.
                 if let Some(&(_, rtt)) = state.ping_rtts.last() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
@@ -948,8 +969,9 @@ fn build_peer_results(
                 }
             }
             "PingLoad" => {
-                // Gap vs charon: charon issues on-demand pings during load; libp2p drives
-                // pings on its own keepalive schedule so we can only filter existing RTTs.
+                // Gap vs charon: charon issues on-demand pings during load;
+                // libp2p drives pings on its own keepalive
+                // schedule so we can only filter existing RTTs.
                 let r = TestResult::new("PingLoad");
                 let load_rtts: Vec<Duration> = if let Some(ct) = state.connect_time {
                     state
@@ -1039,7 +1061,10 @@ async fn keep_node_alive(
     ct: CancellationToken,
 ) {
     tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "adding a bounded keep-alive interval to a fresh Instant cannot overflow in practice"
+    )]
     let deadline = tokio::time::Instant::now() + keep_alive;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1063,7 +1088,7 @@ async fn setup_p2p(
     self_peer_id: PeerId,
     enr_hash: &str,
 ) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
-    let relay_peers = new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
+    let relay_peers = bootnode::new_relays(cancel.clone(), relay_addrs, enr_hash).await?;
 
     let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
     all_peer_ids.push(self_peer_id);
@@ -1401,7 +1426,7 @@ mod tests {
         // `--p2p-relays=""` parses to no relays, so there is nothing to probe.
         // Probing the raw flag strings instead used to key a target off the
         // empty string and report it as a failing relay.
-        let relays = parse_relay_addrs(&["".to_string()]).expect("relays");
+        let relays = common::parse_relay_addrs(&["".to_string()]).expect("relays");
         let queued = [TestCaseName::new("PingRelay", 1)];
 
         let results = run_relay_http_tests(&relays, &queued, CancellationToken::new()).await;
@@ -1411,7 +1436,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_http_tests_key_targets_by_address() {
-        let relays = parse_relay_addrs(&[
+        let relays = common::parse_relay_addrs(&[
             "http://127.0.0.1:1/enr".to_string(),
             "/ip4/127.0.0.1/tcp/3610/p2p/16Uiu2HAm7ULrTMdiEmQCJ2N9nsuGvfUDvfDGgHXJ4vNjrCwCzGDs"
                 .to_string(),
@@ -1428,5 +1453,30 @@ mod tests {
             "unexpected targets: {:?}",
             results.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn format_enr_pins_ascii_output() {
+        assert_eq!(format_enr("enr:short"), "enr:short");
+        // 17 bytes is still returned verbatim.
+        assert_eq!(format_enr("enr:-abcdefghijkl"), "enr:-abcdefghijkl");
+        assert_eq!(
+            format_enr("enr:-Ku4QHqVeJ8PPzcvW1234567890"),
+            "enr:-Ku4QHqVe...7890"
+        );
+    }
+
+    #[test]
+    fn format_enr_truncates_on_char_boundaries() {
+        // A 2-byte code point straddles byte 13 (the head cut).
+        let head = format!("{}{}", "a".repeat(12), "é".repeat(6));
+        assert_eq!(format_enr(&head), format!("{}...éé", "a".repeat(12)));
+
+        // A 2-byte code point straddles the tail cut (len - 4).
+        let tail = format!("{}{}", "a".repeat(17), "é".repeat(3));
+        assert_eq!(format_enr(&tail), format!("{}...éé", "a".repeat(13)));
+
+        // All multi-byte, both cuts land mid-code-point.
+        assert_eq!(format_enr(&"€".repeat(10)), "€€€€...€");
     }
 }

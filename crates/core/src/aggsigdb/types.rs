@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::types;
 
 /// Errors for AggSigDB operations.
@@ -15,7 +17,7 @@ pub enum Error {
 }
 
 /// A persistent store for aggregated signed duty data.
-#[async_trait::async_trait]
+#[async_trait]
 pub trait AggSigDB {
     /// Stores aggregated signed duty data set.
     async fn store(&self, duty: types::Duty, data: types::SignedDataSet) -> Result<(), Error>;
@@ -32,5 +34,5 @@ pub trait AggSigDB {
         &self,
         duty: types::Duty,
         pub_key: types::PubKey,
-    ) -> Result<Box<dyn types::SignedData>, Error>;
+    ) -> Result<types::SignedData, Error>;
 }

@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 
-use futures::future::BoxFuture;
-use pluto_eth2api::BeaconNodeClient;
+use pluto_eth2api::valcache::ValidatorCache;
 
 use crate::{
     bcast::{
@@ -15,13 +15,13 @@ use crate::{
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet, Slot},
 };
 
-type RecastFuture = BoxFuture<'static, Result<()>>;
+type RecastFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 type RecastSubscriber = Arc<dyn Fn(Duty, SignedDataSet) -> RecastFuture + Send + Sync>;
 
 #[derive(Clone)]
 struct RecastTuple {
     duty: Duty,
-    agg_data: Box<dyn SignedData>,
+    agg_data: SignedData,
 }
 
 #[derive(Default)]
@@ -32,15 +32,15 @@ struct RecastState {
 
 /// Rebroadcasts builder registrations every epoch.
 pub struct Recaster {
-    client: BeaconNodeClient,
+    validator_cache: ValidatorCache,
     state: Mutex<RecastState>,
 }
 
 impl Recaster {
     /// Creates a new recaster.
-    pub fn new(client: BeaconNodeClient) -> Self {
+    pub fn new(validator_cache: ValidatorCache) -> Self {
         Self {
-            client,
+            validator_cache,
             state: Mutex::new(RecastState::default()),
         }
     }
@@ -66,13 +66,13 @@ impl Recaster {
         }
 
         for (pubkey, agg_data) in set {
-            self.store_one(duty.clone(), *pubkey, agg_data.as_ref())?;
+            self.store_one(duty.clone(), *pubkey, agg_data)?;
         }
 
         Ok(())
     }
 
-    fn store_one(&self, duty: Duty, pubkey: PubKey, agg_data: &dyn SignedData) -> Result<()> {
+    fn store_one(&self, duty: Duty, pubkey: PubKey, agg_data: &SignedData) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -84,7 +84,7 @@ impl Recaster {
             return Ok(());
         }
 
-        let agg_data = dyn_clone::clone_box(agg_data);
+        let agg_data = agg_data.clone();
         state.tuples.insert(pubkey, RecastTuple { duty, agg_data });
         instrument_recast_registration(pubkey);
 
@@ -92,19 +92,17 @@ impl Recaster {
     }
 
     /// Called when new slots tick.
+    #[tracing::instrument(name = "bcast", level = "debug", skip_all, fields(topic = "bcast"))]
     pub async fn slot_ticked(&self, slot: Slot) -> Result<()> {
         if !slot.first_in_epoch() {
             return Ok(());
         }
 
         let active_validators: HashSet<PubKey> = self
-            .client
-            .active_validators()
-            .await
-            .map_err(|source| Error::Client {
-                context: "get active validator",
-                source: Box::new(source),
-            })?
+            .validator_cache
+            .get_by_head()
+            .await?
+            .0
             .pubkeys()
             .map(|pubkey| PubKey::from(*pubkey))
             .collect();
@@ -139,7 +137,7 @@ impl Recaster {
                 };
 
                 if let Err(error) = sub(duty.clone(), set_for_sub).await {
-                    tracing::error!(%error, %duty, "Rebroadcast duty error (will retry next epoch)");
+                    tracing::error!(?error, %duty, "Rebroadcast duty error (will retry next epoch)");
                     instrument_recast_error(&duty);
                 }
 

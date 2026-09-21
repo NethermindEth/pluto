@@ -24,6 +24,7 @@ pub const KEY_TCP: &str = "tcp";
 pub const KEY_UDP: &str = "udp";
 
 /// An error that can occur when parsing an ENR record.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     /// The format of the record is invalid.
@@ -55,21 +56,17 @@ pub enum RecordError {
     #[error("Failed to parse the secp256k1 public key: {0}")]
     Secp256k1Error(#[from] elliptic_curve::Error),
 
-    /// Failed to verify the signature.
-    #[error("Signature verification succeeded, but the signature is invalid")]
+    /// Signature verification ran and rejected the signature.
+    #[error("The record signature does not match the public key")]
     FailedToVerifySignature,
 
-    /// The signature is invalid.
-    #[error("The verification failed: {0}")]
+    /// Signature verification could not be performed.
+    #[error("Failed to verify the record signature: {0}")]
     InvalidSignature(pluto_k1util::K1UtilError),
 
     /// Failed to sign the record.
     #[error("Failed to sign the record: {0}")]
     FailedToSign(pluto_k1util::K1UtilError),
-
-    /// Failed to convert the signature.
-    #[error("Failed to convert the signature: {0}")]
-    FailedToConvertSignature(std::array::TryFromSliceError),
 }
 
 /// InvalidFormatError is an error type for invalid format errors.
@@ -221,20 +218,20 @@ impl TryFrom<&str> for Record {
     fn try_from(enr_str: &str) -> Result<Self, Self::Error> {
         if !enr_str.starts_with("enr:") {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::DoesNotStartWithEnr,
+                InvalidFormatError::DoesNotStartWithEnr.into(),
             ));
         }
 
-        // Ensure backwards compatibility with older versions with encoded ENR strings.
-        // ENR strings in older versions of charon (<= v0.9.0) were base64 padded
-        // strings with "=" as the padding character. Refer: https://github.com/ObolNetwork/charon/issues/970
+        // Ensure backwards compatibility with older versions with encoded ENR
+        // strings. ENR strings in older versions of charon (<= v0.9.0)
+        // were base64 padded strings with "=" as the padding character. Refer: https://github.com/ObolNetwork/charon/issues/970
         let enr_str = enr_str.trim_end_matches('=');
         let enr_str = enr_str.strip_prefix("enr:").unwrap_or(enr_str);
 
         let base64_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let raw = base64_engine
             .decode(enr_str)
-            .map_err(RecordError::FailedToDecodeBase64)?;
+            .map_err(|e| RecordError::FailedToDecodeBase64(e.into()))?;
 
         let elements = decode_bytes_list(&raw)?;
 
@@ -247,7 +244,7 @@ impl TryFrom<&str> for Record {
 
         if elements.len() % 2 != 0 {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::OddNumberOfElements,
+                InvalidFormatError::OddNumberOfElements.into(),
             ));
         }
 
@@ -272,14 +269,15 @@ impl TryFrom<&str> for Record {
             match key.as_str() {
                 KEY_SECP256K1 => {
                     record.public_key = Some(
-                        PublicKey::from_sec1_bytes(value).map_err(RecordError::Secp256k1Error)?,
+                        PublicKey::from_sec1_bytes(value)
+                            .map_err(|e| RecordError::Secp256k1Error(e.into()))?,
                     );
                 }
                 KEY_ID => {
                     let value_str = String::from_utf8_lossy(value).to_string();
                     if value_str != VAL_ID {
                         return Err(RecordError::InvalidFormat(
-                            InvalidFormatError::NonV4IdentitySchemeNotSupported,
+                            InvalidFormatError::NonV4IdentitySchemeNotSupported.into(),
                         ));
                     }
                 }
@@ -289,7 +287,7 @@ impl TryFrom<&str> for Record {
 
         let Some(public_key) = record.public_key else {
             return Err(RecordError::InvalidFormat(
-                InvalidFormatError::PublicKeyNotSet,
+                InvalidFormatError::PublicKeyNotSet.into(),
             ));
         };
 

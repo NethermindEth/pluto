@@ -47,7 +47,7 @@ cargo build --release --workspace
 
 **Run tests:**
 ```sh
-cargo test --workspace --all-features   # requires a running Docker daemon
+cargo test --workspace --features pluto-eth2api/integration   # requires a running Docker daemon
 ```
 
 **Local cluster with test-infra:**

@@ -1,10 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
-use pluto_crypto::{
-    tblsconv::{privkey_from_bytes, pubkey_from_bytes},
-    types::PublicKey,
-};
+use pluto_crypto::types::{self, PublicKey};
 use pluto_frost::{
     G1Affine, G1Projective, KeyPackage,
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
@@ -56,6 +53,7 @@ pub(crate) trait FTransport: Send + Sync {
 }
 
 /// FROST DKG orchestration errors.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum FrostError {
     /// Failed to construct a participant.
@@ -138,7 +136,7 @@ pub enum FrostError {
     ChannelClosed(&'static str),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
-    PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
+    PublicKey(#[from] pluto_crypto::types::ConvError),
     /// Failed to decode a compressed G1 public key point.
     #[error("invalid compressed G1 public key point")]
     InvalidPublicKeyPoint,
@@ -254,7 +252,8 @@ impl DkgParticipant {
             .take()
             .ok_or(FrostError::MissingRoundState)?;
         // get_round2_inputs keeps this node's broadcast. Strip it here to
-        // match Charon's participant behavior; kryptology::round2 rejects self IDs.
+        // match Charon's participant behavior; kryptology::round2 rejects self
+        // IDs.
         let bcasts = bcasts
             .iter()
             .filter(|(id, _)| **id != self.id)
@@ -440,7 +439,7 @@ fn make_shares(
 
         shares.push(Share {
             pub_key: point_to_pubkey(G1Affine::from(pub_key).to_compressed())?,
-            secret_share: privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
+            secret_share: types::privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
             public_shares: pub_shares.get(&v_idx).cloned().unwrap_or_default(),
         });
     }
@@ -452,7 +451,7 @@ fn point_to_pubkey(point: [u8; 48]) -> Result<PublicKey, FrostError> {
     // `pubkey_from_bytes` only checks length; transport bytes still need G1
     // validation.
     G1Projective::from_compressed(&point).ok_or(FrostError::InvalidPublicKeyPoint)?;
-    Ok(pubkey_from_bytes(&point)?)
+    Ok(types::pubkey_from_bytes(&point)?)
 }
 
 fn validate_participant_inputs(
@@ -484,7 +483,7 @@ fn dkg_context_byte(dkg_ctx: &str) -> u8 {
 mod tests {
     use std::sync::Arc;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Index};
+    use pluto_crypto::{tbls, types::Index};
     use tokio::sync::{Mutex, Notify};
 
     use super::*;
@@ -945,18 +944,14 @@ mod tests {
                         .expect("node index should not overflow"),
                 )
                 .expect("node index should fit in Index");
-                let sig = BlstImpl
-                    .sign(&shares[val_idx].secret_share, msg)
+                let sig = tbls::sign(&shares[val_idx].secret_share, msg)
                     .expect("partial signature should succeed");
                 partials.insert(share_id, sig);
             }
 
-            let sig = BlstImpl
-                .threshold_aggregate(&partials)
-                .expect("threshold aggregation should succeed");
-            BlstImpl
-                .verify(&pub_key, msg, &sig)
-                .expect("aggregated signature should verify");
+            let sig =
+                tbls::threshold_aggregate(&partials).expect("threshold aggregation should succeed");
+            tbls::verify(&pub_key, msg, &sig).expect("aggregated signature should verify");
         }
     }
 }

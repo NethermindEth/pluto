@@ -188,7 +188,10 @@ impl<T: Encode, const SIZE: usize> Encode for SszVector<T, SIZE> {
 
     fn ssz_fixed_len() -> usize {
         if T::is_ssz_fixed_len() {
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "fixed element length times a small const SIZE cannot overflow a usize for real SSZ types"
+            )]
             {
                 T::ssz_fixed_len() * SIZE
             }
@@ -213,7 +216,10 @@ impl<T: Decode, const SIZE: usize> Decode for SszVector<T, SIZE> {
 
     fn ssz_fixed_len() -> usize {
         if T::is_ssz_fixed_len() {
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "fixed element length times a small const SIZE cannot overflow a usize for real SSZ types"
+            )]
             {
                 T::ssz_fixed_len() * SIZE
             }
@@ -572,12 +578,7 @@ impl<const SIZE: usize> BitVector<SIZE> {
         // `rem` is in 1..=7, so the shift never overflows. A valid final byte
         // has every bit at position >= rem (the padding region) cleared.
         match bytes.last() {
-            Some(&last) => {
-                #[allow(clippy::arithmetic_side_effects)]
-                {
-                    last >> rem == 0
-                }
-            }
+            Some(&last) => last >> rem == 0,
             None => true,
         }
     }
@@ -733,8 +734,8 @@ mod tests {
 
     #[test]
     fn bitlist_bit_at_matches_ssz_round_trip() {
-        // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2 set,
-        // matching the bytes returned by `aggregation_bits()`.
+        // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2
+        // set, matching the bytes returned by `aggregation_bits()`.
         let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]).expect("bitlist decode");
         assert_eq!(bl.len(), 3);
         assert_eq!(bl.bit_indices(), vec![0, 2]);
@@ -832,8 +833,8 @@ mod tests {
 
     #[test]
     fn bitvector_from_ssz_rejects_nonzero_padding() {
-        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be zero.
-        // Bit 15 set (0x80 in the final byte) is invalid padding.
+        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be
+        // zero. Bit 15 set (0x80 in the final byte) is invalid padding.
         assert!(<BitVector<12> as Decode>::from_ssz_bytes(&[0x00, 0x80]).is_err());
         // Zero padding decodes; used bits (0..12) are preserved.
         let bv = <BitVector<12> as Decode>::from_ssz_bytes(&[0xFF, 0x0F]).expect("valid padding");

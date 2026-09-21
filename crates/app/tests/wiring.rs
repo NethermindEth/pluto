@@ -27,8 +27,13 @@
 //! the wired components directly to prove the three back-edges / sign-path are
 //! connected.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
+use async_trait::async_trait;
 use pluto_app::node::{
     AppError,
     wire::{
@@ -40,23 +45,23 @@ use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
     types::{
-        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet,
-        ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
+        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey,
+        SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::tbls;
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum,
+    EthBeaconNodeApiClient,
     spec::{altair, phase0},
+    v1,
     versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use wiremock::{
-    Mock, MockServer, Request, ResponseTemplate,
-    matchers::{method, path, path_regex},
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
 const PK_LEN: usize = 48;
@@ -118,46 +123,7 @@ async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize 
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
-}
-
-/// Builds a `/states/{id}/validators` datum for an active validator with the
-/// given index and pubkey.
-fn validator_datum(index: u64, pubkey: PubKey) -> GetStateValidatorsResponseResponseDatum {
-    let v = pluto_testutil::Validator::active(index, pubkey_to_eth2(pubkey));
-    GetStateValidatorsResponseResponseDatum {
-        index: v.index.to_string(),
-        balance: v.balance.to_string(),
-        status: v.status,
-        validator: v.validator,
-    }
-}
-
-/// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
-/// datums whose pubkey appears in the request-body `ids` — so an unseeded
-/// (empty-pubkey) cache resolves zero validators. Cover both `head` and slot
-/// state IDs because the scheduler refreshes the cache by slot immediately.
-async fn mount_filtered_post_validators(
-    server: &MockServer,
-    datums: Vec<GetStateValidatorsResponseResponseDatum>,
-) {
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
-        .respond_with(move |request: &Request| {
-            let body = String::from_utf8_lossy(&request.body);
-            let data: Vec<_> = datums
-                .iter()
-                .filter(|d| body.contains(&d.validator.pubkey))
-                .cloned()
-                .collect();
-            ResponseTemplate::new(200).set_body_json(GetStateValidatorsResponseResponse {
-                execution_optimistic: false,
-                finalized: true,
-                data,
-            })
-        })
-        .mount(server)
-        .await;
+    .unwrap_or_else(|_| panic!("POST {submit_path} should be hit"))
 }
 
 /// Counts POSTs the mock has received for `submit_path`.
@@ -176,7 +142,7 @@ async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
 /// signed message is arbitrary — only the distinct share index and identical
 /// unsigned payload (so ParSigDB groups the partials) matter.
 fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> ParSignedData {
-    let sig = BlstImpl.sign(share, &[42u8; 32]).expect("sign share");
+    let sig = tbls::sign(share, &[42u8; 32]).expect("sign share");
     let attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {
@@ -208,23 +174,15 @@ fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> 
 /// path connects, not that BLS verification works).
 fn wire_inputs(
     eth2_cl: EthBeaconNodeApiClient,
-    beacon_client: BeaconNodeClient,
     pubkey: PubKey,
     consensus: Arc<ConsensusWrapper>,
     threshold: u64,
 ) -> WireInputs {
     // Permissive verifier: the partial sigs carry arbitrary payloads, so real
-    // eth2 verification is deliberately bypassed here. The bad-partial-signature
-    // test injects the real verifier.
+    // eth2 verification is deliberately bypassed here. The
+    // bad-partial-signature test injects the real verifier.
     let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
-    wire_inputs_with(
-        eth2_cl,
-        beacon_client,
-        pubkey,
-        consensus,
-        threshold,
-        permissive_verifier,
-    )
+    wire_inputs_with(eth2_cl, pubkey, consensus, threshold, permissive_verifier)
 }
 
 /// Builds the wiring inputs for a single-validator cluster with a caller-chosen
@@ -232,7 +190,6 @@ fn wire_inputs(
 /// verifier parses and verifies the reconstructed group signature against).
 fn wire_inputs_with(
     eth2_cl: EthBeaconNodeApiClient,
-    beacon_client: BeaconNodeClient,
     pubkey: PubKey,
     consensus: Arc<ConsensusWrapper>,
     threshold: u64,
@@ -245,16 +202,13 @@ fn wire_inputs_with(
         fee_recipient: [0u8; 20],
     }];
 
-    // The broadcaster's constructor performs beacon-node calls, so the
-    // submission client must point at the mock too.
-    let submission_client = BeaconNodeClient::new(eth2_cl.clone());
-
     WireInputs {
         threshold,
         share_idx: 1,
-        beacon_client,
+        // The broadcaster's constructor performs beacon-node calls, so the
+        // submission client must point at the mock too.
+        submission_client: eth2_cl.clone(),
         eth2_cl,
-        submission_client,
         validators,
         consensus,
         builder_enabled: false,
@@ -267,7 +221,6 @@ fn wire_inputs_with(
         graffiti_builder: pluto_core::fetcher::GraffitiBuilder::default(),
         electra_slot: 0,
         fetch_only_comm_idx0: false,
-        seen_pubkeys: None,
         slot_tick: None,
         // Single-node wiring test: one peer at share index 1, default features
         // (so only proposers carry an on-chain inclusion step).
@@ -275,7 +228,7 @@ fn wire_inputs_with(
             name: "test".to_string(),
             share_idx: 1,
         }],
-        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        feature_set: Box::leak(Box::new(pluto_featureset::FeatureSet::default())),
         infosync: None,
     }
 }
@@ -301,7 +254,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
         name: "node-0".to_string(),
         public_key: key.public_key(),
     };
-    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
+    let feature_set: &'static pluto_featureset::FeatureSet =
+        Box::leak(Box::new(pluto_featureset::FeatureSet::new()));
     let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
@@ -313,7 +267,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
             broadcaster: Arc::new(|_ct, _msg| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: true,
-            feature_set: Arc::clone(&feature_set),
+            feature_set,
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
@@ -329,16 +283,13 @@ async fn wiring_exercises_fetcher_back_edges() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
-    let pubkey = PubKey::new([2u8; PK_LEN]);
+    let pubkey_bytes = [2u8; PK_LEN];
+    let pubkey = PubKey::new(pubkey_bytes);
     let consensus = build_consensus(&ct);
 
     let wired = tokio::time::timeout(
         GUARD,
-        wire_core_workflow(
-            wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1),
-            ct.clone(),
-        ),
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
     )
     .await
     .expect("wire did not deadlock")
@@ -351,10 +302,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     const SLOT: u64 = 1;
     let proposer_def = DutyDefinitionSet::from([(
         pubkey,
-        DutyDefinition::Proposer(ProposerDutyDefinition {
-            pubkey,
-            v_idx: 2,
-            slot: SlotNumber::new(SLOT),
+        DutyDefinition::Proposer(v1::ProposerDuty {
+            pubkey: pubkey_bytes,
+            validator_index: 2,
+            slot: SLOT,
         }),
     )]);
     let proposer_duty = Duty::new_proposer_duty(SlotNumber::new(SLOT));
@@ -366,18 +317,19 @@ async fn wiring_exercises_fetcher_back_edges() {
         tokio::spawn(async move { fetcher.fetch(duty, def).await })
     };
 
-    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending on
-    // the wired `agg_sig_db` back-edge (proving it awaits the wired AggSigDB).
+    // While the AggSigDB has no RANDAO, the proposer fetch must remain pending
+    // on the wired `agg_sig_db` back-edge (proving it awaits the wired
+    // AggSigDB).
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !fetch_handle.is_finished(),
         "(a) proposer fetch should block on the empty wired AggSigDB back-edge"
     );
 
-    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must unblock.
+    // Store the RANDAO into the *same* wired AggSigDB; the back-edge must
+    // unblock.
     let randao: phase0::BLSSignature = [7u8; 96];
-    let randao_set: SignedDataSet =
-        HashMap::from([(pubkey, Box::new(randao) as Box<dyn SignedData>)]);
+    let randao_set: SignedDataSet = HashMap::from([(pubkey, SignedData::from(randao))]);
     tokio::time::timeout(
         GUARD,
         aggsigdb.store(Duty::new_randao_duty(SlotNumber::new(SLOT)), randao_set),
@@ -386,10 +338,10 @@ async fn wiring_exercises_fetcher_back_edges() {
     .expect("aggsigdb.store did not hang")
     .expect("aggsigdb.store ok");
 
-    // The fetch now progresses past the RANDAO back-edge. It may ultimately fail
-    // downstream (block production / proposer value encoding is out of scope),
-    // but it must no longer be blocked on `wait_for` — proving the back-edge is
-    // wired into the same AggSigDB.
+    // The fetch now progresses past the RANDAO back-edge. It may ultimately
+    // fail downstream (block production / proposer value encoding is out of
+    // scope), but it must no longer be blocked on `wait_for` — proving the
+    // back-edge is wired into the same AggSigDB.
     let fetch_result = tokio::time::timeout(GUARD, fetch_handle)
         .await
         .expect("(a) proposer fetch unblocked after RANDAO stored")
@@ -399,14 +351,16 @@ async fn wiring_exercises_fetcher_back_edges() {
     let _ = fetch_result;
 
     // ---- (b) Aggregator fetch reaches the wired DutyDB back-edge ----
-    // First prove the wired DutyDB handle the fetcher's `await_att_data` closure
-    // targets is the one we hold: an aggregator fetch must block until both its
-    // AggSigDB (prepare-aggregator) prerequisite and the DutyDB attestation are
-    // available. With neither present, the fetch blocks on the wired AggSigDB
-    // first; we satisfy that and confirm it then blocks on the wired DutyDB.
+    // First prove the wired DutyDB handle the fetcher's `await_att_data`
+    // closure targets is the one we hold: an aggregator fetch must block
+    // until both its AggSigDB (prepare-aggregator) prerequisite and the
+    // DutyDB attestation are available. With neither present, the fetch
+    // blocks on the wired AggSigDB first; we satisfy that and confirm it
+    // then blocks on the wired DutyDB.
     let dutydb = Arc::clone(&wired.dutydb);
-    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable on
-    // the same instance the fetcher back-edge uses (a direct connectivity proof).
+    // Round-trip the wired DutyDB to prove `await_attestation` is satisfiable
+    // on the same instance the fetcher back-edge uses (a direct
+    // connectivity proof).
     let await_handle = {
         let dutydb = Arc::clone(&dutydb);
         tokio::spawn(async move { dutydb.await_attestation(SLOT, 0).await })
@@ -428,7 +382,6 @@ async fn wiring_connects_sign_path() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_attestation_submit(mock.server()).await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([5u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
@@ -436,7 +389,7 @@ async fn wiring_connects_sign_path() {
     // partial signatures (distinct share indices) cross the threshold and are
     // aggregated by SigAgg.
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -444,12 +397,11 @@ async fn wiring_connects_sign_path() {
         .expect("wire succeeded");
 
     // Build two real BLS partial signatures (threshold 2 of 2) over the same
-    // attestation so SigAgg's `threshold_aggregate` succeeds and the broadcaster
-    // submits.
-    let tbls = BlstImpl;
+    // attestation so SigAgg's `threshold_aggregate` succeeds and the
+    // broadcaster submits.
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let mut share_iter = shares.into_iter();
@@ -457,8 +409,8 @@ async fn wiring_connects_sign_path() {
     let (idx1, share1) = share_iter.next().expect("share 1");
 
     // Submit the first partial signature through the internal path (this node's
-    // own VC): ParSigDB.store_internal -> store_external (threshold not yet met)
-    // and -> internal subscriber -> loopback parsigex.broadcast.
+    // own VC): ParSigDB.store_internal -> store_external (threshold not yet
+    // met) and -> internal subscriber -> loopback parsigex.broadcast.
     let mut internal_set = ParSignedDataSet::new();
     internal_set.insert(pubkey, attester_partial(idx0, &share0));
     tokio::time::timeout(
@@ -552,28 +504,26 @@ async fn wiring_connects_sign_path_proposer() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_submit(mock.server(), "/eth/v2/beacon/blocks").await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([6u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // Each partial signs an arbitrary message with its own share (permissive
     // verifier), swapping only the block signature onto an identical unsigned
     // block so ParSigDB's threshold-matching groups them.
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         pluto_core::signeddata::VersionedSignedProposal::new_partial(
             phase0_proposal(sig),
             share_idx,
@@ -626,26 +576,24 @@ async fn wiring_connects_sign_path_sync_contribution() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_submit(mock.server(), "/eth/v1/validator/contribution_and_proofs").await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let pubkey = PubKey::new([8u8; PK_LEN]);
     let consensus = build_consensus(&ct);
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+    let inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
         .expect("wire did not deadlock")
         .expect("wire succeeded");
 
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
-    // Identical unsigned contribution across shares; each partial swaps only the
-    // top-level signature (`set_signature`), preserving the payload so ParSigDB
-    // groups them.
+    // Identical unsigned contribution across shares; each partial swaps only
+    // the top-level signature (`set_signature`), preserving the payload so
+    // ParSigDB groups them.
     let base_contribution = altair::SignedContributionAndProof {
         message: altair::ContributionAndProof {
             aggregator_index: 1,
@@ -661,7 +609,7 @@ async fn wiring_connects_sign_path_sync_contribution() {
         signature: [0; 96],
     };
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let contribution = altair::SignedContributionAndProof {
             signature: sig,
             ..base_contribution.clone()
@@ -715,31 +663,22 @@ async fn wiring_rejects_bad_partial_signature() {
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     mount_attestation_submit(mock.server()).await;
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
     // Real BLS group key: the verifier parses this pubkey and verifies the
     // reconstructed group signature against the beacon attester signing domain.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let group_pubkey_bytes = tbls.secret_to_public_key(&secret).expect("group pubkey");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let group_pubkey_bytes = tbls::secret_to_public_key(&secret).expect("group pubkey");
     let pubkey = PubKey::new(group_pubkey_bytes);
-    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+    let shares = tbls::threshold_split(&secret, 2, 2).expect("split");
 
     // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
     // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
-    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(eth2_cl.clone());
 
     const THRESHOLD: u64 = 2;
-    let inputs = wire_inputs_with(
-        eth2_cl,
-        beacon_client,
-        pubkey,
-        consensus,
-        THRESHOLD,
-        verifier,
-    );
+    let inputs = wire_inputs_with(eth2_cl, pubkey, consensus, THRESHOLD, verifier);
 
     let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
         .await
@@ -747,8 +686,8 @@ async fn wiring_rejects_bad_partial_signature() {
         .expect("wire succeeded");
 
     // Same shape as the happy-path attestation test, but the shares sign an
-    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root —
-    // so the reconstructed group signature will not verify.
+    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root
+    // — so the reconstructed group signature will not verify.
     let base_attestation = phase0::Attestation {
         aggregation_bits: phase0::BitList::with_bits(8, &[0]),
         data: phase0::AttestationData {
@@ -769,7 +708,7 @@ async fn wiring_rejects_bad_partial_signature() {
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let sig = tbls::sign(share, &[42u8; 32]).expect("sign");
         let attestation = phase0::Attestation {
             signature: sig,
             ..base_attestation.clone()
@@ -828,46 +767,41 @@ async fn wiring_rejects_bad_partial_signature() {
     ct.cancel();
 }
 
-/// (d) `wire_core_workflow` seeds one pubkey-scoped validator cache into the
-/// scheduler's beacon client and the submission client (Charon shares a single
-/// cache across both; the validator API reuses the same instance). The mock's
-/// POST validators endpoint returns only validators whose pubkey appears in the
-/// request-body `ids`, so the unseeded (empty-pubkey) default cache would
-/// resolve zero validators — the regression this test guards against.
+/// (d) `wire_core_workflow` seeds the shared validator cache with the cluster
+/// pubkeys. The scheduler resolves the current slot on start, so its validators
+/// request must carry those pubkeys in `ids`; an unseeded cache sends an empty
+/// `ids` and resolves zero validators.
 #[tokio::test]
-async fn wiring_seeds_shared_validator_cache() {
+async fn wiring_seeds_validator_cache() {
     let ct = CancellationToken::new();
     let mock = BeaconMock::builder().build().await.expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
-    const V_IDX: u64 = 7;
-    mount_filtered_post_validators(mock.server(), vec![validator_datum(V_IDX, pubkey)]).await;
-
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
-    // `BeaconNodeClient` clones share the cache slot, so the seeding performed
-    // inside `wire_core_workflow` is observable through these probes.
-    let beacon_probe = beacon_client.clone();
-    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1);
-    let submission_probe = inputs.submission_client.clone();
+    let _wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
 
-    let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+    const VALIDATORS: &str = "/eth/v1/beacon/states/head/validators";
+    wait_for_post(mock.server(), VALIDATORS).await;
+    let bodies: Vec<_> = mock
+        .server()
+        .received_requests()
         .await
-        .expect("wire did not deadlock")
-        .expect("wire succeeded");
-
-    for (name, probe) in [("beacon", beacon_probe), ("submission", submission_probe)] {
-        let active = tokio::time::timeout(GUARD, probe.active_validators())
-            .await
-            .unwrap_or_else(|_| panic!("(d) {name} client active_validators timed out"))
-            .unwrap_or_else(|e| panic!("(d) {name} client active_validators failed: {e}"));
-        assert_eq!(
-            active.get(&V_IDX),
-            Some(&pubkey_to_eth2(pubkey)),
-            "(d) the {name} client's cache should be seeded with the cluster pubkeys"
-        );
-    }
+        .expect("requests")
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == VALIDATORS)
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(
+        bodies.iter().all(|body| body.contains(&pubkey.to_string())),
+        "(d) validators requests should carry the cluster pubkeys, got: {bodies:?}"
+    );
 
     ct.cancel();
 }
@@ -886,7 +820,6 @@ async fn wiring_delivers_slot_ticks_to_subscriber() {
         .expect("beacon mock");
     let pubkey = PubKey::new([9u8; PK_LEN]);
     let eth2_cl = mock.client().clone();
-    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
     let consensus = build_consensus(&ct);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(8);
@@ -899,7 +832,7 @@ async fn wiring_delivers_slot_ticks_to_subscriber() {
         })
     });
 
-    let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1);
+    let mut inputs = wire_inputs(eth2_cl, pubkey, consensus, 1);
     inputs.slot_tick = Some(slot_tick);
 
     let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
@@ -984,9 +917,8 @@ async fn multinode_parsig_exchange_reaches_submission() {
     let mut nodes = Vec::with_capacity(N);
     for i in 0..N {
         let eth2_cl = mock.client().clone();
-        let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
         let consensus = build_consensus(&ct);
-        let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+        let mut inputs = wire_inputs(eth2_cl, pubkey, consensus, THRESHOLD);
         inputs.parsigex = routed_parsigex_seam(i, Arc::clone(&receivers));
         let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
             .await
@@ -996,12 +928,9 @@ async fn multinode_parsig_exchange_reaches_submission() {
     }
 
     // One real threshold-BLS keyset: N shares, any THRESHOLD reconstruct.
-    let tbls = BlstImpl;
     let mut rng = rand::thread_rng();
-    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
-    let shares = tbls
-        .threshold_split(&secret, N as u64, THRESHOLD)
-        .expect("split");
+    let secret = tbls::generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls::threshold_split(&secret, N as u64, THRESHOLD).expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
     // Each node stores its own partial internally; the router fans it out to
@@ -1023,4 +952,137 @@ async fn multinode_parsig_exchange_reaches_submission() {
     wait_for_post(mock.server(), "/eth/v2/beacon/pool/attestations").await;
 
     ct.cancel();
+}
+
+/// Consensus stand-in that records every `propose` call, so a test can observe
+/// that a fetched duty reached the fetcher's subscriber.
+#[derive(Default)]
+struct RecordingConsensus {
+    proposed: Arc<StdMutex<Vec<Duty>>>,
+}
+
+#[async_trait]
+impl pluto_consensus::wrapper::Consensus for RecordingConsensus {
+    fn protocol_id(&self) -> String {
+        "/pluto/test/consensus/1.0.0".to_string()
+    }
+
+    fn start(&self, _ct: CancellationToken) {}
+
+    async fn participate(
+        &self,
+        _ct: CancellationToken,
+        _duty: Duty,
+    ) -> pluto_consensus::wrapper::Result<()> {
+        Ok(())
+    }
+
+    async fn propose(
+        &self,
+        _ct: CancellationToken,
+        duty: Duty,
+        _value: pluto_core::corepb::v1::core::UnsignedDataSet,
+    ) -> pluto_consensus::wrapper::Result<()> {
+        self.proposed.lock().expect("proposed lock").push(duty);
+        Ok(())
+    }
+
+    fn subscribe(&self, _subscriber: pluto_consensus::wrapper::Subscriber) {}
+}
+
+/// (g) The duty callbacks are wrapped with the async retry executor: a
+/// transient beacon-node failure on `fetcher.fetch` is retried and the duty
+/// still completes, reaching the fetcher's `consensus.propose` subscriber.
+/// Without the wrapper the scheduler stitch calls `fetch` exactly once, the
+/// first failure drops the duty on this node, and no proposal is ever made.
+#[tokio::test]
+async fn retry_wrapper_recovers_transient_fetch_failure() {
+    const ATT_DATA_PATH: &str = "/eth/v1/validator/attestation_data";
+    const SLOT: u64 = 1;
+
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+
+    // One transient 503 ("beacon node is currently syncing, try again later")
+    // ahead of the mock's default 200. `with_priority(1)` outranks the default
+    // routes, `up_to_n_times(1)` retires it after the first request, so the
+    // retry falls through to the healthy response.
+    Mock::given(method("GET"))
+        .and(path(ATT_DATA_PATH))
+        .respond_with(ResponseTemplate::new(503).set_body_string(
+            r#"{"code":503,"message":"Beacon node is currently syncing, try again later"}"#,
+        ))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(mock.server())
+        .await;
+
+    let eth2_cl = mock.client().clone();
+    let pubkey_bytes = [9u8; PK_LEN];
+    let pubkey = PubKey::new(pubkey_bytes);
+    let proposed: Arc<StdMutex<Vec<Duty>>> = Arc::default();
+    let consensus = Arc::new(ConsensusWrapper::new(Arc::new(RecordingConsensus {
+        proposed: Arc::clone(&proposed),
+    })));
+
+    let wired = tokio::time::timeout(
+        GUARD,
+        wire_core_workflow(wire_inputs(eth2_cl, pubkey, consensus, 1), ct.clone()),
+    )
+    .await
+    .expect("wire did not deadlock")
+    .expect("wire succeeded");
+
+    let def = DutyDefinitionSet::from([(
+        pubkey,
+        DutyDefinition::Attester(v1::AttesterDuty {
+            pubkey: pubkey_bytes,
+            slot: SLOT,
+            validator_index: 2,
+            committee_index: 0,
+            committee_length: 8,
+            committees_at_slot: 1,
+            validator_committee_index: 0,
+        }),
+    )]);
+    let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
+
+    // Drive the same retry-wrapped callback the scheduler drives. It is
+    // fire-and-forget, so the outcome is observed through the recording
+    // consensus.
+    (wired.fetch_duty)(duty.clone(), def);
+
+    tokio::time::timeout(GUARD, async {
+        loop {
+            if !proposed.lock().expect("proposed lock").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("(g) the retried fetch should complete and reach consensus.propose");
+
+    assert_eq!(
+        proposed.lock().expect("proposed lock").as_slice(),
+        &[duty],
+        "(g) the duty must complete exactly once after the retry",
+    );
+    assert!(
+        count_gets(mock.server(), ATT_DATA_PATH).await >= 2,
+        "(g) the transient failure must have been retried",
+    );
+
+    ct.cancel();
+}
+
+/// Counts GETs the mock has received for `request_path`.
+async fn count_gets(server: &MockServer, request_path: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("requests")
+        .into_iter()
+        .filter(|r| r.method.as_str() == "GET" && r.url.path() == request_path)
+        .count()
 }

@@ -5,14 +5,14 @@ use std::{collections::HashMap, io::Write, time::Duration};
 use reqwest::{Method, StatusCode};
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{Instrument as _, info};
 
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
     calculate_score,
     constants::{SLOT_TIME, SLOTS_IN_EPOCH},
-    evaluate_rtt, must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt,
-    write_result_to_file, write_result_to_writer,
+    evaluate_rtt, http_client, must_output_to_file_on_quiet, publish_result_to_obol_api,
+    request_rtt, write_result_to_file, write_result_to_writer,
 };
 use crate::{
     commands::test::TestCaseName,
@@ -21,19 +21,8 @@ use crate::{
 };
 use clap::Args;
 
-/// Per-request timeout for MEV/beacon diagnostic HTTP calls.
-const MEV_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum diagnostic response body read from a beacon/relay endpoint (16 MB).
 const BN_MAX_BODY: usize = 16 * 1024 * 1024;
-
-/// Builds a diagnostic HTTP client with a request timeout so a hostile/slow
-/// endpoint cannot stall a diagnostic indefinitely.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(MEV_HTTP_TIMEOUT)
-        .build()
-        .unwrap_or_default()
-}
 
 /// Reads a response body, rejecting bodies that exceed [`BN_MAX_BODY`]. Uses
 /// the advertised `Content-Length` for the fast-path reject; the client timeout
@@ -214,11 +203,14 @@ async fn test_all_mevs(
         let endpoint = endpoint.clone();
         let token = token.clone();
 
-        join_set.spawn(async move {
-            let results = test_single_mev(&queued_tests, &conf, &endpoint, token).await;
-            let relay_name = format_mev_relay_name(&endpoint);
-            (relay_name, results)
-        });
+        join_set.spawn(
+            async move {
+                let results = test_single_mev(&queued_tests, &conf, &endpoint, token).await;
+                let relay_name = format_mev_relay_name(&endpoint);
+                (relay_name, results)
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     let all_results = join_set.join_all().await;
@@ -239,18 +231,21 @@ async fn test_single_mev(
         let conf = conf.clone();
         let target = target.to_string();
 
-        join_set.spawn(async move {
-            let tc_name = test_case.test_case_name();
-            tokio::select! {
-                _ = token.cancelled() => {
-                    let tr = TestResult::new(tc_name.name);
-                    tr.fail(CliError::TimeoutInterrupted)
-                }
-                r = test_case.run(&target, &conf) => {
-                    r
+        join_set.spawn(
+            async move {
+                let tc_name = test_case.test_case_name();
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        let tr = TestResult::new(tc_name.name);
+                        tr.fail(CliError::TimeoutInterrupted)
+                    }
+                    r = test_case.run(&target, &conf) => {
+                        r
+                    }
                 }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
     }
 
     join_set.join_all().await
@@ -585,7 +580,7 @@ async fn create_mev_block(
                 break;
             }
 
-            Err(CliError::MevTest(MevTestError::StatusCodeNot200)) => {
+            Err(CliError::MevTest(ref e)) if matches!(**e, MevTestError::StatusCodeNot200) => {
                 let elapsed = start_iteration.elapsed();
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))

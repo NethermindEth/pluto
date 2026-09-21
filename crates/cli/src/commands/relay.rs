@@ -1,15 +1,11 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addrs},
+    commands::common::{LICENSE, parse_relay_addrs},
     error::CliError,
 };
 use pluto_p2p::k1;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-/// Grace period given to the Loki background task to flush buffered logs
-/// once `BackgroundTaskController::shutdown` has been signalled.
-const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -25,12 +21,6 @@ pub struct RelayArgs {
 
     #[clap(flatten)]
     pub p2p: RelayP2PArgs,
-
-    #[clap(flatten)]
-    pub log: RelayLogFlags,
-
-    #[clap(flatten)]
-    pub loki: RelayLokiArgs,
 }
 
 impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
@@ -65,40 +55,10 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let loki_config = match self.loki.loki_addresses.as_slice() {
-            [] => None,
-            [loki_url, rest @ ..] => {
-                if !rest.is_empty() {
-                    // Charon fans logs out to every entry in `loki-addresses`, but
-                    // `pluto_tracing::TracingConfig` only supports a single Loki
-                    // layer today. `tracing::warn!` would be a no-op here because
-                    // no subscriber is installed yet (init happens later inside
-                    // `commands::relay::run`), so write directly to stderr.
-                    eprintln!(
-                        "warning: {extra} additional --loki-addresses ignored; only the first is used",
-                        extra = rest.len(),
-                    );
-                }
-
-                let labels =
-                    HashMap::from([("service".to_string(), self.loki.loki_service.clone())]);
-
-                Some(pluto_tracing::LokiConfig {
-                    loki_url: loki_url.clone(),
-                    labels,
-                    extra_fields: HashMap::new(),
-                })
-            }
-        };
-
-        let log_config =
-            build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
-
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
             .auto_p2p_key(self.relay.auto_p2p_key)
-            .libp2p_log_level(self.relay.p2p_relay_log_level)
             .max_res_per_peer(self.relay.max_res_per_peer)
             .max_conns(self.relay.max_conns)
             // Invert p2p-advertise-private-addresses flag boolean:
@@ -107,8 +67,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .filter_private_addrs(!self.relay.advertise_priv)
             .maybe_monitoring_addr(self.debug_monitoring.monitor_addr)
             .maybe_debug_addr(self.debug_monitoring.debug_addr)
-            .p2p_config(p2p_config)
-            .log_config(log_config);
+            .p2p_config(p2p_config);
 
         Ok(builder.build())
     }
@@ -142,14 +101,6 @@ pub struct RelayRelayArgs {
         help = "Automatically generate and persist a p2p key if one does not exist."
     )]
     pub auto_p2p_key: bool,
-
-    #[arg(
-        long = "p2p-relay-loglevel",
-        env = "CHARON_P2P_RELAY_LOGLEVEL",
-        default_value = "",
-        help = "Libp2p circuit relay log level. E.g., debug, info, warn, error."
-    )]
-    pub p2p_relay_log_level: String,
 
     // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is relevant for the Rust libp2p implementation
     // If so, decrease defaults after this has been addressed
@@ -245,113 +196,30 @@ pub struct RelayP2PArgs {
     pub disable_reuseport: bool,
 }
 
-#[derive(clap::Args, Clone)]
-pub struct RelayLogFlags {
-    #[arg(
-        long = "log-format",
-        env = "CHARON_LOG_FORMAT",
-        default_value = "console",
-        help = "Log format; console, logfmt or json"
-    )]
-    pub format: String,
-
-    #[arg(
-        long = "log-level",
-        env = "CHARON_LOG_LEVEL",
-        default_value = "info",
-        help = "Log level; debug, info, warn or error"
-    )]
-    pub level: String,
-
-    #[arg(long = "log-color", default_value = "auto", help = "Log color")]
-    pub color: ConsoleColor,
-
-    #[arg(
-        long = "log-output-path",
-        env = "CHARON_LOG_OUTPUT_PATH",
-        help = "Path in which to write on-disk logs."
-    )]
-    pub log_output_path: Option<PathBuf>,
-}
-
-#[derive(clap::Args, Clone)]
-pub struct RelayLokiArgs {
-    #[arg(
-        long = "loki-addresses",
-        env = "CHARON_LOKI_ADDRESSES",
-        value_delimiter = ',',
-        help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
-    )]
-    pub loki_addresses: Vec<String>,
-
-    #[arg(
-        long = "loki-service",
-        env = "CHARON_LOKI_SERVICE",
-        default_value = "pluto",
-        help = "Service label sent with logs to Loki."
-    )]
-    pub loki_service: String,
-}
-
+#[tracing::instrument(name = "relay", level = "debug", skip_all, fields(topic = "relay"))]
 pub async fn run(
     config: pluto_relay_server::config::Config,
-    ct: CancellationToken,
-) -> Result<(), CliError> {
-    let loki_shutdown = match pluto_tracing::init(&config.log_config) {
-        Ok(Some(loki)) => {
-            let controller = loki.controller;
-            let handle = tokio::spawn(loki.task);
-            Some((controller, handle))
-        }
-        Ok(None) => None,
-        // In tests, the global tracing subscriber is shared across runs in the
-        // same process, so reinitializing fails. In production this would mean
-        // the relay silently uses an unrelated subscriber and Loki forwarding
-        // is dropped — fail loudly instead.
-        #[cfg(test)]
-        Err(pluto_tracing::init::Error::Init(_)) => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    // Run the relay in an inner scope so every early `?` / `return Err(..)` is
-    // captured into `result` and the Loki cleanup below always runs.
-    let result = serve_relay(&config, ct).await;
-
-    if let Err(err) = &result {
-        // Surface the shutdown reason through the subscriber so it reaches
-        // Loki before we close the worker; `main` only `eprintln!`s the
-        // returned error and that path bypasses the tracing subscriber.
-        error!(error = %err, "relay exited with error");
-    }
-
-    // Drain the Loki worker under a single budget so a hung Loki endpoint
-    // (e.g. `controller.shutdown` blocked on a full mpsc) cannot wedge
-    // process exit. After the budget elapses we hard-abort the worker.
-    if let Some((controller, handle)) = loki_shutdown {
-        let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
-            controller.shutdown().await;
-            let _ = handle.await;
-        })
-        .await;
-        abort_handle.abort();
-    }
-
-    result
-}
-
-async fn serve_relay(
-    config: &pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
     info!("{LICENSE}");
     info!(config = ?config);
 
-    let key = load_or_create_key(config)?;
+    let key = load_or_create_key(&config)?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
+    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
-        .map_err(Into::into)
+        .map_err(|e| e.into())
+}
+
+/// Whether the key could not be loaded because its file is absent.
+fn is_key_file_missing(err: &pluto_p2p::k1::K1Error) -> bool {
+    let pluto_p2p::k1::K1Error::K1UtilError(err) = err else {
+        return false;
+    };
+    let pluto_k1util::K1UtilError::FailedToReadFile(err) = &**err else {
+        return false;
+    };
+    err.kind() == std::io::ErrorKind::NotFound
 }
 
 /// Loads the relay's p2p key from its data dir, generating and persisting one
@@ -361,17 +229,14 @@ fn load_or_create_key(
 ) -> Result<k256::SecretKey, CliError> {
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
-        Err(pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(
-            io_err,
-        ))) if io_err.kind() == std::io::ErrorKind::NotFound => {
+        Err(err) if is_key_file_missing(&err) => {
             if !config.auto_p2p_key {
                 error!(
                     "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
                 );
-                let err = pluto_p2p::k1::K1Error::K1UtilError(
-                    pluto_k1util::K1UtilError::FailedToReadFile(io_err),
+                return Err(
+                    pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err.into()).into(),
                 );
-                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err).into());
             }
 
             let path = k1::key_path(&config.data_dir);
@@ -407,7 +272,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: "127.0.0.1:3640".into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 512,
                 max_conns: 16384,
                 advertise_priv: false,
@@ -423,16 +287,6 @@ mod tests {
                 tcp_addrs: vec!["127.0.0.1:3610".into()],
                 udp_addrs: vec![],
                 disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: "error".into(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "pluto".into(),
             },
         }
     }
@@ -488,9 +342,11 @@ mod tests {
         let missing_key = test_relay_server_with(|args| args.relay.auto_p2p_key = false).await;
         assert!(matches!(
             missing_key,
-            Err(super::CliError::RelayP2PError(
-                pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
-            ))
+            Err(super::CliError::RelayP2PError(ref e))
+                if matches!(
+                    **e,
+                    pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
+                )
         ));
 
         // The success path — starting with an auto-generated key — is what
@@ -503,9 +359,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = relay_args(dir.path());
 
-        // Covers the CLI entry point that the fixture bypasses: tracing init and
-        // the Loki drain. A pre-cancelled token is deterministic because the
-        // shutdown arm of the serve loop is the `biased` first branch.
+        // A pre-cancelled token is deterministic because the shutdown arm of
+        // the serve loop is the `biased` first branch.
         let ct = CancellationToken::new();
         ct.cancel();
 
@@ -555,8 +410,20 @@ mod tests {
         assert_eq!(enr.ip(), Some(Ipv4Addr::new(222, 222, 222, 222)));
         // The external IP is advertised on the ports libp2p bound, not on the
         // port 0 that was configured — which would be undialable.
-        assert_eq!(enr.tcp(), Some(relay.p2p_port(pluto_p2p::utils::tcp_port)));
-        assert_eq!(enr.udp(), Some(relay.p2p_port(pluto_p2p::utils::udp_port)));
+        assert_eq!(
+            enr.tcp(),
+            Some(relay.p2p_port(|addr| pluto_p2p::utils::addr_port(
+                addr,
+                pluto_p2p::utils::TransportProtocol::Tcp
+            )))
+        );
+        assert_eq!(
+            enr.udp(),
+            Some(relay.p2p_port(|addr| pluto_p2p::utils::addr_port(
+                addr,
+                pluto_p2p::utils::TransportProtocol::Quic
+            )))
+        );
     }
 
     #[tokio::test]
@@ -627,9 +494,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToBindHttpListener { .. }
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToBindHttpListener { .. }
+                    )
             ),
             "got: {err}"
         );
@@ -648,9 +517,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToBindMonitoringListener { .. }
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToBindMonitoringListener { .. }
+                    )
             ),
             "got: {err}"
         );
@@ -667,9 +538,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToParseMonitoringAddr(..)
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToParseMonitoringAddr(..)
+                    )
             ),
             "got: {err}"
         );
@@ -749,7 +622,7 @@ mod tests {
     static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
     /// Relay arguments every test starts from: all listeners on [`ANY_ADDR`],
-    /// quiet logs, no relays to dial.
+    /// no relays to dial.
     ///
     /// `advertise_priv` is load-bearing: without it, `filter_private_addrs`
     /// drops the loopback listen addresses, and `/enr` answers 500 forever.
@@ -761,7 +634,6 @@ mod tests {
             relay: super::RelayRelayArgs {
                 http_address: ANY_ADDR.into(),
                 auto_p2p_key: true,
-                p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
                 max_conns: 0,
                 advertise_priv: true,
@@ -777,16 +649,6 @@ mod tests {
                 tcp_addrs: vec![ANY_ADDR.into()],
                 udp_addrs: vec![ANY_ADDR.into()],
                 disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: "error".into(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: None,
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "".into(),
             },
         }
     }
@@ -849,7 +711,7 @@ mod tests {
         let p2p_addrs = bound.p2p_addrs().await;
 
         let serve_ct = ct.child_token();
-        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(Into::into) });
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(|e| e.into()) });
 
         Ok(TestRelay {
             http_addr,
@@ -868,7 +730,7 @@ mod tests {
         }
 
         /// Port of the relay's libp2p listen address selected by `port_of`,
-        /// e.g. [`pluto_p2p::utils::tcp_port`].
+        /// e.g. [`pluto_p2p::utils::addr_port`].
         fn p2p_port(&self, port_of: impl Fn(&libp2p::Multiaddr) -> Option<u16>) -> u16 {
             self.p2p_addrs
                 .iter()

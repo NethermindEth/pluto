@@ -7,6 +7,7 @@ use std::{
 use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DiskError {
     /// Invalid URL.
@@ -124,7 +125,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition hashes verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionError(error));
+            return Err(DiskError::ClusterDefinitionError(error.into()));
         }
     }
     if let Err(error) = def.verify_signatures(eth1cl).await {
@@ -134,7 +135,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition signature verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionError(error));
+            return Err(DiskError::ClusterDefinitionError(error.into()));
         }
     }
 
@@ -192,7 +193,8 @@ pub async fn write_keys_to_disk(
     let secret_shares = shares.iter().map(|s| s.secret_share).collect::<Vec<_>>();
 
     let keys_dir = pluto_cluster::helpers::create_validator_keys_dir(&conf.data_dir).await?;
-    // TODO: All paths should be handled using `std::path::*` instead of strings.
+    // TODO: All paths should be handled using `std::path::*` instead of
+    // strings.
     let keys_dir = keys_dir.to_string_lossy().into_owned();
 
     if insecure {
@@ -246,7 +248,7 @@ pub async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()
             return Err(DiskError::DataDirNotFound(path));
         }
         Err(e) => {
-            return Err(DiskError::IoError(e));
+            return Err(DiskError::IoError(e.into()));
         }
         Ok(meta) if !meta.is_dir() => {
             return Err(DiskError::DataDirIsFile(path));

@@ -1,3 +1,5 @@
+// `missing_docs` does not fire in this test module, so `#![expect]` would be
+// unfulfilled; kept as `#![allow]`: test-only fixtures/helpers need no docs.
 #![allow(missing_docs)]
 
 use std::collections::BTreeMap;

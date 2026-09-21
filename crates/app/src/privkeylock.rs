@@ -16,6 +16,7 @@ const STALE_DURATION: Duration = Duration::from_secs(5);
 const UPDATE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Error type for private key lock operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum PrivKeyLockError {
     /// I/O error on the private key lock file.
@@ -63,7 +64,7 @@ async fn write_file(path: &Path, command: &str, now: DateTime<Utc>) -> Result<()
 
     let bytes = serde_json::to_vec(&meta)?;
 
-    tokio::fs::write(path, bytes).await.map_err(Into::into)
+    tokio::fs::write(path, bytes).await.map_err(|e| e.into())
 }
 
 /// Private key locking service.
@@ -235,7 +236,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path: PathBuf = dir.path().join("privkeylocktest");
 
-        // Create a stale file that is ignored (one extra second past the threshold).
+        // Create a stale file that is ignored (one extra second past the
+        // threshold).
         let stale_time = aged_around_threshold(Utc::now(), 1_000);
         write_file(&path, "test", stale_time)
             .await

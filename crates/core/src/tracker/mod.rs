@@ -32,6 +32,7 @@ pub mod inclusion;
 
 use std::{collections::HashMap, future::Future, sync::Arc};
 
+use bon::bon;
 use pluto_featureset::FeatureSet;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -174,7 +175,6 @@ const EVENT_BUFFER: usize = 1024;
 ///
 /// `par_sig` is only set by `ParSigDBInternal`, `ParSigEx`, and
 /// `ParSigDBExternal` events, matching Go's `event.parSig`.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct Event {
     pub duty: Duty,
@@ -204,6 +204,8 @@ pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
     /// Kept so callers can detect task completion or panics by awaiting it.
     /// Dropping the handle detaches the task; call `.abort()` to cancel it.
+    // Read only from tests, so `expect(dead_code)` would be unfulfilled under
+    // `--all-targets`; use `allow` to keep the field in non-test builds.
     #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<()>,
 }
@@ -211,7 +213,8 @@ pub struct TrackerHandle {
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
         // Shutdown is signalled by the receiver being dropped, which causes
-        // send() to return Err immediately — no explicit cancellation select needed.
+        // send() to return Err immediately — no explicit cancellation select
+        // needed.
         if let Err(e) = self.input_tx.send(event).await {
             tracing::warn!(
                 duty = %e.0.duty,
@@ -342,9 +345,10 @@ pub struct TrackerService {
     failed_duty_reporter: Box<dyn DutyResultReporter>,
     participation_reporter: Box<dyn ParticipationReporter>,
     unsupported_ignorer: UnsupportedIgnorer,
-    feature_set: Arc<FeatureSet>,
+    feature_set: &'static FeatureSet,
 }
 
+#[bon]
 impl TrackerService {
     /// Builds the [`TrackerHandle`] and spawns the background event loop.
     ///
@@ -356,7 +360,7 @@ impl TrackerService {
     /// Both `analyser` and `deleter` must have been started with the same
     /// `cancel` token as passed here, so that all three components shut down
     /// together.
-    #[allow(clippy::too_many_arguments)]
+    #[builder]
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
@@ -365,35 +369,38 @@ impl TrackerService {
         deleter_rx: DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Arc<TrackerHandle> {
-        Self::start_with_buffer_and_sinks(
-            cancel,
-            analyser,
-            analyser_rx,
-            deleter,
-            deleter_rx,
-            from_slot,
-            EVENT_BUFFER,
-            Box::new(MetricsDutyReporter::new()),
-            Box::new(MetricsParticipationReporter::new(peers)),
-            feature_set,
-        )
+        Self::start_with_buffer_and_sinks()
+            .cancel(cancel)
+            .analyser(analyser)
+            .analyser_rx(analyser_rx)
+            .deleter(deleter)
+            .deleter_rx(deleter_rx)
+            .from_slot(from_slot)
+            .buffer(EVENT_BUFFER)
+            .failed_duty_reporter(Box::new(MetricsDutyReporter::new()))
+            .participation_reporter(Box::new(MetricsParticipationReporter::new(peers)))
+            .feature_set(feature_set)
+            .call()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[builder]
     fn start_with_buffer_and_sinks(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
-        AnalyserRx(analyser_rx): AnalyserRx,
+        analyser_rx: AnalyserRx,
         deleter: DeadlinerHandle,
-        DeleterRx(deleter_rx): DeleterRx,
+        deleter_rx: DeleterRx,
         from_slot: u64,
         buffer: usize,
         failed_duty_reporter: Box<dyn DutyResultReporter>,
         participation_reporter: Box<dyn ParticipationReporter>,
-        feature_set: Arc<FeatureSet>,
+        feature_set: &'static FeatureSet,
     ) -> Arc<TrackerHandle> {
+        let AnalyserRx(analyser_rx) = analyser_rx;
+        let DeleterRx(deleter_rx) = deleter_rx;
+
         let (input_tx, input_rx) = mpsc::channel(buffer);
 
         let task = Self {
@@ -420,13 +427,13 @@ impl TrackerService {
         let parsigs = extract_par_sigs(duty_events);
         report_par_sigs(duty, &parsigs);
 
-        let failed_step = duty_failed_step(duty_events, &self.feature_set);
+        let failed_step = duty_failed_step(duty_events, self.feature_set);
         let outcome = analyse_duty_failed(
             duty,
             events,
             &failed_step,
             msg_roots_consistent(&parsigs),
-            &self.feature_set,
+            self.feature_set,
         );
 
         if self.unsupported_ignorer.check(duty, outcome.as_ref()) {
@@ -455,6 +462,7 @@ impl TrackerService {
         );
     }
 
+    #[tracing::instrument(name = "tracker", level = "debug", skip_all, fields(topic = "tracker"))]
     async fn run(mut self) {
         let mut events: HashMap<Duty, Vec<Event>> = HashMap::new();
 
@@ -517,13 +525,12 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex, time::Duration};
 
     use chrono::{DateTime, Utc};
-    use pluto_ssz::HashRoot;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
-        signeddata::SignedDataError,
+        signeddata::MockSignedData,
         tracker::{
             reason::Reason,
             reporters::{DutyResultReporter, ParticipationReporter},
@@ -634,18 +641,18 @@ mod tests {
         let (analyser_tx, analyser_rx) = mpsc::channel(16);
         let (deleter_tx, deleter_rx) = mpsc::channel(16);
 
-        let handle = TrackerService::start_with_buffer_and_sinks(
-            cancel.clone(),
-            analyser_handle,
-            AnalyserRx(analyser_rx),
-            deleter_handle,
-            DeleterRx(deleter_rx),
-            from_slot,
-            EVENT_BUFFER,
-            failure_sink,
-            participation_sink,
-            Arc::new(pluto_featureset::FeatureSet::new()),
-        );
+        let handle = TrackerService::start_with_buffer_and_sinks()
+            .cancel(cancel.clone())
+            .analyser(analyser_handle)
+            .analyser_rx(AnalyserRx(analyser_rx))
+            .deleter(deleter_handle)
+            .deleter_rx(DeleterRx(deleter_rx))
+            .from_slot(from_slot)
+            .buffer(EVENT_BUFFER)
+            .failed_duty_reporter(failure_sink)
+            .participation_reporter(participation_sink)
+            .feature_set(Box::leak(Box::new(pluto_featureset::FeatureSet::new())))
+            .call();
 
         (handle, analyser_tx, deleter_tx)
     }
@@ -660,37 +667,14 @@ mod tests {
 
     /// Minimal [`crate::types::SignedData`] for constructing [`ParSignedData`]
     /// in tests without needing real ETH2 attestation data.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SimpleSignedData;
-
-    impl crate::types::SignedData for SimpleSignedData {
-        fn signature(&self) -> Result<pluto_crypto::types::Signature, SignedDataError> {
-            Ok([0u8; 96])
-        }
-
-        fn set_signature(
-            &self,
-            _sig: pluto_crypto::types::Signature,
-        ) -> Result<Self, SignedDataError> {
-            Ok(Self)
-        }
-
-        fn set_signature_boxed(
-            &self,
-            sig: pluto_crypto::types::Signature,
-        ) -> Result<Box<dyn crate::types::SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(sig)?))
-        }
-
-        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-            Ok([0u8; 32])
-        }
+    fn simple_signed_data() -> crate::types::SignedData {
+        MockSignedData::new([0u8; 96]).into()
     }
 
     fn par_sig_set(pubkeys: &[PubKey], share_idx: u64) -> ParSignedDataSet {
         let mut set = ParSignedDataSet::new();
         for pk in pubkeys {
-            set.insert(*pk, ParSignedData::new(SimpleSignedData, share_idx));
+            set.insert(*pk, ParSignedData::new(simple_signed_data(), share_idx));
         }
         set
     }
@@ -717,16 +701,16 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
         let (deleter, deleter_rx) =
             DeadlinerTask::start(cancel.clone(), "deleter", FutureCalculator);
-        TrackerService::start(
-            cancel.clone(),
-            analyser,
-            AnalyserRx(analyser_rx),
-            deleter,
-            DeleterRx(deleter_rx),
-            vec![],
-            from_slot,
-            Arc::new(pluto_featureset::FeatureSet::new()),
-        )
+        TrackerService::start()
+            .cancel(cancel.clone())
+            .analyser(analyser)
+            .analyser_rx(AnalyserRx(analyser_rx))
+            .deleter(deleter)
+            .deleter_rx(DeleterRx(deleter_rx))
+            .peers(vec![])
+            .from_slot(from_slot)
+            .feature_set(Box::leak(Box::new(pluto_featureset::FeatureSet::new())))
+            .call()
     }
 
     #[tokio::test]
@@ -805,16 +789,16 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "analyser", NeverExpiringCalculator);
         let (deleter, deleter_rx) =
             DeadlinerTask::start(cancel.clone(), "deleter", NeverExpiringCalculator);
-        let handle = TrackerService::start(
-            cancel.clone(),
-            analyser,
-            AnalyserRx(analyser_rx),
-            deleter,
-            DeleterRx(deleter_rx),
-            vec![],
-            0,
-            Arc::new(pluto_featureset::FeatureSet::new()),
-        );
+        let handle = TrackerService::start()
+            .cancel(cancel.clone())
+            .analyser(analyser)
+            .analyser_rx(AnalyserRx(analyser_rx))
+            .deleter(deleter)
+            .deleter_rx(DeleterRx(deleter_rx))
+            .peers(vec![])
+            .from_slot(0)
+            .feature_set(Box::leak(Box::new(pluto_featureset::FeatureSet::new())))
+            .call();
 
         let duty = attester(1);
         let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
@@ -1118,8 +1102,9 @@ mod tests {
 
         let recs = part_records.lock().unwrap();
         assert_eq!(recs.len(), 1);
-        // analyse_participation counts distinct pubkeys across all stored events;
-        // expected_per_peer==3 proves each key produced its own event entry.
+        // analyse_participation counts distinct pubkeys across all stored
+        // events; expected_per_peer==3 proves each key produced its own
+        // event entry.
         assert_eq!(recs[0].expected_per_peer, 3);
     }
 }

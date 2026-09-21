@@ -15,6 +15,7 @@ pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 const REGISTRATION_DOMAIN_TYPE: DomainType = [0x00, 0x00, 0x00, 0x01];
 
 /// Registration error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {
     /// Invalid fee recipient address.
@@ -59,7 +60,7 @@ pub fn get_message_signing_root(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
 
     #[test]
     fn new_message_works() {
@@ -94,9 +95,7 @@ mod tests {
         let result = new_message(pubkey, fee_recipient, gas_limit, timestamp);
         assert!(matches!(
             result,
-            Err(RegistrationError::InvalidAddress(
-                crate::helpers::HelperError::InvalidAddress(_)
-            ))
+            Err(RegistrationError::InvalidAddress(ref e)) if matches!(**e, crate::helpers::HelperError::InvalidAddress(_))
         ));
     }
 
@@ -134,7 +133,7 @@ mod tests {
                 .unwrap();
         let secret: pluto_crypto::types::PrivateKey = sk_bytes.as_slice().try_into().unwrap();
 
-        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let pubkey = tbls::secret_to_public_key(&secret).unwrap();
 
         let registration_json = r#"
 			{
@@ -204,8 +203,7 @@ mod tests {
         .try_into()
         .unwrap();
 
-        BlstImpl
-            .verify(&pubkey, &signing_root, &signature)
+        tbls::verify(&pubkey, &signing_root, &signature)
             .expect("BLS signature verification failed");
     }
 }

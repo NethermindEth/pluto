@@ -9,6 +9,7 @@ use clap::FromArgMatches;
 use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
+use tracing::{Instrument as _, error};
 
 mod ascii;
 mod cli;
@@ -18,19 +19,44 @@ mod error;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let matches = cli::build_command().get_matches();
+
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
         Err(err) => {
-            eprintln!("Error: {}", err);
-            ExitCode::FAILURE
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
         }
+    };
+
+    let loki = match pluto_tracing::init(&cli.tracing.tracing_config()) {
+        Ok(loki) => loki,
+        Err(err) => {
+            eprintln!("{err:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cmd_span = tracing::debug_span!("cmd", topic = "cmd");
+    cmd_span.in_scope(|| cli.tracing.warn_unused());
+
+    let result = run(cli.command).instrument(cmd_span.clone()).await;
+
+    let exit = match &result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => cmd_span.in_scope(|| {
+            error!(error = ?err, "command exited with error");
+            ExitCode::FAILURE
+        }),
+    };
+
+    if let Some(loki) = loki {
+        loki.shutdown().await;
     }
+
+    exit
 }
 
-async fn run() -> std::result::Result<(), CliError> {
-    let matches = cli::build_command().get_matches();
-    let cli = Cli::from_arg_matches(&matches)?;
-
+async fn run(command: Commands) -> std::result::Result<(), CliError> {
     // Top level cancellation token for graceful shutdown on Ctrl+C / SIGTERM.
     let ct = CancellationToken::new();
     tokio::spawn({
@@ -61,23 +87,18 @@ async fn run() -> std::result::Result<(), CliError> {
     });
 
     let mut stdout = std::io::stdout();
-    match cli.command {
-        Commands::Create(args) => {
-            pluto_tracing::init(&pluto_tracing::TracingConfig::default())
-                .expect("Failed to initialize tracing");
-            match args.command {
-                CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
-                CreateCommands::Enr(args) => commands::create_enr::run(args),
-                CreateCommands::Cluster(args) => {
-                    commands::create_cluster::run(&mut stdout, *args).await
-                }
+    match command {
+        Commands::Create(args) => match args.command {
+            CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
+            CreateCommands::Enr(args) => commands::create_enr::run(args),
+            CreateCommands::Cluster(args) => {
+                commands::create_cluster::run(&mut stdout, *args).await
             }
-        }
+        },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
         Commands::Dkg(args) => {
             let config: pluto_dkg::dkg::Config = (*args).try_into()?;
-            pluto_tracing::init(&config.log).expect("Failed to initialize tracing");
             commands::dkg::run(config, ct).await
         }
         Commands::Relay(args) => {
@@ -86,7 +107,6 @@ async fn run() -> std::result::Result<(), CliError> {
         }
         Commands::Run(args) => {
             let config: commands::run::RunConfig = (*args).try_into()?;
-            // Tracing/Loki init is owned by `commands::run::run`.
             commands::run::run(config, ct).await
         }
         Commands::Unsafe(args) => match args.command {
@@ -96,32 +116,26 @@ async fn run() -> std::result::Result<(), CliError> {
             }
         },
         Commands::Alpha(args) => match args.command {
-            AlphaCommands::Test(args) => {
-                pluto_tracing::init(&pluto_tracing::TracingConfig::default())
-                    .expect("Failed to initialize tracing");
-                match args.command {
-                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
+            AlphaCommands::Test(args) => match args.command {
+                TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
+                    .await
+                    .map(|_| ()),
+                TestCommands::Beacon(args) => commands::test::beacon::run(args, &mut stdout, ct)
+                    .await
+                    .map(|_| ()),
+                TestCommands::Validator(args) => {
+                    commands::test::validator::run(args, &mut stdout, ct)
                         .await
-                        .map(|_| ()),
-                    TestCommands::Beacon(args) => {
-                        commands::test::beacon::run(args, &mut stdout, ct)
-                            .await
-                            .map(|_| ())
-                    }
-                    TestCommands::Validator(args) => {
-                        commands::test::validator::run(args, &mut stdout, ct)
-                            .await
-                            .map(|_| ())
-                    }
-                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
-                        .await
-                        .map(|_| ()),
-                    TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout, ct)
-                        .await
-                        .map(|_| ()),
-                    TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await,
+                        .map(|_| ())
                 }
-            }
+                TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
+                    .await
+                    .map(|_| ()),
+                TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout, ct)
+                    .await
+                    .map(|_| ()),
+                TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await,
+            },
         },
     }
 }

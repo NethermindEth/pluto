@@ -39,17 +39,21 @@ use pluto_core::{
     },
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
-    validatorapi::{self, Component, Handler, SeenPubkeysFn},
+    validatorapi::{self, Component, Handler},
 };
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient,
+    EthBeaconNodeApiClient,
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
-use crate::node::AppError;
+use crate::{
+    node::AppError,
+    retry::{self, AsyncOptions, DoAsyncError},
+};
 
 /// A `Send + Sync` boxed future. The parsigdb subscriber seams require their
 /// futures to be `Sync` (see `internal_subscriber`/`threshold_subscriber`), so
@@ -113,20 +117,9 @@ pub struct ValidatorInfo {
 /// returns the original error, so the tracker's reason inference — which walks
 /// `source()` looking for an `EthBeaconNodeApiClientError` — still classifies
 /// beacon-node failures correctly.
-#[derive(Debug, Clone)]
-struct SharedStepError(StepError);
-
-impl std::fmt::Display for SharedStepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for SharedStepError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&*self.0)
-    }
-}
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+struct SharedStepError(#[source] StepError);
 
 /// Splits a step result into the error to report to the tracker and the error
 /// to return to the caller, sharing one allocation between them.
@@ -145,6 +138,109 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     Arc::new(err)
+}
+
+// ---------------------------------------------------------------------------
+// Async retry wrapper layer
+//
+// Five duty-pipeline callbacks are dispatched on the retry executor and return
+// to their caller immediately: `fetcher.fetch`, `consensus.participate`,
+// `consensus.propose`, `parsigex.broadcast` and `bcast.broadcast`.
+//
+// The wrappers go around the existing stitch closures rather than the raw
+// component methods, which keeps the tracker reporting inside the retry loop.
+// ---------------------------------------------------------------------------
+
+/// A duty callback dispatched onto the async retry executor.
+///
+/// Calling it spawns the wrapped work and returns immediately. Exposed on
+/// [`WiredComponents`] so wiring tests can drive the scheduler stitch
+/// directly.
+pub type DutyCallback =
+    Arc<dyn Fn(Duty, pluto_core::types::DutyDefinitionSet) + Send + Sync + 'static>;
+
+/// How the retry executor treats a wrapped duty callback's errors.
+///
+/// Errors are not classified at run time: the generated beacon client
+/// collapses non-2xx responses into message-less typed errors (any non-200
+/// attestation-data response becomes `FetcherError::NilAttestationData`, for
+/// one), so there is nothing left to tell a temporary beacon-node failure
+/// apart from a permanent one.
+///
+/// The policy is therefore fixed per call site: the three network-facing
+/// callbacks retry, bounded by the duty deadline and the executor's
+/// exponential backoff, while consensus runs once — re-running a failed QBFT
+/// instance for the same duty would be wrong.
+#[derive(Clone, Copy)]
+enum RetryPolicy {
+    /// Retry the call until it succeeds or the duty's deadline elapses.
+    Retry,
+    /// Run the call once; failures are logged, not retried.
+    Once,
+}
+
+/// Builds the [`AsyncOptions`] shared by every wrapped duty callback.
+///
+/// Deadlines come from the duty deadline calculator, and the executor is
+/// cancelled on node shutdown so in-flight retries do not outlive the
+/// components they call.
+fn retry_options(
+    deadline_calc: &Arc<dyn DeadlineCalculator>,
+    ct: &CancellationToken,
+) -> AsyncOptions<Duty> {
+    let deadline_calc = Arc::clone(deadline_calc);
+    AsyncOptions::default()
+        .with_cancellation_token(ct.clone())
+        .with_deadline(move |duty: Duty| match deadline_calc.deadline(&duty) {
+            Ok(deadline) => deadline,
+            Err(err) => {
+                // A duty without a deadline is retried until shutdown; do
+                // the same for a calculator failure rather than dropping the
+                // duty.
+                tracing::warn!(
+                    ?err,
+                    duty = %duty,
+                    "retry: duty deadline unavailable, retrying until shutdown",
+                );
+                None
+            }
+        })
+}
+
+/// Dispatches `call` onto the async retry executor and returns immediately.
+fn spawn_retried<F, Fut, E>(
+    options: AsyncOptions<Duty>,
+    duty: Duty,
+    topic: &'static str,
+    name: &'static str,
+    policy: RetryPolicy,
+    mut call: F,
+) where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::spawn(retry::do_async(options, duty, topic, name, move || {
+        let fut = call();
+        async move {
+            fut.await.map_err(|err| {
+                // `DoAsyncError` carries no payload, so log the underlying
+                // error before classifying it.
+                tracing::warn!(%err, topic, name, "duty callback failed");
+                match policy {
+                    RetryPolicy::Retry => DoAsyncError::RetryableError,
+                    RetryPolicy::Once => DoAsyncError::NonRetryableError,
+                }
+            })
+        }
+    }));
+}
+
+/// Returns the immediate `Ok` a wrapped callback hands back to its caller. The
+/// real work has been dispatched onto the retry executor, so the caller is
+/// never told whether it failed.
+fn dispatched<E>() -> std::future::Ready<Result<(), E>> {
+    std::future::ready(Ok(()))
 }
 
 /// Wraps a [`DeadlineCalculator`], shifting every deadline later by a fixed
@@ -185,19 +281,21 @@ impl DeadlineCalculator for OffsetCalculator {
 /// core panics if fed those submissions. So mask the (alpha, off-by-default)
 /// `AttestationInclusion` feature off until that path lands, keeping the
 /// analyser and the checker consistent.
-fn tracker_feature_set(feature_set: &Arc<FeatureSet>) -> Arc<FeatureSet> {
+fn tracker_feature_set(feature_set: &FeatureSet) -> &FeatureSet {
     if !feature_set.enabled(Feature::AttestationInclusion) {
-        return Arc::clone(feature_set);
+        return feature_set;
     }
 
     tracing::warn!(
         "Feature attestation_inclusion is enabled but not yet supported by the \
          inclusion checker; disabling it for duty tracking"
     );
-    let mut fs = (**feature_set).clone();
+    let mut fs = feature_set.clone();
     fs.state
         .insert(Feature::AttestationInclusion, Status::Disable);
-    Arc::new(fs)
+    // Derived set leaks its own small static, matching the process-lifetime
+    // invariant of the primary set.
+    Box::leak(Box::new(fs))
 }
 
 /// Returns the slot to start tracking from, which suppresses noisy failed
@@ -215,7 +313,7 @@ async fn calculate_tracker_delay(
     let genesis = eth2_cl
         .fetch_genesis_time()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
 
     let elapsed = chrono::Utc::now()
         .signed_duration_since(genesis)
@@ -252,12 +350,11 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node client used for scheduling.
-    pub beacon_client: BeaconNodeClient,
-    /// Beacon node API client used for fetching / dutydb / validatorapi.
+    /// Beacon node API client used for scheduling, fetching, dutydb and
+    /// validatorapi.
     pub eth2_cl: EthBeaconNodeApiClient,
-    /// Submission beacon node client used for broadcasting.
-    pub submission_client: BeaconNodeClient,
+    /// Beacon node API client used for broadcasting, with the submit timeout.
+    pub submission_client: EthBeaconNodeApiClient,
     /// Per-validator data for this node.
     pub validators: Vec<ValidatorInfo>,
     /// Current consensus implementation, from the controller. Forwards to the
@@ -289,10 +386,6 @@ pub struct WireInputs {
     /// Whether to fetch only committee index 0 at/after `electra_slot`
     /// (`Feature::FetchOnlyCommIdx0`).
     pub fetch_only_comm_idx0: bool,
-    /// Observer invoked with each DV root pubkey the validator client
-    /// references on the validator API, feeding the monitoring readiness
-    /// checker. `None` disables the signal (e.g. tests).
-    pub seen_pubkeys: Option<SeenPubkeysFn>,
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
@@ -301,7 +394,7 @@ pub struct WireInputs {
     pub peers: Vec<PeerInfo>,
     /// Resolved feature set. The tracker consults it to decide which duty types
     /// have an on-chain inclusion step (`Feature::AttestationInclusion`).
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
     /// Infosync component, triggered on each epoch's last slot to run the
     /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
@@ -325,6 +418,10 @@ pub struct WiredComponents {
     pub aggsigdb: MemoryDBHandle,
     /// The fetcher (driven via scheduler subscriptions).
     pub fetcher: Arc<Fetcher>,
+    /// The retry-wrapped `fetcher.fetch` duty callback the scheduler drives.
+    /// Returned so wiring tests can exercise it without standing up a live
+    /// duty round.
+    pub fetch_duty: DutyCallback,
     /// Networked inclusion checker; its `run` loop is spawned and supervised by
     /// the caller.
     pub inclusion_checker: Arc<InclusionChecker>,
@@ -421,7 +518,6 @@ pub async fn wire_core_workflow(
     let WireInputs {
         threshold,
         share_idx,
-        beacon_client,
         eth2_cl,
         submission_client,
         validators,
@@ -434,7 +530,6 @@ pub async fn wire_core_workflow(
         graffiti_builder,
         electra_slot,
         fetch_only_comm_idx0,
-        seen_pubkeys,
         slot_tick,
         peers,
         feature_set,
@@ -442,28 +537,22 @@ pub async fn wire_core_workflow(
     } = inputs;
 
     // ---- Derived validator maps ----
-    let mut eth2_pubkeys = Vec::with_capacity(validators.len());
     // DV root pubkey -> this node's public share (validatorapi wants this flat
     // map already collapsed for our share index).
     let mut pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey> = HashMap::new();
     let mut fee_recipient_by_pubkey: HashMap<PubKey, ExecutionAddress> = HashMap::new();
     for val in &validators {
-        eth2_pubkeys.push(val.eth2_pubkey);
         pub_share_by_pubkey.insert(val.eth2_pubkey, val.pubshare);
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
 
-    // One pubkey-scoped validator cache shared by the scheduler's beacon
-    // client, the submission client, and the validator API, so every consumer
-    // resolves the same cluster validator set. Without seeding, the scheduler
-    // would resolve duties against an empty (or unfiltered) set. `ValidatorCache`
-    // clones share state, so the per-epoch trim + refresh subscriber registered
-    // below refreshes every consumer at once.
+    // One pubkey-scoped validator cache shared by the scheduler, the
+    // broadcaster and the validator API, so every consumer resolves the same
+    // cluster validator set. `ValidatorCache` clones share state, so the
+    // per-epoch trim + refresh subscriber registered below refreshes every
+    // consumer at once.
+    let eth2_pubkeys = validators.iter().map(|v| v.eth2_pubkey).collect();
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    tokio::join!(
-        beacon_client.set_validator_cache(validator_cache.clone()),
-        submission_client.set_validator_cache(validator_cache.clone()),
-    );
 
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
@@ -472,8 +561,9 @@ pub async fn wire_core_workflow(
 
     // ---- Deadliners (one per component) ----
     //
-    // Each component gets its own deadliner task sharing the injected calculator
-    // (an `Arc<dyn DeadlineCalculator>`, so a single instance backs all three).
+    // Each component gets its own deadliner task sharing the injected
+    // calculator (an `Arc<dyn DeadlineCalculator>`, so a single instance
+    // backs all three).
     let (dutydb_deadliner, dutydb_deadliner_rx) =
         DeadlinerTask::start(ct.clone(), "dutydb", Arc::clone(&deadline_calc));
     let (parsigdb_deadliner, parsigdb_deadliner_rx) =
@@ -483,15 +573,15 @@ pub async fn wire_core_workflow(
 
     // ---- Tracker ----
     //
-    // Analysis has to wait until a duty's inclusion verdict can have arrived, so
-    // both tracker deadliners sit `INCL_MISSED_LAG + INCL_CHECK_LAG` slots past
-    // the duty deadline, and the deleter a further minute past the analyser so
-    // duties of the same slot are analysed before their events are dropped.
-    // Parity: charon `app.go` `newTracker`.
+    // Analysis has to wait until a duty's inclusion verdict can have arrived,
+    // so both tracker deadliners sit `INCL_MISSED_LAG + INCL_CHECK_LAG`
+    // slots past the duty deadline, and the deleter a further minute past
+    // the analyser so duties of the same slot are analysed before their
+    // events are dropped. Parity: charon `app.go` `newTracker`.
     let (slot_duration, _slots_per_epoch) = eth2_cl
         .fetch_slots_config()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
     let tracker_lag = slot_duration
         .saturating_mul(u32::try_from(INCL_MISSED_LAG + INCL_CHECK_LAG).unwrap_or(u32::MAX));
 
@@ -512,23 +602,23 @@ pub async fn wire_core_workflow(
         )),
     );
 
-    let tracker_feature_set = tracker_feature_set(&feature_set);
+    let tracker_feature_set = tracker_feature_set(feature_set);
 
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
-    let tracker = TrackerService::start(
-        ct.clone(),
-        tracker_analyser,
-        AnalyserRx(tracker_analyser_rx),
-        tracker_deleter,
-        DeleterRx(tracker_deleter_rx),
-        peers,
-        track_from,
-        Arc::clone(&tracker_feature_set),
-    );
+    let tracker = TrackerService::start()
+        .cancel(ct.clone())
+        .analyser(tracker_analyser)
+        .analyser_rx(AnalyserRx(tracker_analyser_rx))
+        .deleter(tracker_deleter)
+        .deleter_rx(DeleterRx(tracker_deleter_rx))
+        .peers(peers)
+        .from_slot(track_from)
+        .feature_set(tracker_feature_set)
+        .call();
 
-    // Resolves the terminal `ChainInclusion` step; without it every duty with an
-    // inclusion step would stall unresolved and be reported as failed. Spawned
-    // and supervised by `run_lifecycle`.
+    // Resolves the terminal `ChainInclusion` step; without it every duty with
+    // an inclusion step would stall unresolved and be reported as failed.
+    // Spawned and supervised by `run_lifecycle`.
     let inclusion_checker = {
         let tracker = Arc::clone(&tracker);
         Arc::new(
@@ -539,21 +629,27 @@ pub async fn wire_core_workflow(
                     let duty = duty.clone();
                     // The core's callback is sync but `inclusion_checked` is
                     // async, so hand the event to the runtime.
-                    tokio::spawn(async move {
-                        tracker.inclusion_checked(duty, pubkey, err).await;
-                    });
+                    let span = tracing::Span::current();
+                    tokio::spawn(
+                        async move {
+                            tracker.inclusion_checked(duty, pubkey, err).await;
+                        }
+                        .instrument(span),
+                    );
                 }),
-                Arc::clone(&tracker_feature_set),
+                tracker_feature_set,
             )
             .await
-            .map_err(AppError::BeaconApi)?,
+            .map_err(|e| AppError::BeaconApi(e.into()))?,
         )
     };
 
-    // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target) ----
+    // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target)
+    // ----
     let aggsigdb = MemoryDBHandle::new(aggsigdb_deadliner, aggsigdb_deadliner_rx, ct.clone());
 
-    // ---- (5) DutyDB (built before fetcher: await_att_data back-edge target) ----
+    // ---- (5) DutyDB (built before fetcher: await_att_data back-edge target)
+    // ----
     let dutydb = Arc::new(dutydb::MemDB::new(
         dutydb_deadliner,
         dutydb_deadliner_rx,
@@ -569,7 +665,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
             Box::pin(async move {
-                let signed: Box<dyn SignedData> = aggsigdb.wait_for(duty, pubkey).await?;
+                let signed: SignedData = aggsigdb.wait_for(duty, pubkey).await?;
                 Ok(signed)
             })
         })
@@ -586,44 +682,67 @@ pub async fn wire_core_workflow(
             })
         })
     };
-    // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty deadline.
+    // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty
+    // deadline and dispatched onto the retry executor (async, not retried).
     let fetch_subscriber: Subscriber = {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
         let deadline_calc = Arc::clone(&deadline_calc);
         let tracker = Arc::clone(&tracker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         Arc::new(move |duty: Duty, set: UnsignedDataSet| {
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
             let deadline_calc = Arc::clone(&deadline_calc);
             let tracker = Arc::clone(&tracker);
-            Box::pin(async move {
-                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
-                let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
-                // Bound consensus by the duty deadline so a stuck instance is
-                // cancelled (-> ConsensusTimeout) instead of running until shutdown.
-                let result = run_bounded_by_duty_deadline(
-                    &deadline_calc,
-                    &ct,
-                    duty.clone(),
-                    move |duty, dct| async move { consensus.propose(dct, duty, value).await },
-                )
-                .await;
-
-                match result {
-                    Ok(()) => {
-                        tracker.consensus_proposed(duty, &pubkeys, None).await;
-                        Ok(())
-                    }
-                    Err(err) => {
-                        let (reported, returned) = share_step_err(err);
-                        tracker
-                            .consensus_proposed(duty, &pubkeys, Some(reported))
+            spawn_retried(
+                retry_opts.clone(),
+                duty.clone(),
+                "consensus",
+                "propose",
+                RetryPolicy::Once,
+                move || {
+                    let consensus = Arc::clone(&consensus);
+                    let ct = ct.clone();
+                    let deadline_calc = Arc::clone(&deadline_calc);
+                    let tracker = Arc::clone(&tracker);
+                    let duty = duty.clone();
+                    let set = set.clone();
+                    async move {
+                        let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                        let value = unsigneddata::unsigned_data_set_to_proto(&set)
+                            .map_err(|err| SharedStepError(owned_step_err(err)))?;
+                        // Bound consensus by the duty deadline so a stuck
+                        // instance is cancelled (-> ConsensusTimeout) instead
+                        // of running until shutdown.
+                        let result =
+                            run_bounded_by_duty_deadline(
+                                &deadline_calc,
+                                &ct,
+                                duty.clone(),
+                                move |duty, dct| async move {
+                                    consensus.propose(dct, duty, value).await
+                                },
+                            )
                             .await;
-                        Err(returned.into())
+
+                        match result {
+                            Ok(()) => {
+                                tracker.consensus_proposed(duty, &pubkeys, None).await;
+                                Ok(())
+                            }
+                            Err(err) => {
+                                let (reported, returned) = share_step_err(err);
+                                tracker
+                                    .consensus_proposed(duty, &pubkeys, Some(reported))
+                                    .await;
+                                Err(returned)
+                            }
+                        }
                     }
-                }
-            })
+                },
+            );
+            Box::pin(dispatched())
         })
     };
 
@@ -652,26 +771,35 @@ pub async fn wire_core_workflow(
             move |duty: Duty, value: pbcore::UnsignedDataSet| {
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
-                tokio::spawn(async move {
-                    let core_set =
-                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                // `tokio::spawn` starts the task with an empty span stack, so
+                // re-attach the caller's span.
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let core_set = match unsigneddata::unsigned_data_set_from_proto(
+                            &duty.duty_type,
+                            &value,
+                        ) {
                             Ok(set) => set,
                             Err(err) => {
                                 tracing::warn!(?err, "dutydb: decode unsigned data set");
                                 return;
                             }
                         };
-                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                    // Logged before the error moves into the tracker's `Arc`.
-                    let step_err = match dutydb.store(duty.clone(), core_set).await {
-                        Ok(()) => None,
-                        Err(err) => {
-                            tracing::warn!(?err, "dutydb: store");
-                            Some(owned_step_err(err))
-                        }
-                    };
-                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-                });
+                        let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                        // Logged before the error moves into the tracker's
+                        // `Arc`.
+                        let step_err = match dutydb.store(duty.clone(), core_set).await {
+                            Ok(()) => None,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: store");
+                                Some(owned_step_err(err))
+                            }
+                        };
+                        tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                    }
+                    .instrument(span),
+                );
                 Ok(())
             },
         ));
@@ -684,41 +812,53 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner,
     ));
 
-    // Stitch: parsigdb.subscribe_internal(parsigex.broadcast).
+    // Stitch: parsigdb.subscribe_internal(parsigex.broadcast), dispatched onto
+    // the retry executor.
     {
         let broadcast = Arc::clone(&parsigex.broadcast);
         let tracker = Arc::clone(&tracker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         parsigdb
             .subscribe_internal(parsigdb::memory::internal_subscriber(
                 move |duty: Duty, set: ParSignedDataSet| {
                     let broadcast = Arc::clone(&broadcast);
                     let tracker = Arc::clone(&tracker);
-                    async move {
-                        match broadcast(duty.clone(), set.clone()).await {
-                            Ok(()) => {
-                                tracker.par_sig_ex_broadcasted(duty, &set, None).await;
-                                Ok(())
-                            }
-                            Err(err) => {
-                                let (reported, returned) = share_step_err(err);
-                                tracker
-                                    .par_sig_ex_broadcasted(duty, &set, Some(reported))
-                                    .await;
-                                Err(
-                                    parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                        source: Box::new(returned),
+                    spawn_retried(
+                        retry_opts.clone(),
+                        duty.clone(),
+                        "parsigex",
+                        "broadcast",
+                        RetryPolicy::Retry,
+                        move || {
+                            let broadcast = Arc::clone(&broadcast);
+                            let tracker = Arc::clone(&tracker);
+                            let duty = duty.clone();
+                            let set = set.clone();
+                            async move {
+                                match broadcast(duty.clone(), set.clone()).await {
+                                    Ok(()) => {
+                                        tracker.par_sig_ex_broadcasted(duty, &set, None).await;
+                                        Ok(())
                                     }
-                                    .into(),
-                                )
+                                    Err(err) => {
+                                        let (reported, returned) = share_step_err(err);
+                                        tracker
+                                            .par_sig_ex_broadcasted(duty, &set, Some(reported))
+                                            .await;
+                                        Err(returned)
+                                    }
+                                }
                             }
-                        }
-                    }
+                        },
+                    );
+                    dispatched()
                 },
             ))
             .await;
     }
 
-    // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer) ----
+    // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer)
+    // ----
     //
     // The production verifier (injected via `sigagg_verifier`) reconstructs the
     // group signature and verifies it against the beacon-node signing domain.
@@ -752,49 +892,67 @@ pub async fn wire_core_workflow(
     }
     // ---- (11) Broadcaster ----
     let broadcaster = Arc::new(
-        Broadcaster::new(submission_client)
+        Broadcaster::new(submission_client, validator_cache.clone())
             .await
             .map_err(AppError::Broadcaster)?,
     );
-    // Stitch: sigagg.subscribe(broadcaster.broadcast).
+    // Stitch: sigagg.subscribe(broadcaster.broadcast), dispatched onto the
+    // retry executor.
     {
         let broadcaster = Arc::clone(&broadcaster);
         let tracker = Arc::clone(&tracker);
         let inclusion = Arc::clone(&inclusion_checker);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         aggregator.subscribe(Arc::new(move |duty: &Duty, set: &SignedDataSet| {
             let broadcaster = Arc::clone(&broadcaster);
             let tracker = Arc::clone(&tracker);
             let inclusion = Arc::clone(&inclusion);
             let duty = duty.clone();
             let set = set.clone();
-            Box::pin(async move {
-                let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+            spawn_retried(
+                retry_opts.clone(),
+                duty.clone(),
+                "bcast",
+                "broadcast",
+                RetryPolicy::Retry,
+                move || {
+                    let broadcaster = Arc::clone(&broadcaster);
+                    let tracker = Arc::clone(&tracker);
+                    let inclusion = Arc::clone(&inclusion);
+                    let duty = duty.clone();
+                    let set = set.clone();
+                    async move {
+                        let pubkeys: Vec<PubKey> = set.keys().copied().collect();
 
-                // Register for inclusion checking before broadcasting, and even
-                // if the broadcast fails: peers may still succeed, so the duty
-                // can land on-chain regardless. Parity: charon
-                // `core/tracking.go` `BroadcasterBroadcast`.
-                if let Err(err) = inclusion.submitted(&duty, &set) {
-                    tracing::error!(
-                        ?err,
-                        duty = %duty,
-                        "Internal error: failed to submit duty to inclusion checker. \
-                         This indicates a tracking bug that should be reported",
-                    );
-                }
+                        // Register for inclusion checking before broadcasting,
+                        // and even if the broadcast fails: peers may still
+                        // succeed, so the duty can land on-chain regardless.
+                        // This sits inside the retry loop for the same reason.
+                        if let Err(err) = inclusion.submitted(&duty, &set) {
+                            tracing::error!(
+                                ?err,
+                                duty = %duty,
+                                "Internal error: failed to submit duty to inclusion checker. \
+                                 This indicates a tracking bug that should be reported",
+                            );
+                        }
 
-                let step_err = match broadcaster.broadcast(duty.clone(), set).await {
-                    Ok(()) => None,
-                    Err(err) => {
-                        tracing::warn!(?err, "broadcaster: broadcast");
-                        Some(owned_step_err(err))
+                        let result = broadcaster.broadcast(duty.clone(), set).await;
+                        let (step_err, returned) = match result {
+                            Ok(()) => (None, Ok(())),
+                            Err(err) => {
+                                let (reported, returned) = share_step_err(err);
+                                (Some(reported), Err(returned))
+                            }
+                        };
+                        tracker
+                            .broadcaster_broadcast(duty, &pubkeys, step_err)
+                            .await;
+                        returned
                     }
-                };
-                tracker
-                    .broadcaster_broadcast(duty, &pubkeys, step_err)
-                    .await;
-                Ok(())
-            })
+                },
+            );
+            Box::pin(dispatched())
         }));
     }
     let aggregator = Arc::new(aggregator);
@@ -882,69 +1040,113 @@ pub async fn wire_core_workflow(
     // Built before the validator API so its handle can back
     // `register_get_duty_definition`. Stitches:
     // scheduler.subscribe_duty(fetcher.fetch) and
-    // scheduler.subscribe_duty(consensus.participate), registered on the builder
-    // before `.build()` (which blocks until chain start + sync).
+    // scheduler.subscribe_duty(consensus.participate), registered on the
+    // builder before `.build()` (which blocks until chain start + sync).
     let mut sched_builder = SchedulerBuilder::new();
-    {
+    // Stitch: scheduler.subscribe_duty(fetcher.fetch), dispatched onto the
+    // retry executor. This is the one callback that is genuinely retried, so a
+    // transient beacon-node failure no longer drops the duty on this node.
+    let fetch_duty: DutyCallback = {
         let fetcher = Arc::clone(&fetcher);
         let ct = ct.clone();
         let tracker = Arc::clone(&tracker);
-        sched_builder.subscribe_duty(
-            move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
+        let retry_opts = retry_options(&deadline_calc, &ct);
+        Arc::new(
+            move |duty: Duty, set: pluto_core::types::DutyDefinitionSet| {
                 let fetcher = Arc::clone(&fetcher);
                 let ct = ct.clone();
                 let tracker = Arc::clone(&tracker);
-                let duty = duty.clone();
-                let set = set.clone();
-                async move {
-                    let pubkeys: Vec<PubKey> = set.keys().copied().collect();
-                    match fetcher.fetch(duty.clone(), set).await {
-                        // In-flight fetches racing shutdown fail against already
-                        // terminated components (e.g. the aggsigdb back-edge);
-                        // don't surface those as duty errors.
-                        Err(err) if ct.is_cancelled() => {
-                            tracing::debug!(?err, "fetch aborted by shutdown");
-                            Ok(())
+                spawn_retried(
+                    retry_opts.clone(),
+                    duty.clone(),
+                    "fetcher",
+                    "fetch",
+                    RetryPolicy::Retry,
+                    move || {
+                        let fetcher = Arc::clone(&fetcher);
+                        let ct = ct.clone();
+                        let tracker = Arc::clone(&tracker);
+                        let duty = duty.clone();
+                        let set = set.clone();
+                        async move {
+                            let pubkeys: Vec<PubKey> = set.keys().copied().collect();
+                            match fetcher.fetch(duty.clone(), set).await {
+                                // In-flight fetches racing shutdown fail against
+                                // already terminated components (e.g. the
+                                // aggsigdb back-edge); don't surface those as
+                                // duty errors.
+                                Err(err) if ct.is_cancelled() => {
+                                    tracing::debug!(?err, "fetch aborted by shutdown");
+                                    Ok(())
+                                }
+                                Ok(()) => {
+                                    tracker.fetcher_fetched(duty, &pubkeys, None).await;
+                                    Ok(())
+                                }
+                                Err(err) => {
+                                    let (reported, returned) = share_step_err(err);
+                                    tracker
+                                        .fetcher_fetched(duty, &pubkeys, Some(reported))
+                                        .await;
+                                    Err(returned)
+                                }
+                            }
                         }
-                        Ok(()) => {
-                            tracker.fetcher_fetched(duty, &pubkeys, None).await;
-                            Ok(())
-                        }
-                        Err(err) => {
-                            let (reported, returned) = share_step_err(err);
-                            tracker
-                                .fetcher_fetched(duty, &pubkeys, Some(reported))
-                                .await;
-                            // `subscribe_duty` is generic over the error type, so
-                            // the shared wrapper propagates as-is.
-                            Err(returned)
-                        }
-                    }
-                }
+                    },
+                );
+            },
+        )
+    };
+    {
+        let fetch_duty = Arc::clone(&fetch_duty);
+        sched_builder.subscribe_duty(
+            move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
+                fetch_duty(duty.clone(), set.clone());
+                dispatched::<std::convert::Infallible>()
             },
             "fetcher",
         );
     }
+    // Stitch: scheduler.subscribe_duty(consensus.participate), dispatched onto
+    // the retry executor (async, not retried).
     {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
         let deadline_calc = Arc::clone(&deadline_calc);
+        let retry_opts = retry_options(&deadline_calc, &ct);
         sched_builder.subscribe_duty(
             move |duty: &Duty, _set: &pluto_core::types::DutyDefinitionSet| {
                 let consensus = Arc::clone(&consensus);
                 let ct = ct.clone();
                 let deadline_calc = Arc::clone(&deadline_calc);
                 let duty = duty.clone();
-                async move {
-                    // Bound consensus by the duty deadline (see fetch stitch).
-                    run_bounded_by_duty_deadline(
-                        &deadline_calc,
-                        &ct,
-                        duty,
-                        move |duty, dct| async move { consensus.participate(dct, duty).await },
-                    )
-                    .await
-                }
+                spawn_retried(
+                    retry_opts.clone(),
+                    duty.clone(),
+                    "consensus",
+                    "participate",
+                    RetryPolicy::Once,
+                    move || {
+                        let consensus = Arc::clone(&consensus);
+                        let ct = ct.clone();
+                        let deadline_calc = Arc::clone(&deadline_calc);
+                        let duty = duty.clone();
+                        async move {
+                            // Bound consensus by the duty deadline (see fetch
+                            // stitch).
+                            run_bounded_by_duty_deadline(
+                                &deadline_calc,
+                                &ct,
+                                duty,
+                                move |duty, dct| async move {
+                                    consensus.participate(dct, duty).await
+                                },
+                            )
+                            .await
+                        }
+                    },
+                );
+                dispatched::<std::convert::Infallible>()
             },
             "consensus",
         );
@@ -987,19 +1189,20 @@ pub async fn wire_core_workflow(
     }
 
     let (scheduler, scheduler_task) = sched_builder
-        .build(beacon_client, ct.clone())
+        .build(eth2_cl.clone(), validator_cache.clone(), ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
 
     // ---- (13) ValidatorAPI ----
     //
-    // The `Component` holds `dutydb` directly; `await_proposal` falls back to it
-    // when unregistered. The awaits with no fallback are registered here: the
-    // agg-sig-db await (back-edge into `aggsigdb.wait_for`), the dutydb-backed
-    // agg-attestation / sync-contribution / pubkey-by-attestation lookups, and
-    // the scheduler-backed duty-definition lookup.
+    // The `Component` holds `dutydb` directly; `await_proposal` falls back to
+    // it when unregistered. The awaits with no fallback are registered
+    // here: the agg-sig-db await (back-edge into `aggsigdb.wait_for`), the
+    // dutydb-backed agg-attestation / sync-contribution /
+    // pubkey-by-attestation lookups, and the scheduler-backed
+    // duty-definition lookup.
     let mut vapi = Component::new(
-        Arc::new(eth2_cl.clone()),
+        eth2_cl.clone(),
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
@@ -1056,9 +1259,9 @@ pub async fn wire_core_workflow(
             }
         });
     }
-    // scheduler-backed duty-definition lookup. The result is type-erased for the
-    // validatorapi callback boundary and downcast to `DutyDefinitionSet` by the
-    // component.
+    // scheduler-backed duty-definition lookup. The result is type-erased for
+    // the validatorapi callback boundary and downcast to
+    // `DutyDefinitionSet` by the component.
     {
         let scheduler = scheduler.clone();
         vapi.register_get_duty_definition(move |duty: Duty| {
@@ -1097,11 +1300,6 @@ pub async fn wire_core_workflow(
         });
     }
 
-    // Feed the monitoring readiness checker the pubkeys the VC references.
-    if let Some(observer) = seen_pubkeys {
-        vapi.register_seen_pubkeys(observer);
-    }
-
     let validator_api_router = validatorapi::new_router(
         Arc::new(vapi) as Arc<dyn Handler>,
         builder_enabled,
@@ -1115,6 +1313,7 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner_rx,
         aggsigdb,
         fetcher,
+        fetch_duty,
         inclusion_checker,
         validator_api_router,
     })
@@ -1160,6 +1359,7 @@ where
 
 /// Failure driving a duty's consensus instance: either the deadline could not
 /// be computed or the consensus round itself failed.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum DutyConsensusError {
     #[error(transparent)]
@@ -1275,15 +1475,14 @@ mod tests {
     use super::*;
     use pluto_core::types::SlotNumber;
     use pluto_eth2api::{
-        BlindedBlock400Response, GetStateValidatorsResponseResponse,
-        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+        ErrorBody, ValidatorsResponse,
+        spec::phase0,
+        v1::{Validator, ValidatorStatus},
     };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
-
-    const FAR_FUTURE_EPOCH: &str = "18446744073709551615";
 
     fn test_pubkey(seed: u8) -> BLSPubKey {
         let mut bytes = [0u8; 48];
@@ -1291,50 +1490,38 @@ mod tests {
         bytes
     }
 
-    fn format_pubkey(pubkey: &BLSPubKey) -> String {
-        format!("0x{}", hex::encode(pubkey))
-    }
-
-    fn test_datum(
-        index: u64,
-        pubkey: &BLSPubKey,
-        status: ValidatorStatus,
-    ) -> GetStateValidatorsResponseResponseDatum {
-        GetStateValidatorsResponseResponseDatum {
-            index: index.to_string(),
-            balance: "32000000000".to_string(),
+    fn test_datum(index: u64, pubkey: &BLSPubKey, status: ValidatorStatus) -> Validator {
+        Validator {
+            index,
+            balance: 32_000_000_000,
             status,
-            validator: ValidatorResponseValidator {
-                pubkey: format_pubkey(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                effective_balance: "32000000000".to_string(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_string(),
-                activation_epoch: "0".to_string(),
-                exit_epoch: FAR_FUTURE_EPOCH.to_string(),
-                withdrawable_epoch: FAR_FUTURE_EPOCH.to_string(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning `data`.
-    fn post_validators_ok(
-        state_id: impl AsRef<str>,
-        data: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> Mock {
+    fn post_validators_ok(state_id: impl AsRef<str>, data: Vec<Validator>) -> Mock {
         Mock::given(method("POST"))
             .and(path(format!(
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ValidatorsResponse {
                     execution_optimistic: false,
                     finalized: true,
                     data,
-                },
-            ))
+                }),
+            )
     }
 
     /// An unmounted `POST /states/{state_id}/validators` mock returning 404, so
@@ -1345,13 +1532,11 @@ mod tests {
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
-                    code: 404.0,
-                    message: "State not found".to_string(),
-                    stacktraces: None,
-                }),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(ErrorBody {
+                code: Some(404),
+                message: "State not found".to_string(),
+                ..ErrorBody::default()
+            }))
     }
 
     fn test_cache(server: &MockServer, pubkeys: Vec<BLSPubKey>) -> ValidatorCache {
@@ -1397,7 +1582,8 @@ mod tests {
         let cache = test_cache(&mock, vec![pk]);
         let refresher = ValidatorCacheRefresher::new(cache.clone());
 
-        // First tick (epoch 0, first slot): fetches slot 0 — validator inactive.
+        // First tick (epoch 0, first slot): fetches slot 0 — validator
+        // inactive.
         refresher
             .refresh(&test_slot(0, SPE))
             .await
@@ -1468,8 +1654,9 @@ mod tests {
     async fn refresh_skips_mid_epoch_slot_once_refreshed_by_slot() {
         let pk = test_pubkey(5);
         let mock = MockServer::start().await;
-        // Only slot 0 is served, and it must be hit exactly once. Slot 1 is left
-        // unmounted: any mid-epoch fetch would 404 → head fallback → error.
+        // Only slot 0 is served, and it must be hit exactly once. Slot 1 is
+        // left unmounted: any mid-epoch fetch would 404 → head fallback
+        // → error.
         post_validators_ok(
             "0",
             vec![test_datum(5, &pk, ValidatorStatus::ActiveOngoing)],
@@ -1515,7 +1702,8 @@ mod tests {
         .await;
         // The epoch's first slot (0) reports the validator active. Slot 6 (the
         // current slot on the second tick) is deliberately left unmounted: were
-        // it fetched, it would 404 → head → empty active set, failing the assert.
+        // it fetched, it would 404 → head → empty active set, failing the
+        // assert.
         post_validators_ok(
             "0",
             vec![test_datum(1, &pk, ValidatorStatus::ActiveOngoing)],
@@ -1538,8 +1726,8 @@ mod tests {
         );
 
         // Second tick at mid-epoch slot 6: forced to refresh because the prior
-        // refresh fell back to head, and it fetches epoch-first slot 0 (active),
-        // not slot 6.
+        // refresh fell back to head, and it fetches epoch-first slot 0
+        // (active), not slot 6.
         refresher
             .refresh(&test_slot(6, SPE))
             .await
@@ -1553,14 +1741,14 @@ mod tests {
         assert!(active.contains_key(&1));
     }
 
-    fn feature_set(enabled: Vec<Feature>) -> Arc<FeatureSet> {
-        Arc::new(
+    fn feature_set(enabled: Vec<Feature>) -> &'static FeatureSet {
+        Box::leak(Box::new(
             FeatureSet::from_config(pluto_featureset::Config {
                 enabled,
                 ..Default::default()
             })
             .expect("valid featureset"),
-        )
+        ))
     }
 
     /// `AttestationInclusion` is masked off for the tracker so the
@@ -1571,15 +1759,15 @@ mod tests {
         let fs = feature_set(vec![Feature::AttestationInclusion]);
         assert!(fs.enabled(Feature::AttestationInclusion));
 
-        let tracker_fs = tracker_feature_set(&fs);
+        let tracker_fs = tracker_feature_set(fs);
         assert!(!tracker_fs.enabled(Feature::AttestationInclusion));
     }
 
-    /// Without the feature the set is passed through untouched (same `Arc`).
+    /// Without the feature the set is passed through untouched (same pointer).
     #[test]
     fn tracker_feature_set_is_passthrough_when_disabled() {
         let fs = feature_set(vec![]);
-        let tracker_fs = tracker_feature_set(&fs);
-        assert!(Arc::ptr_eq(&fs, &tracker_fs));
+        let tracker_fs = tracker_feature_set(fs);
+        assert!(std::ptr::eq(fs, tracker_fs));
     }
 }

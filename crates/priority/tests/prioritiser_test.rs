@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use futures::{FutureExt as _, StreamExt as _, future::select_all};
 use libp2p::{
     Multiaddr, PeerId, Swarm,
@@ -61,7 +62,7 @@ struct TestConsensus {
     proposed: Mutex<HashMap<u64, PriorityResult>>,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl Consensus for TestConsensus {
     async fn propose_priority(
         &self,
@@ -138,21 +139,23 @@ fn build_host(
     let keypair = keypair_from_secret_key(key).expect("keypair");
 
     // A permissive verifier returning Ok for every message.
-    let validator = Box::new(|_: &PriorityMsg| Ok(()));
+    let validator = Arc::new(|_: &PriorityMsg| Ok(()));
 
-    let (prioritiser, behaviour) = Prioritiser::new_internal(
-        peer_id,
-        peers.clone(),
-        i64::try_from(peers.len()).expect("peer count fits i64"),
-        consensus,
-        validator,
-        Duration::from_secs(3600),
-        deadliner,
-        // Cluster context for known-peer gating. Addresses are unused here: the
-        // test pre-dials a full mesh by address, so exchanges reuse existing
-        // connections rather than dialing by peer id.
-        P2PContext::new(peers.clone()),
-    );
+    // Cluster context for known-peer gating. Addresses are unused here: the
+    // test pre-dials a full mesh by address, so exchanges reuse existing
+    // connections rather than dialing by peer id.
+    let p2p_context = P2PContext::new(peers.clone());
+
+    let (prioritiser, behaviour) = Prioritiser::new_internal()
+        .local_id(peer_id)
+        .peers(peers.clone())
+        .min_required(i64::try_from(peers.len()).expect("peer count fits i64"))
+        .consensus(consensus)
+        .msg_validator(validator)
+        .exchange_timeout(Duration::from_secs(3600))
+        .deadliner(deadliner)
+        .p2p_context(p2p_context)
+        .call();
 
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -364,7 +367,8 @@ async fn three_host_prioritiser() {
     }
     drop(err_tx);
 
-    // Expect N * len(duties) decided priority lists, each [prio 0] @ score N*1000.
+    // Expect N * len(duties) decided priority lists, each [prio 0] @ score
+    // N*1000.
     let expected_results = N * duties.len();
     let expected_score = i64::try_from(N).expect("N fits i64") * 1000;
     let zero_any = prio_to_any(0);

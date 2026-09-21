@@ -3,7 +3,6 @@
 
 /// Shared serde helpers for spec-compatible JSON.
 pub mod serde_utils;
-pub use serde_utils::ConversionError;
 
 /// Spec-level version enums.
 pub mod version;

@@ -8,10 +8,7 @@
 //!
 //! These utilities are primarily used internally by the [`crate::p2p`] module.
 
-use std::{
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::{collections::HashSet, net::IpAddr, time::Duration};
 
 use libp2p::{
     Multiaddr,
@@ -21,95 +18,87 @@ use libp2p::{
 
 use crate::metrics::{ConnectionType, Protocol};
 
-use crate::{
-    config::{self, P2PConfig},
-    manet::Manet,
-};
+use crate::{config::P2PConfig, manet::Manet};
 
-/// Returns the external IP and Hostname fields as TCP multiaddrs on `ports`.
+/// A transport a node can listen on and advertise.
 ///
-/// `ports` must be the ports the node actually listens on: a configured port of
-/// 0 means the kernel picks one, so the configured value would advertise
-/// nothing dialable.
-fn external_tcp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut resp = vec![];
-
-    if let Some(external_ip) = cfg.external_ip.as_ref() {
-        let ip = external_ip.parse::<IpAddr>()?;
-
-        for port in ports {
-            let maddr = config::multi_addr_from_ip_tcp_port(SocketAddr::new(ip, *port))?;
-
-            resp.push(maddr);
-        }
-    }
-
-    if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in ports {
-            resp.push(multiaddr::multiaddr!(Dns(external_host), Tcp(*port)));
-        }
-    }
-
-    Ok(resp)
+/// Distinct from [`crate::p2p::NodeType`], which says which transports a node
+/// installs: a QUIC node installs both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportProtocol {
+    /// TCP, addressed as `/tcp/<port>`.
+    Tcp,
+    /// QUIC over UDP, addressed as `/udp/<port>/quic-v1`.
+    Quic,
 }
 
-/// Returns the external IP and Hostname fields as QUIC multiaddrs on `ports`.
-///
-/// `ports` must be the ports the node actually listens on, as in
-/// [`external_tcp_multiaddrs`].
-fn external_udp_multiaddrs(cfg: &P2PConfig, ports: &[u16]) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut resp = vec![];
-
-    if let Some(external_ip) = cfg.external_ip.as_ref() {
-        let ip = external_ip.parse::<IpAddr>()?;
-
-        for port in ports {
-            let maddr = config::multi_addr_from_ip_udp_port(SocketAddr::new(ip, *port))?;
-
-            resp.push(maddr);
-        }
-    }
-
-    if let Some(external_host) = cfg.external_host.as_ref() {
-        for port in ports {
-            resp.push(multiaddr::multiaddr!(
-                Dns(external_host),
-                Udp(*port),
-                QuicV1
-            ));
-        }
-    }
-
-    Ok(resp)
-}
-
-/// Returns the external IP and Hostname fields as multiaddrs on the ports of
-/// `listen_addrs`, TCP forms first.
+/// Returns the external IP and hostname from `cfg` as multiaddrs on the ports
+/// of `listen_addrs`, TCP forms first.
 pub fn external_multiaddrs(
     cfg: &P2PConfig,
     listen_addrs: &[Multiaddr],
 ) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let tcp_ports: Vec<u16> = listen_addrs.iter().filter_map(tcp_port).collect();
-    let udp_ports: Vec<u16> = listen_addrs.iter().filter_map(udp_port).collect();
+    let external_ip = cfg
+        .external_ip
+        .as_deref()
+        .map(str::parse::<IpAddr>)
+        .transpose()?;
 
-    let mut addrs = external_tcp_multiaddrs(cfg, &tcp_ports)?;
-    addrs.extend(external_udp_multiaddrs(cfg, &udp_ports)?);
-
-    Ok(addrs)
+    Ok(external_multiaddrs_on(
+        external_ip,
+        cfg.external_host.as_deref(),
+        listen_addrs,
+    ))
 }
 
-/// Returns the TCP port of a multiaddr.
-pub fn tcp_port(addr: &Multiaddr) -> Option<u16> {
-    addr.iter().find_map(|protocol| match protocol {
-        MaProtocol::Tcp(port) => Some(port),
-        _ => None,
-    })
+/// Returns `external_ip` and `external_host` as multiaddrs on the ports of
+/// `listen_addrs`, TCP forms first.
+pub(crate) fn external_multiaddrs_on(
+    external_ip: Option<IpAddr>,
+    external_host: Option<&str>,
+    listen_addrs: &[Multiaddr],
+) -> Vec<Multiaddr> {
+    let mut addrs = Vec::new();
+
+    for proto in [TransportProtocol::Tcp, TransportProtocol::Quic] {
+        let ports: Vec<u16> = listen_addrs
+            .iter()
+            .filter_map(|addr| addr_port(addr, proto))
+            .collect();
+
+        if let Some(ip) = external_ip {
+            addrs.extend(
+                ports
+                    .iter()
+                    .map(|&port| with_transport(Multiaddr::from(ip), port, proto)),
+            );
+        }
+
+        if let Some(host) = external_host {
+            addrs.extend(
+                ports
+                    .iter()
+                    .map(|&port| with_transport(multiaddr::multiaddr!(Dns(host)), port, proto)),
+            );
+        }
+    }
+
+    addrs
 }
 
-/// Returns the UDP port of a multiaddr.
-pub fn udp_port(addr: &Multiaddr) -> Option<u16> {
-    addr.iter().find_map(|protocol| match protocol {
-        MaProtocol::Udp(port) => Some(port),
+/// Appends the `proto` transport on `port` to `base`.
+pub(crate) fn with_transport(base: Multiaddr, port: u16, proto: TransportProtocol) -> Multiaddr {
+    match proto {
+        TransportProtocol::Tcp => base.with(MaProtocol::Tcp(port)),
+        TransportProtocol::Quic => base.with(MaProtocol::Udp(port)).with(MaProtocol::QuicV1),
+    }
+}
+
+/// Returns the port `addr` carries for `proto`, if any.
+pub fn addr_port(addr: &Multiaddr, proto: TransportProtocol) -> Option<u16> {
+    addr.iter().find_map(|protocol| match (protocol, proto) {
+        (MaProtocol::Tcp(port), TransportProtocol::Tcp)
+        | (MaProtocol::Udp(port), TransportProtocol::Quic) => Some(port),
         _ => None,
     })
 }
@@ -118,29 +107,41 @@ pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);
 
 pub(crate) struct InternalAddresses(pub Vec<Multiaddr>);
 
-/// Filters the advertised addresses to exclude private addresses if the
-/// `exclude_internal_private` flag is set.
+/// Returns the unique external and internal addresses to advertise, in source
+/// order, optionally excluding private internal addresses.
+///
+/// External addresses are never dropped for being private: they were configured
+/// explicitly. Deduplication spans both groups, so an address listed as both
+/// external and internal is advertised once.
+///
 /// Since the type of external and internal addresses is the same, we use type
 /// wrappers to avoid confusion.
 pub(crate) fn filter_advertised_addresses(
     external_addrs: ExternalAddresses,
     internal_addrs: InternalAddresses,
     exclude_internal_private: bool,
-) -> crate::p2p::Result<Vec<Multiaddr>> {
-    let mut external_addrs = external_addrs.0;
-    let mut internal_addrs = internal_addrs.0;
+) -> Vec<Multiaddr> {
+    let mut seen = HashSet::new();
+    let mut advertised = Vec::new();
 
-    external_addrs.sort();
-    internal_addrs.sort();
+    let mut add = |addrs: Vec<Multiaddr>, exclude_private: bool| {
+        for addr in addrs {
+            if !seen.insert(addr.clone()) {
+                continue;
+            }
 
-    external_addrs.dedup();
-    internal_addrs.dedup();
+            if exclude_private && addr.is_private() {
+                continue;
+            }
 
-    if exclude_internal_private {
-        internal_addrs.retain(|addr| !addr.is_private());
-    }
+            advertised.push(addr);
+        }
+    };
 
-    Ok(external_addrs.into_iter().chain(internal_addrs).collect())
+    add(external_addrs.0, false);
+    add(internal_addrs.0, exclude_internal_private);
+
+    advertised
 }
 
 /// Returns the default swarm configuration.
@@ -191,11 +192,6 @@ pub fn is_tcp_addr(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, MaProtocol::Tcp(_)))
 }
 
-/// Returns true if the node has QUIC enabled (listening on QUIC addresses).
-pub fn is_quic_enabled<'a>(listen_addrs: impl Iterator<Item = &'a Multiaddr>) -> bool {
-    listen_addrs.into_iter().any(is_quic_addr)
-}
-
 /// Returns true if there is a direct (non-relay) QUIC connection among the
 /// peers.
 pub fn has_direct_quic_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
@@ -226,6 +222,8 @@ pub fn is_direct_addr(addr: &Multiaddr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
 
     /// Config with the external overrides under test.
@@ -239,6 +237,136 @@ mod tests {
 
     fn as_strings(addrs: &[Multiaddr]) -> Vec<String> {
         addrs.iter().map(ToString::to_string).collect()
+    }
+
+    const RELAY_ID: &str = "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT";
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    fn relayed(transport: &str) -> Multiaddr {
+        addr(&format!("{transport}/p2p/{RELAY_ID}/p2p-circuit"))
+    }
+
+    fn conn(remote_addr: Multiaddr) -> crate::p2p_context::Peer {
+        crate::p2p_context::Peer {
+            id: libp2p::PeerId::random(),
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(1),
+            remote_addr,
+        }
+    }
+
+    #[test]
+    fn is_relay_addr_needs_a_circuit_component() {
+        assert!(is_relay_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+        assert!(is_relay_addr(&relayed("/ip4/1.2.3.4/udp/3610/quic-v1")));
+
+        // A plain address to the relay itself is not a relayed address.
+        assert!(!is_relay_addr(&addr(&format!(
+            "/ip4/1.2.3.4/tcp/3610/p2p/{RELAY_ID}"
+        ))));
+        assert!(!is_relay_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+
+        assert!(is_direct_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        assert!(!is_direct_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+    }
+
+    #[test]
+    fn is_quic_addr_accepts_both_quic_versions() {
+        assert!(is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")));
+        assert!(is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610/quic")));
+        // Relaying is the separate axis: relayed QUIC is still QUIC.
+        assert!(is_quic_addr(&relayed("/ip4/1.2.3.4/udp/3610/quic-v1")));
+
+        assert!(!is_quic_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        // UDP alone is not QUIC.
+        assert!(!is_quic_addr(&addr("/ip4/1.2.3.4/udp/3610")));
+    }
+
+    #[test]
+    fn is_tcp_addr_needs_a_tcp_component() {
+        assert!(is_tcp_addr(&addr("/ip4/1.2.3.4/tcp/3610")));
+        assert!(is_tcp_addr(&addr("/dns/relay.example.com/tcp/3610")));
+        assert!(is_tcp_addr(&relayed("/ip4/1.2.3.4/tcp/3610")));
+
+        assert!(!is_tcp_addr(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")));
+        assert!(!is_tcp_addr(&addr("/ip4/1.2.3.4")));
+    }
+
+    #[test]
+    fn addr_type_and_protocol_classify_the_two_axes() {
+        assert_eq!(
+            addr_type(&addr("/ip4/1.2.3.4/tcp/3610")),
+            ConnectionType::Direct
+        );
+        assert_eq!(
+            addr_type(&relayed("/ip4/1.2.3.4/tcp/3610")),
+            ConnectionType::Relay
+        );
+
+        assert_eq!(
+            addr_protocol(&addr("/ip4/1.2.3.4/udp/3610/quic-v1")),
+            Protocol::Quic
+        );
+        assert_eq!(addr_protocol(&addr("/ip4/1.2.3.4/tcp/3610")), Protocol::Tcp);
+        assert_eq!(addr_protocol(&addr("/ip4/1.2.3.4")), Protocol::Unknown);
+    }
+
+    #[test]
+    fn filter_direct_quic_addrs_keeps_only_unrelayed_quic() {
+        let quic = addr("/ip4/1.2.3.4/udp/3610/quic-v1");
+        let candidates = vec![
+            quic.clone(),
+            addr("/ip4/1.2.3.4/tcp/3610"),
+            relayed("/ip4/1.2.3.4/udp/3610/quic-v1"),
+            relayed("/ip4/1.2.3.4/tcp/3610"),
+        ];
+
+        assert_eq!(filter_direct_quic_addrs(candidates.into_iter()), vec![quic]);
+        assert!(filter_direct_quic_addrs(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn direct_conn_checks_ignore_relayed_connections() {
+        let quic = conn(addr("/ip4/1.2.3.4/udp/3610/quic-v1"));
+        let tcp = conn(addr("/ip4/1.2.3.4/tcp/3610"));
+        let relayed_quic = conn(relayed("/ip4/1.2.3.4/udp/3610/quic-v1"));
+        let relayed_tcp = conn(relayed("/ip4/1.2.3.4/tcp/3610"));
+
+        assert!(has_direct_quic_conn(&[&quic]));
+        assert!(!has_direct_quic_conn(&[&tcp, &relayed_quic]));
+        assert!(!has_direct_quic_conn(&[]));
+
+        assert!(has_direct_tcp_conn(&[&tcp]));
+        assert!(!has_direct_tcp_conn(&[&quic, &relayed_tcp]));
+        assert!(!has_direct_tcp_conn(&[]));
+    }
+
+    const PRIV1: &str = "/ip4/192.168.1.1/tcp/80";
+    const PRIV2: &str = "/ip4/127.0.0.1/udp/123";
+    const PUB1: &str = "/ip4/1.1.1.1/tcp/80";
+
+    /// Charon's `TestFilterAdvertisedAddrs` table (`p2p/p2p_internal_test.go`).
+    #[test_case(&[], &[], false, &[] ; "empty")]
+    #[test_case(&[], &[PUB1, PRIV1], true, &[PUB1] ; "drop one private")]
+    #[test_case(&[], &[PUB1, PRIV1], false, &[PUB1, PRIV1] ; "keep one private")]
+    #[test_case(&[PRIV1, PUB1], &[PUB1, PRIV1], true, &[PRIV1, PUB1] ; "duplicate public")]
+    #[test_case(&[PRIV2, PRIV1], &[PRIV1, PRIV2], false, &[PRIV2, PRIV1] ; "duplicate private")]
+    #[test_case(&[], &[PRIV1, PRIV2], true, &[] ; "drop all private")]
+    fn filters_advertised_addresses(
+        external: &[&str],
+        internal: &[&str],
+        exclude_private: bool,
+        want: &[&str],
+    ) {
+        let got = filter_advertised_addresses(
+            ExternalAddresses(external.iter().map(|a| addr(a)).collect()),
+            InternalAddresses(internal.iter().map(|a| addr(a)).collect()),
+            exclude_private,
+        );
+
+        assert_eq!(as_strings(&got), want);
     }
 
     #[test]

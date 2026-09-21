@@ -65,9 +65,10 @@
 //! let node = Node::new_server(
 //!     P2PConfig::default(),
 //!     secret_key,
-//!     NodeType::TCP,
+//!     NodeType::QUIC,
 //!     false, // filter_private_addrs
 //!     P2PContext::default(),
+//!     None, // bandwidth
 //!     |builder, keypair| {
 //!         builder.with_inner(
 //!             relay::Behaviour::new(keypair.public().to_peer_id(), relay_config)
@@ -87,6 +88,7 @@
 //! Client nodes may include relay client to support connecting via relays.
 
 use std::{
+    net::IpAddr,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -95,10 +97,15 @@ use std::{
 use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, autonat,
-    core::transport::ListenerId,
-    identify,
+    core::{
+        Transport as _,
+        muxing::StreamMuxerBox,
+        transport::{Boxed, ListenerId, OptionalTransport},
+        upgrade::Version,
+    },
+    dns, identify,
     identity::Keypair,
-    noise, ping, relay,
+    noise, ping, quic, relay,
     swarm::{ListenError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
@@ -108,9 +115,9 @@ use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
     metrics::P2P_METRICS,
-    name::peer_name,
+    name,
     p2p_context::P2PContext,
-    utils,
+    utils::{self, TransportProtocol},
 };
 
 const YAMUX_MAX_NUM_STREAMS: usize = 2_048;
@@ -122,6 +129,7 @@ fn yamux_config() -> yamux::Config {
 }
 
 /// P2P error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum P2PError {
     /// Failed to convert the secret key to a libp2p keypair.
@@ -165,10 +173,6 @@ pub enum P2PError {
     #[error("Failed to configure DNS transport: {0}")]
     FailedToConfigureDns(Box<dyn std::error::Error + Send + Sync>),
 
-    /// Failed to configure TCP transport (includes Noise and Yamux).
-    #[error("Failed to configure TCP transport: {0}")]
-    FailedToConfigureTcp(Box<dyn std::error::Error + Send + Sync>),
-
     /// Failed to configure relay client.
     #[error("Failed to configure relay client: {0}")]
     FailedToConfigureRelayClient(Box<dyn std::error::Error + Send + Sync>),
@@ -189,11 +193,6 @@ impl P2PError {
     /// Failed to configure DNS transport.
     pub fn failed_to_configure_dns(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::FailedToConfigureDns(Box::new(error))
-    }
-
-    /// Failed to configure TCP transport.
-    pub fn failed_to_configure_tcp(error: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::FailedToConfigureTcp(Box::new(error))
     }
 
     /// Failed to configure relay client.
@@ -222,6 +221,65 @@ pub enum NodeType {
     QUIC,
 }
 
+impl NodeType {
+    /// Whether this node runs the QUIC transport alongside TCP.
+    ///
+    /// Mirrors Charon, which chains the QUIC transport onto the TCP one for
+    /// `NodeTypeQUIC` and installs TCP alone otherwise — QUIC nodes accommodate
+    /// both kinds of connection.
+    pub fn quic_enabled(self) -> bool {
+        matches!(self, NodeType::QUIC)
+    }
+
+    /// The transports this node listens on and advertises, TCP first.
+    fn transports(self) -> &'static [TransportProtocol] {
+        if self.quic_enabled() {
+            &[TransportProtocol::Tcp, TransportProtocol::Quic]
+        } else {
+            &[TransportProtocol::Tcp]
+        }
+    }
+}
+
+/// Builds the transport stack for `node_type`.
+///
+/// TCP (Noise + Yamux) is always installed; QUIC is chained onto it only for
+/// [`NodeType::QUIC`], matching Charon. The result is resolved through the
+/// system DNS resolver and, when `bandwidth` is set, metered per peer.
+fn base_transport(
+    keypair: &Keypair,
+    node_type: NodeType,
+    bandwidth: Option<crate::BandwidthFactory>,
+) -> Result<Boxed<(PeerId, StreamMuxerBox)>> {
+    let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default())
+        .upgrade(Version::V1Lazy)
+        .authenticate(noise::Config::new(keypair).map_err(P2PError::failed_to_configure_noise)?)
+        .multiplex(yamux_config())
+        .map(|(p, c), _| (p, StreamMuxerBox::new(c)));
+
+    let quic_transport = if node_type.quic_enabled() {
+        OptionalTransport::some(
+            quic::tokio::Transport::new(quic::Config::new(keypair))
+                .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn))),
+        )
+    } else {
+        OptionalTransport::none()
+    };
+
+    let combined = tcp_transport
+        .or_transport(quic_transport)
+        .map(|either, _| either.into_inner());
+
+    let dns = dns::tokio::Transport::system(combined).map_err(P2PError::failed_to_configure_dns)?;
+
+    Ok(match bandwidth {
+        Some(factory) => crate::bandwidth::PeerBandwidthTransport::new(dns, factory)
+            .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)))
+            .boxed(),
+        None => dns.boxed(),
+    })
+}
+
 /// Node.
 pub struct Node<B: NetworkBehaviour> {
     /// Swarm.
@@ -235,6 +293,18 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Listeners registered through [`Node::listen_on`], in registration order.
     listener_ids: Vec<ListenerId>,
+
+    /// External IP to advertise on the bound ports.
+    external_ip: Option<IpAddr>,
+
+    /// External hostname to advertise on the bound ports.
+    external_host: Option<String>,
+
+    /// Whether private listen addresses are withheld from advertisement.
+    filter_private_addrs: bool,
+
+    /// Addresses this node currently registers as external on the swarm.
+    advertised_addrs: Vec<Multiaddr>,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -290,10 +360,7 @@ impl<B: NetworkBehaviour> Node<B> {
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
         init_ping_metrics(&p2p_context);
 
-        let mut node = match node_type {
-            NodeType::TCP => Self::build_tcp_client(keypair, p2p_context, behaviour_fn),
-            NodeType::QUIC => Self::build_quic_client(keypair, p2p_context, behaviour_fn),
-        }?;
+        let mut node = Self::build_client(keypair, node_type, p2p_context, behaviour_fn)?;
 
         node.apply_config(&cfg, filter_private_addrs)?;
 
@@ -333,29 +400,43 @@ impl<B: NetworkBehaviour> Node<B> {
         // No-op for a relay server, which tracks no cluster peers.
         init_ping_metrics(&p2p_context);
 
-        let mut node = match node_type {
-            NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, bandwidth, behaviour_fn),
-            NodeType::QUIC => {
-                Self::build_quic_server(keypair, p2p_context, bandwidth, behaviour_fn)
-            }
-        }?;
+        let mut node =
+            Self::build_server(keypair, node_type, p2p_context, bandwidth, behaviour_fn)?;
 
         node.apply_config(&cfg, filter_private_addrs)?;
 
         Ok(node)
     }
 
+    /// Listens on the configured addresses of every transport this node's
+    /// [`NodeType`] installs.
+    ///
+    /// Transport and address selection are driven by the same
+    /// [`NodeType::transports`] list, so a node can never listen on a transport
+    /// it did not install, nor install one it never listens on.
+    ///
+    /// Nothing is advertised yet: a configured port of 0 means the kernel picks
+    /// one, so the advertised set is derived from the addresses libp2p reports
+    /// as bound (see [`Node::readvertise`]).
     fn apply_config(&mut self, cfg: &P2PConfig, filter_private_addrs: bool) -> Result<()> {
-        let mut addrs = cfg.tcp_multiaddrs()?;
+        self.external_ip = cfg
+            .external_ip
+            .as_deref()
+            .map(str::parse::<IpAddr>)
+            .transpose()?;
+        self.external_host = cfg.external_host.clone();
+        self.filter_private_addrs = filter_private_addrs;
 
-        if self.node_type == NodeType::QUIC {
-            let udp_addrs = cfg.udp_multiaddrs()?;
+        let mut addrs = Vec::new();
 
-            if udp_addrs.is_empty() {
+        for &proto in self.node_type.transports() {
+            let proto_addrs = cfg.multiaddrs(proto)?;
+
+            if proto_addrs.is_empty() && proto == TransportProtocol::Quic {
                 warn!("LibP2P QUIC is enabled, but no UDP addresses are configured");
             }
 
-            addrs.extend(udp_addrs);
+            addrs.extend(proto_addrs);
         }
 
         if addrs.is_empty() {
@@ -364,47 +445,51 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        // Listen on internal addresses only
-        for addr in &addrs {
-            self.listen_on(addr.clone())?;
-        }
-
-        self.set_advertised_addrs(cfg, filter_private_addrs, &addrs)
-    }
-
-    /// Advertises the external IP / hostname from `cfg` on the ports of
-    /// `listen_addrs`, together with `listen_addrs` themselves.
-    ///
-    /// Replaces everything the node advertises, including addresses added
-    /// through [`Node::add_external_address`].
-    ///
-    /// Callers that listen on port 0 should call this again once libp2p has
-    /// reported the kernel-assigned ports: the configured addresses advertise
-    /// port 0, which is not dialable.
-    pub fn set_advertised_addrs(
-        &mut self,
-        cfg: &P2PConfig,
-        filter_private_addrs: bool,
-        listen_addrs: &[Multiaddr],
-    ) -> Result<()> {
-        let external_addrs = utils::external_multiaddrs(cfg, listen_addrs)?;
-
-        // Advertise filtered addresses (external + optionally filtered internal)
-        let advertised_addrs = utils::filter_advertised_addresses(
-            utils::ExternalAddresses(external_addrs),
-            utils::InternalAddresses(listen_addrs.to_vec()),
-            filter_private_addrs,
-        )?;
-
-        for addr in self.swarm.external_addresses().cloned().collect::<Vec<_>>() {
-            self.swarm.remove_external_address(&addr);
-        }
-
-        for addr in advertised_addrs {
-            self.swarm.add_external_address(addr);
+        for addr in addrs {
+            self.listen_on(addr)?;
         }
 
         Ok(())
+    }
+
+    /// Re-derives the advertised set from the listen addresses libp2p reports:
+    /// the external IP / hostname on their ports plus the addresses themselves,
+    /// private ones withheld when configured. Relay circuit listeners are
+    /// skipped: their ports are the relay's, and identify lists them anyway.
+    /// Only the difference to the previous set is applied, so addresses the
+    /// swarm confirmed by other means (AutoNAT) survive.
+    fn readvertise(&mut self) {
+        let listen_addrs: Vec<Multiaddr> = self
+            .swarm
+            .listeners()
+            .filter(|addr| !utils::is_relay_addr(addr))
+            .cloned()
+            .collect();
+
+        let external_addrs = utils::external_multiaddrs_on(
+            self.external_ip,
+            self.external_host.as_deref(),
+            &listen_addrs,
+        );
+
+        let next = utils::filter_advertised_addresses(
+            utils::ExternalAddresses(external_addrs),
+            utils::InternalAddresses(listen_addrs),
+            self.filter_private_addrs,
+        );
+
+        for addr in &self.advertised_addrs {
+            if !next.contains(addr) {
+                self.swarm.remove_external_address(addr);
+            }
+        }
+        for addr in &next {
+            if !self.advertised_addrs.contains(addr) {
+                self.swarm.add_external_address(addr.clone());
+            }
+        }
+
+        self.advertised_addrs = next;
     }
 
     fn bind_local_peer_id(p2p_context: &P2PContext, local_peer_id: PeerId) -> Result<()> {
@@ -423,8 +508,11 @@ impl<B: NetworkBehaviour> Node<B> {
         }
     }
 
-    fn build_quic_client<F>(
+    /// Builds a client node: [`base_transport`] for `node_type`, plus the relay
+    /// client transport and behaviour.
+    fn build_client<F>(
         keypair: Keypair,
+        node_type: NodeType,
         p2p_context: P2PContext,
         behaviour_fn: F,
     ) -> Result<Self>
@@ -435,18 +523,18 @@ impl<B: NetworkBehaviour> Node<B> {
             relay::client::Behaviour,
         ) -> PlutoBehaviourBuilder<B>,
     {
+        // Only the relay server meters bandwidth per peer.
+        let transport = base_transport(&keypair, node_type, None)?;
+
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
-            .map_err(P2PError::failed_to_configure_tcp)?
-            .with_quic()
-            .with_dns()
-            .map_err(P2PError::failed_to_configure_dns)?
+            .with_other_transport(move |_| transport)
+            .expect("returning an already built transport cannot fail")
             .with_relay_client(noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_configure_relay_client)?
             .with_behaviour(|key, relay_client| {
-                let builder =
-                    PlutoBehaviourBuilder::new(p2p_context.clone()).with_quic_enabled(true);
+                let builder = PlutoBehaviourBuilder::new(p2p_context.clone())
+                    .with_quic_enabled(node_type.quic_enabled());
                 behaviour_fn(builder, key, relay_client).build(key)
             })
             .map_err(P2PError::failed_to_build_behaviour)?
@@ -455,35 +543,38 @@ impl<B: NetworkBehaviour> Node<B> {
 
         Ok(Node {
             swarm,
-            node_type: NodeType::QUIC,
+            node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            external_ip: None,
+            external_host: None,
+            filter_private_addrs: false,
+            advertised_addrs: Vec::new(),
         })
     }
 
-    fn build_tcp_client<F>(
+    /// Builds a server node: [`base_transport`] for `node_type`, optionally
+    /// metered per peer, and no relay client.
+    fn build_server<F>(
         keypair: Keypair,
+        node_type: NodeType,
         p2p_context: P2PContext,
+        bandwidth: Option<crate::BandwidthFactory>,
         behaviour_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(
-            PlutoBehaviourBuilder<B>,
-            &Keypair,
-            relay::client::Behaviour,
-        ) -> PlutoBehaviourBuilder<B>,
+        F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
     {
+        let transport = base_transport(&keypair, node_type, bandwidth)?;
+
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
-            .map_err(P2PError::failed_to_configure_tcp)?
-            .with_dns()
-            .map_err(P2PError::failed_to_configure_dns)?
-            .with_relay_client(noise::Config::new, yamux_config)
-            .map_err(P2PError::failed_to_configure_relay_client)?
-            .with_behaviour(|key, relay_client| {
-                let builder = PlutoBehaviourBuilder::new(p2p_context.clone());
-                behaviour_fn(builder, key, relay_client).build(key)
+            .with_other_transport(move |_| transport)
+            .expect("returning an already built transport cannot fail")
+            .with_behaviour(|key| {
+                let builder = PlutoBehaviourBuilder::new(p2p_context.clone())
+                    .with_quic_enabled(node_type.quic_enabled());
+                behaviour_fn(builder, key).build(key)
             })
             .map_err(P2PError::failed_to_build_behaviour)?
             .with_swarm_config(utils::default_swarm_config)
@@ -491,99 +582,14 @@ impl<B: NetworkBehaviour> Node<B> {
 
         Ok(Node {
             swarm,
-            node_type: NodeType::TCP,
+            node_type,
             p2p_context,
             listener_ids: Vec::new(),
+            external_ip: None,
+            external_host: None,
+            filter_private_addrs: false,
+            advertised_addrs: Vec::new(),
         })
-    }
-
-    fn build_quic_server<F>(
-        keypair: Keypair,
-        p2p_context: P2PContext,
-        bandwidth: Option<crate::BandwidthFactory>,
-        behaviour_fn: F,
-    ) -> Result<Self>
-    where
-        F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
-    {
-        let swarm =
-            Self::build_server_swarm(keypair, p2p_context.clone(), bandwidth, behaviour_fn)?;
-        Ok(Node {
-            swarm,
-            node_type: NodeType::QUIC,
-            p2p_context,
-            listener_ids: Vec::new(),
-        })
-    }
-
-    fn build_tcp_server<F>(
-        keypair: Keypair,
-        p2p_context: P2PContext,
-        bandwidth: Option<crate::BandwidthFactory>,
-        behaviour_fn: F,
-    ) -> Result<Self>
-    where
-        F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
-    {
-        let swarm =
-            Self::build_server_swarm(keypair, p2p_context.clone(), bandwidth, behaviour_fn)?;
-        Ok(Node {
-            swarm,
-            node_type: NodeType::TCP,
-            p2p_context,
-            listener_ids: Vec::new(),
-        })
-    }
-
-    fn build_server_swarm<F>(
-        keypair: Keypair,
-        p2p_context: P2PContext,
-        bandwidth: Option<crate::BandwidthFactory>,
-        behaviour_fn: F,
-    ) -> Result<Swarm<PlutoBehaviour<B>>>
-    where
-        F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
-    {
-        use libp2p::{
-            core::{Transport as _, muxing::StreamMuxerBox, upgrade::Version},
-            dns, quic,
-        };
-        let local_peer_id = keypair.public().to_peer_id();
-
-        let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default())
-            .upgrade(Version::V1Lazy)
-            .authenticate(
-                noise::Config::new(&keypair).map_err(P2PError::failed_to_configure_noise)?,
-            )
-            .multiplex(yamux_config())
-            .map(|(p, c), _| (p, StreamMuxerBox::new(c)));
-
-        let quic_transport = quic::tokio::Transport::new(quic::Config::new(&keypair))
-            .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)));
-
-        let combined = tcp_transport
-            .or_transport(quic_transport)
-            .map(|either, _| either.into_inner());
-
-        let dns =
-            dns::tokio::Transport::system(combined).map_err(P2PError::failed_to_configure_dns)?;
-
-        let transport = match bandwidth {
-            Some(factory) => crate::bandwidth::PeerBandwidthTransport::new(dns, factory)
-                .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)))
-                .boxed(),
-            None => dns.boxed(),
-        };
-
-        let behaviour =
-            behaviour_fn(PlutoBehaviourBuilder::new(p2p_context), &keypair).build(&keypair);
-
-        Ok(Swarm::new(
-            transport,
-            behaviour,
-            local_peer_id,
-            utils::default_swarm_config(libp2p::swarm::Config::with_tokio_executor()),
-        ))
     }
 
     /// Returns the node type.
@@ -630,6 +636,7 @@ impl<B: NetworkBehaviour> Node<B> {
     }
 
     /// Handles a swarm event to update metrics and logging.
+    #[tracing::instrument(name = "p2p", level = "debug", skip_all, fields(topic = "p2p"))]
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
             // Identify - update peer addresses in the peer store.
@@ -681,7 +688,7 @@ impl<B: NetworkBehaviour> Node<B> {
             // Connection errors
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer) = peer_id {
-                    warn!(peer = %peer_name(peer), %error, "outgoing connection failed");
+                    warn!(peer = %name::peer_name(peer), %error, "outgoing connection failed");
                 } else {
                     warn!(%error, "outgoing connection failed");
                 }
@@ -690,8 +697,9 @@ impl<B: NetworkBehaviour> Node<B> {
                 // Sockets from health probes, port scanners and incompatible
                 // clients that never complete the libp2p transport upgrade show
                 // up as `Transport` errors. That is routine noise on any
-                // publicly-reachable node, so log it at debug; keep other listen
-                // errors (wrong peer id, denied, aborted, ...) at warn.
+                // publicly-reachable node, so log it at debug; keep other
+                // listen errors (wrong peer id, denied,
+                // aborted, ...) at warn.
                 if matches!(error, ListenError::Transport(_)) {
                     debug!(%error, "incoming connection failed");
                 } else {
@@ -699,12 +707,23 @@ impl<B: NetworkBehaviour> Node<B> {
                 }
             }
 
-            // Listen address changes
+            // Listener changes drive what the node advertises.
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!(%address, "listening on new address");
+                self.readvertise();
             }
             SwarmEvent::ExpiredListenAddr { address, .. } => {
                 info!(%address, "listen address expired");
+                self.readvertise();
+            }
+            SwarmEvent::ListenerClosed {
+                addresses, reason, ..
+            } => {
+                match reason {
+                    Ok(()) => info!(?addresses, "listener closed"),
+                    Err(error) => warn!(?addresses, %error, "listener closed"),
+                }
+                self.readvertise();
             }
 
             // External address discovery
@@ -755,7 +774,7 @@ fn record_ping_metrics(
         return;
     }
 
-    let peer_label = peer_name(peer);
+    let peer_label = name::peer_name(peer);
     match result {
         Ok(duration) => {
             P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
@@ -779,7 +798,7 @@ fn init_ping_metrics(ctx: &P2PContext) {
         if Some(*peer) == local {
             continue;
         }
-        P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+        P2P_METRICS.ping_success[&name::peer_name(peer)].set(0);
     }
 }
 
@@ -790,7 +809,7 @@ fn clear_ping_success(ctx: &P2PContext, peer: &PeerId) {
         return;
     }
 
-    P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+    P2P_METRICS.ping_success[&name::peer_name(peer)].set(0);
 }
 
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
@@ -854,7 +873,7 @@ mod tests {
     fn ping_metrics_recorded_for_known_peer() {
         let known = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&known);
+        let label = name::peer_name(&known);
 
         record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
 
@@ -884,7 +903,7 @@ mod tests {
         let known = random_peer_id();
         let relay = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&relay);
+        let label = name::peer_name(&relay);
 
         record_ping_metrics(&ctx, &relay, &Ok(Duration::from_millis(20)));
         record_ping_metrics(&ctx, &relay, &Err(ping::Failure::Timeout));
@@ -903,7 +922,7 @@ mod tests {
     fn ping_success_cleared_when_last_connection_closes() {
         let known = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&known);
+        let label = name::peer_name(&known);
 
         record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
         assert_eq!(
@@ -924,7 +943,7 @@ mod tests {
         let known = random_peer_id();
         let relay = random_peer_id();
         let ctx = P2PContext::new([known]);
-        let label = peer_name(&relay);
+        let label = name::peer_name(&relay);
 
         clear_ping_success(&ctx, &relay);
 
@@ -946,12 +965,12 @@ mod tests {
         assert_eq!(
             P2P_METRICS
                 .ping_success
-                .get(&peer_name(&peer))
+                .get(&name::peer_name(&peer))
                 .map(Gauge::get),
             Some(0)
         );
         assert!(
-            !P2P_METRICS.ping_success.contains(&peer_name(&local)),
+            !P2P_METRICS.ping_success.contains(&name::peer_name(&local)),
             "Charon's ping service skips self, so no self series"
         );
     }

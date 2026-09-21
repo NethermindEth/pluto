@@ -4,54 +4,57 @@
 #![allow(clippy::all)]
 #![allow(rustdoc::all)]
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::pluto_proto::prost::Message)]
+#[prost(prost_path = "::pluto_proto::prost")]
 pub struct PushRequest {
     #[prost(message, repeated, tag = "1")]
-    pub streams: ::prost::alloc::vec::Vec<Stream>,
+    pub streams: ::pluto_proto::prost::alloc::vec::Vec<Stream>,
 }
-impl ::prost::Name for PushRequest {
+impl ::pluto_proto::prost::Name for PushRequest {
     const NAME: &'static str = "PushRequest";
     const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
+    fn full_name() -> ::pluto_proto::prost::alloc::string::String {
         "app.log.loki.lokipb.v1.PushRequest".into()
     }
-    fn type_url() -> ::prost::alloc::string::String {
+    fn type_url() -> ::pluto_proto::prost::alloc::string::String {
         "type.googleapis.com/app.log.loki.lokipb.v1.PushRequest".into()
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::pluto_proto::prost::Message)]
+#[prost(prost_path = "::pluto_proto::prost")]
 pub struct Stream {
     #[prost(string, tag = "1")]
-    pub labels: ::prost::alloc::string::String,
+    pub labels: ::pluto_proto::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
-    pub entries: ::prost::alloc::vec::Vec<Entry>,
+    pub entries: ::pluto_proto::prost::alloc::vec::Vec<Entry>,
     #[prost(uint64, tag = "3")]
     pub hash: u64,
 }
-impl ::prost::Name for Stream {
+impl ::pluto_proto::prost::Name for Stream {
     const NAME: &'static str = "Stream";
     const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
+    fn full_name() -> ::pluto_proto::prost::alloc::string::String {
         "app.log.loki.lokipb.v1.Stream".into()
     }
-    fn type_url() -> ::prost::alloc::string::String {
+    fn type_url() -> ::pluto_proto::prost::alloc::string::String {
         "type.googleapis.com/app.log.loki.lokipb.v1.Stream".into()
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::pluto_proto::prost::Message)]
+#[prost(prost_path = "::pluto_proto::prost")]
 pub struct Entry {
     #[prost(message, optional, tag = "1")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(string, tag = "2")]
-    pub line: ::prost::alloc::string::String,
+    pub line: ::pluto_proto::prost::alloc::string::String,
 }
-impl ::prost::Name for Entry {
+impl ::pluto_proto::prost::Name for Entry {
     const NAME: &'static str = "Entry";
     const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
+    fn full_name() -> ::pluto_proto::prost::alloc::string::String {
         "app.log.loki.lokipb.v1.Entry".into()
     }
-    fn type_url() -> ::prost::alloc::string::String {
+    fn type_url() -> ::pluto_proto::prost::alloc::string::String {
         "type.googleapis.com/app.log.loki.lokipb.v1.Entry".into()
     }
 }

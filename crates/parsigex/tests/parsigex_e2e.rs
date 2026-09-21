@@ -21,8 +21,7 @@ use pluto_core::{
     types::{Duty, DutyType, ParSignedDataSet, PubKey, SlotNumber},
 };
 use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
+    tbls,
     types::{PrivateKey, PublicKey, Signature},
 };
 use pluto_p2p::{
@@ -61,13 +60,11 @@ impl ClusterKey {
     /// Deals a fresh group key into [`NODES`] shares with a [`THRESHOLD`].
     fn deal() -> Result<Self> {
         let secret = generate_test_bls_key(42);
-        let group_pub = BlstImpl
-            .secret_to_public_key(&secret)
-            .context("failed to derive group public key")?;
+        let group_pub =
+            tbls::secret_to_public_key(&secret).context("failed to derive group public key")?;
         let total = u64::try_from(NODES).context("node count should fit u64")?;
         let threshold = u64::try_from(THRESHOLD).context("threshold should fit u64")?;
-        let shares = BlstImpl
-            .threshold_split(&secret, total, threshold)
+        let shares = tbls::threshold_split(&secret, total, threshold)
             .context("failed to split group secret into shares")?;
         let group_pub_core = PubKey::new(group_pub);
 
@@ -234,9 +231,8 @@ impl Harness {
         let mut tasks = JoinSet::new();
 
         for node in &self.running {
-            let signature = BlstImpl
-                .sign(&node.share_priv, MSG)
-                .context("failed to sign with share")?;
+            let signature =
+                tbls::sign(&node.share_priv, MSG).context("failed to sign with share")?;
             let partial = SignedRandao::new_partial(EPOCH, signature, node.share_idx);
             let mut data_set = ParSignedDataSet::new();
             data_set.insert(self.cluster.group_pub_core, partial);
@@ -281,11 +277,9 @@ impl Harness {
 
     /// Aggregates `partials` and verifies the result against the group key.
     fn aggregate_and_verify(&self, partials: &HashMap<u64, Signature>) -> Result<()> {
-        let group_sig = BlstImpl
-            .threshold_aggregate(partials)
+        let group_sig = tbls::threshold_aggregate(partials)
             .context("threshold aggregation of received partials failed")?;
-        BlstImpl
-            .verify(&self.cluster.group_pub, MSG, &group_sig)
+        tbls::verify(&self.cluster.group_pub, MSG, &group_sig)
             .context("aggregated signature did not verify against the group public key")
     }
 

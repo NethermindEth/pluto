@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use pluto_crypto::types::PRIVATE_KEY_LENGTH;
 
 /// Error type for keystore operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
     /// Keystore directory does not exist.
@@ -86,10 +87,6 @@ pub enum KeystoreError {
     /// Hex decode error.
     #[error("hex decode error: {0}")]
     HexDecode(#[from] hex::FromHexError),
-
-    /// Unsupported KDF function.
-    #[error("unsupported KDF: {0}")]
-    UnsupportedKdf(String),
 
     /// Checksum verification failed.
     #[error("decrypt keystore: checksum verification failed")]

@@ -4,15 +4,13 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, fmt, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use futures::future::BoxFuture;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
-    GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
-    GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
-    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, HttpError, ValidatorId, ValidatorsFilter,
     spec::phase0::{AttestationData, BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
@@ -59,9 +57,6 @@ use crate::{
 /// Boxed error returned by registered callbacks.
 pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Boxed async callback result.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 /// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
 /// [`ParSignedDataSet`] by reference; the registered wrapper clones the
 /// set exactly once before invoking the user closure so every subscriber
@@ -100,7 +95,7 @@ pub type AwaitSyncContributionFn = Arc<
 
 /// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
 pub type AwaitAggSigDbFn = Arc<
-    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
+    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<SignedData, CallbackError>>
         + Send
         + Sync
         + 'static,
@@ -125,11 +120,6 @@ pub type PubKeyByAttFn = Arc<
         + Sync
         + 'static,
 >;
-
-/// Observer invoked with each DV root public key a validator client references
-/// on a validator-facing endpoint (duties, validators). Lets the monitoring
-/// readiness checker track which validators the VC is actively serving.
-pub type SeenPubkeysFn = Arc<dyn Fn(PubKey) + Send + Sync + 'static>;
 
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls.
@@ -163,7 +153,7 @@ const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 /// endpoints.
 pub struct Component {
     /// Upstream beacon-node API client.
-    eth2_cl: Arc<EthBeaconNodeApiClient>,
+    eth2_cl: EthBeaconNodeApiClient,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
     /// cluster's DV root public key.
@@ -187,7 +177,6 @@ pub struct Component {
     /// user-provided callback.
     subs: Vec<SubscriberFn>,
     /// Looks up an unsigned beacon proposal for a slot.
-    #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
     await_proposal_fn: Option<AwaitProposalFn>,
     /// Looks up an aggregated attestation by `(slot, attestation_root)`.
     await_agg_attestation_fn: Option<AwaitAggAttestationFn>,
@@ -201,15 +190,12 @@ pub struct Component {
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
-    /// Invoked with each DV root pubkey the VC references on a validator-facing
-    /// endpoint, feeding the monitoring readiness "validators seen" signal.
-    seen_pubkeys: Option<SeenPubkeysFn>,
 }
 
 impl Component {
     /// Builds a new component.
     pub fn new(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: EthBeaconNodeApiClient,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
@@ -231,7 +217,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         }
     }
 
@@ -241,7 +226,7 @@ impl Component {
     /// to bypass signature checks.
     #[cfg(test)]
     pub fn new_insecure(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: EthBeaconNodeApiClient,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         validator_cache: Arc<dyn CachedValidatorsProvider>,
@@ -261,7 +246,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         }
     }
 
@@ -274,7 +258,7 @@ impl Component {
             self.validator_cache.active_validators(),
         )
         .await
-        .map_err(|_: Elapsed| upstream_timeout("active validators"))?
+        .map_err(|_: Elapsed| upstream_timeout(Upstream::ActiveValidators))?
         .map_err(|err| {
             ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
                 .with_source(err)
@@ -337,7 +321,7 @@ impl Component {
     pub fn register_await_agg_sig_db<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty, PubKey) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Box<dyn SignedData>, CallbackError>> + Send + 'static,
+        Fut: Future<Output = Result<SignedData, CallbackError>> + Send + 'static,
     {
         self.await_agg_sig_db_fn = Some(Arc::new(move |duty, pubkey| Box::pin(f(duty, pubkey))));
     }
@@ -362,39 +346,6 @@ impl Component {
         }));
     }
 
-    /// Registers (and overwrites any prior) seen-pubkeys observer. Invoked with
-    /// each of this cluster's DV root public keys as the validator client
-    /// references them on a validator-facing endpoint.
-    pub fn register_seen_pubkeys(&mut self, observer: SeenPubkeysFn) {
-        self.seen_pubkeys = Some(observer);
-    }
-
-    /// Reports a single cluster DV root pubkey to the registered seen-pubkeys
-    /// observer (no-op when unset).
-    fn observe_root_pubkey(&self, root: &BLSPubKey) {
-        if let Some(observer) = self.seen_pubkeys.as_deref() {
-            observer(PubKey::new(*root));
-        }
-    }
-
-    /// Reports each of our DV root public keys present in `pubkeys` to the
-    /// registered seen-pubkeys observer (no-op when unset). Unparseable or
-    /// non-cluster pubkeys are skipped — the surrounding rewrite validates
-    /// them.
-    fn observe_seen_pubkeys<'a>(&self, pubkeys: impl IntoIterator<Item = &'a str>) {
-        if self.seen_pubkeys.is_none() {
-            return;
-        }
-        for raw in pubkeys {
-            let Ok(pubkey) = parse_bls_pubkey(raw) else {
-                continue;
-            };
-            if self.pub_share_by_pubkey.contains_key(&pubkey) {
-                self.observe_root_pubkey(&pubkey);
-            }
-        }
-    }
-
     /// Verifies an outer partial signature on a [`ParSignedData`] against
     /// this node's share for `root_pubkey`. Centralizes the
     /// `message_root` / `signature` derivation so every submit handler
@@ -413,17 +364,16 @@ impl Component {
 
         // The domain choice is hard-wired to the signed-data wrapper passed
         // in. Each handler picks the right wrapper and we map here.
-        let signed: &dyn SignedData = par_sig.signed_data.as_ref();
-        let any_signed = signed as &dyn Any;
-        let domain_name = if any_signed.is::<SignedSyncMessage>() {
-            DomainName::SyncCommittee
-        } else if any_signed.is::<SignedSyncContributionAndProof>() {
-            DomainName::ContributionAndProof
-        } else {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "unsupported signed-data wrapper for verify_partial_sig_for",
-            ));
+        let signed = &par_sig.signed_data;
+        let domain_name = match signed {
+            SignedData::SignedSyncMessage(_) => DomainName::SyncCommittee,
+            SignedData::SignedSyncContributionAndProof(_) => DomainName::ContributionAndProof,
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unsupported signed-data wrapper for verify_partial_sig_for",
+                ));
+            }
         };
 
         let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
@@ -560,10 +510,9 @@ impl Component {
                 // fails — this is not an error at this point.
                 let mut val_idx = 0;
                 for def in def_set.values() {
-                    let DutyDefinition::Attester(attester) = def else {
+                    let DutyDefinition::Attester(duty) = def else {
                         continue;
                     };
-                    let duty = &attester.duty;
                     if duty.committee_index != att_data.index {
                         continue;
                     }
@@ -779,7 +728,7 @@ impl Component {
 
         if !self.pub_share_by_pubkey.contains_key(&root_pubkey) {
             tracing::debug!(
-                pubkey = ?format_bls_pubkey(&root_pubkey),
+                pubkey = %pluto_ssz::to_0x_hex(&root_pubkey),
                 "swallowing non-DV registration",
             );
             return Ok(());
@@ -868,6 +817,7 @@ impl Component {
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
@@ -903,46 +853,15 @@ impl Handler for Component {
         &self,
         opts: ProposerDutiesOpts,
     ) -> Result<ProposerDutiesResponse, ApiError> {
-        let request = GetProposerDutiesRequest::builder()
-            .epoch(opts.epoch.to_string())
-            .build()
-            .map_err(|err| {
-                ApiError::new(StatusCode::BAD_REQUEST, "invalid epoch")
-                    .with_boxed_source(err.into())
-            })?;
-
-        let response = tokio::time::timeout(
+        let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument("proposer_duties", self.eth2_cl.get_proposer_duties(request)),
+            self.eth2_cl.get_proposer_duties(opts.epoch),
         )
         .await
-        .map_err(|_| upstream_timeout("proposer duties"))?
-        .map_err(|err| upstream_call_failed("proposer duties", err.into()))?;
+        .map_err(|_| upstream_timeout(Upstream::ProposerDuties))?
+        .map_err(|err| upstream_error(Upstream::ProposerDuties, err, DUTIES_PROPAGATED_STATUSES))?;
 
-        let mut payload = match response {
-            GetProposerDutiesResponse::Ok(payload) => payload,
-            GetProposerDutiesResponse::BadRequest(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::BAD_REQUEST,
-                    "proposer duties",
-                    body,
-                ));
-            }
-            GetProposerDutiesResponse::ServiceUnavailable(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "proposer duties",
-                    body,
-                ));
-            }
-            other @ (GetProposerDutiesResponse::InternalServerError(_)
-            | GetProposerDutiesResponse::Unknown) => {
-                return Err(upstream_unexpected("proposer duties", other));
-            }
-        };
-
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
-        swap_proposer_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
+        swap_proposer_pubshares(&mut payload.data, &self.pub_share_by_pubkey);
 
         Ok(payload)
     }
@@ -952,46 +871,14 @@ impl Handler for Component {
         &self,
         opts: AttesterDutiesOpts,
     ) -> Result<AttesterDutiesResponse, ApiError> {
-        let request = GetAttesterDutiesRequest::builder()
-            .epoch(opts.epoch.to_string())
-            .body(opts.indices)
-            .build()
-            .map_err(|err| {
-                ApiError::new(StatusCode::BAD_REQUEST, "invalid attester duties request")
-                    .with_boxed_source(err.into())
-            })?;
-
-        let response = tokio::time::timeout(
+        let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument("attester_duties", self.eth2_cl.get_attester_duties(request)),
+            self.eth2_cl.get_attester_duties(opts.epoch, &opts.indices),
         )
         .await
-        .map_err(|_| upstream_timeout("attester duties"))?
-        .map_err(|err| upstream_call_failed("attester duties", err.into()))?;
+        .map_err(|_| upstream_timeout(Upstream::AttesterDuties))?
+        .map_err(|err| upstream_error(Upstream::AttesterDuties, err, DUTIES_PROPAGATED_STATUSES))?;
 
-        let mut payload = match response {
-            GetAttesterDutiesResponse::Ok(payload) => payload,
-            GetAttesterDutiesResponse::BadRequest(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::BAD_REQUEST,
-                    "attester duties",
-                    body,
-                ));
-            }
-            GetAttesterDutiesResponse::ServiceUnavailable(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "attester duties",
-                    body,
-                ));
-            }
-            other @ (GetAttesterDutiesResponse::InternalServerError(_)
-            | GetAttesterDutiesResponse::Unknown) => {
-                return Err(upstream_unexpected("attester duties", other));
-            }
-        };
-
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
         swap_attester_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
 
         Ok(payload)
@@ -1002,52 +889,21 @@ impl Handler for Component {
         &self,
         opts: SyncCommitteeDutiesOpts,
     ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
-        let request = GetSyncCommitteeDutiesRequest::builder()
-            .epoch(opts.epoch.to_string())
-            .body(opts.indices)
-            .build()
-            .map_err(|err| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid sync committee duties request",
-                )
-                .with_boxed_source(err.into())
-            })?;
-
-        let response = tokio::time::timeout(
+        let mut payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument(
-                "sync_committee_duties",
-                self.eth2_cl.get_sync_committee_duties(request),
-            ),
+            self.eth2_cl
+                .get_sync_committee_duties(opts.epoch, &opts.indices),
         )
         .await
-        .map_err(|_| upstream_timeout("sync committee duties"))?
-        .map_err(|err| upstream_call_failed("sync committee duties", err.into()))?;
+        .map_err(|_| upstream_timeout(Upstream::SyncCommitteeDuties))?
+        .map_err(|err| {
+            upstream_error(
+                Upstream::SyncCommitteeDuties,
+                err,
+                DUTIES_PROPAGATED_STATUSES,
+            )
+        })?;
 
-        let mut payload = match response {
-            GetSyncCommitteeDutiesResponse::Ok(payload) => payload,
-            GetSyncCommitteeDutiesResponse::BadRequest(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::BAD_REQUEST,
-                    "sync committee duties",
-                    body,
-                ));
-            }
-            GetSyncCommitteeDutiesResponse::ServiceUnavailable(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "sync committee duties",
-                    body,
-                ));
-            }
-            other @ (GetSyncCommitteeDutiesResponse::InternalServerError(_)
-            | GetSyncCommitteeDutiesResponse::Unknown) => {
-                return Err(upstream_unexpected("sync committee duties", other));
-            }
-        };
-
-        self.observe_seen_pubkeys(payload.data.iter().map(|duty| duty.pubkey.as_str()));
         swap_sync_committee_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
 
         Ok(payload)
@@ -1099,9 +955,9 @@ impl Handler for Component {
                 crate::signeddata::VersionedAttestation::new_partial(att.0.clone(), self.share_idx)
                     .map_err(map_attestation_signed_data_error)?;
 
-            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER and
-            // the epoch comes from the attestation's own target checkpoint
-            // (not derived from the slot).
+            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER
+            // and the epoch comes from the attestation's own target
+            // checkpoint (not derived from the slot).
             verify_par_signed_attestation(self, &pubkey, att_data.target.epoch, &par_sig_data)
                 .await?;
 
@@ -1322,8 +1178,8 @@ impl Handler for Component {
                 .with_boxed_source(err)
             })?;
 
-        // The await hook yields an unsigned aggregated attestation; the response
-        // type is the same versioned-attestation wrapper.
+        // The await hook yields an unsigned aggregated attestation; the
+        // response type is the same versioned-attestation wrapper.
         let data = crate::signeddata::VersionedAttestation::new(agg_att.0)
             .map_err(map_attestation_signed_data_error)?;
 
@@ -1365,7 +1221,7 @@ impl Handler for Component {
                     .await
                     .map_err(|err| {
                         signing_error_to_api_error(
-                            err,
+                            err.into(),
                             "aggregate selection proof verification failed",
                         )
                     })?;
@@ -1492,7 +1348,7 @@ impl Handler for Component {
                     .with_boxed_source(err)
                 })?;
 
-                let selection = downcast_beacon_committee_selection(signed.as_ref())?;
+                let selection = expect_beacon_committee_selection(&signed)?;
                 resp.push(selection.0.clone());
             }
         }
@@ -1561,7 +1417,8 @@ impl Handler for Component {
             }
         }
 
-        // A missing hook is a wiring bug, not a runtime condition, so fail fast.
+        // A missing hook is a wiring bug, not a runtime condition, so fail
+        // fast.
         let await_fn = self
             .await_agg_sig_db_fn
             .as_ref()
@@ -1584,7 +1441,7 @@ impl Handler for Component {
                     .with_boxed_source(err)
                 })?;
 
-                let selection = downcast_sync_committee_selection(signed.as_ref())?;
+                let selection = expect_sync_committee_selection(&signed)?;
                 resp.push(selection.0.clone());
             }
         }
@@ -1608,7 +1465,8 @@ impl Handler for Component {
         // forwarded as `None` so the upstream is not artificially narrowed.
         let pubkey_by_share = invert_pub_share_map(&self.pub_share_by_pubkey);
 
-        let mut root_pubkeys: Vec<String> = Vec::with_capacity(opts.pubkeys.len());
+        let mut ids: Vec<ValidatorId> =
+            Vec::with_capacity(opts.pubkeys.len().saturating_add(opts.indices.len()));
         for share in &opts.pubkeys {
             let root = pubkey_by_share.get(share).ok_or_else(|| {
                 ApiError::new(
@@ -1616,60 +1474,30 @@ impl Handler for Component {
                     "unknown validator public key in request",
                 )
             })?;
-            // Mark the validator seen as soon as its share resolves to a cluster
-            // root — before the upstream call — so a validator the beacon node
-            // has no row for yet (e.g. not activated) still counts toward
-            // readiness.
-            self.observe_root_pubkey(root);
-            root_pubkeys.push(format_bls_pubkey(root));
+            ids.push(ValidatorId::PubKey(*root));
         }
+        ids.extend(opts.indices.iter().copied().map(ValidatorId::Index));
 
-        // Upstream's `id` field accepts either a pubkey hex string or a
-        // decimal validator-index string — both go in the same `ids` array.
-        let mut ids: Vec<String> = root_pubkeys;
-        ids.extend(opts.indices.iter().map(|idx| idx.to_string()));
-
-        let request = PostStateValidatorsRequest {
-            path: PostStateValidatorsRequestPath {
-                state_id: opts.state.clone(),
-            },
-            body: ValidatorRequestBody {
-                ids: if ids.is_empty() { None } else { Some(ids) },
-                // Status filter is not exposed by Pluto's `ValidatorsOpts`, so
-                // it is omitted from the upstream call.
-                statuses: None,
-            },
+        // Status filter is not exposed by Pluto's `ValidatorsOpts`, so it is
+        // omitted from the upstream call.
+        let filter = ValidatorsFilter {
+            ids,
+            statuses: Vec::new(),
         };
 
-        let response = tokio::time::timeout(
+        let payload = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            pluto_eth2api::instrument("validators", self.eth2_cl.post_state_validators(request)),
+            self.eth2_cl.post_state_validators(&opts.state, &filter),
         )
         .await
-        .map_err(|_| upstream_timeout("validators"))?
-        .map_err(|err| upstream_call_failed("validators", err.into()))?;
-
-        let payload: GetStateValidatorsResponseResponse = match response {
-            PostStateValidatorsResponse::Ok(payload) => payload,
-            PostStateValidatorsResponse::BadRequest(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::BAD_REQUEST,
-                    "validators",
-                    body,
-                ));
-            }
-            PostStateValidatorsResponse::NotFound(body) => {
-                return Err(upstream_status_error(
-                    StatusCode::NOT_FOUND,
-                    "validators",
-                    body,
-                ));
-            }
-            other @ (PostStateValidatorsResponse::InternalServerError(_)
-            | PostStateValidatorsResponse::Unknown) => {
-                return Err(upstream_unexpected("validators", other));
-            }
-        };
+        .map_err(|_| upstream_timeout(Upstream::Validators))?
+        .map_err(|err| {
+            upstream_error(
+                Upstream::Validators,
+                err,
+                &[StatusCode::BAD_REQUEST, StatusCode::NOT_FOUND],
+            )
+        })?;
 
         // `ignore_not_found` follows the `indices is empty` contract:
         // when indices were provided, every returned validator must belong to
@@ -1678,12 +1506,6 @@ impl Handler for Component {
         // an unfiltered "fetch all"), validators outside the share map pass
         // through with their root pubkey untouched.
         let ignore_not_found = opts.indices.is_empty();
-        self.observe_seen_pubkeys(
-            payload
-                .data
-                .iter()
-                .map(|validator| validator.validator.pubkey.as_str()),
-        );
         let data = convert_validators(payload.data, &self.pub_share_by_pubkey, ignore_not_found)?;
 
         Ok(EthResponse {
@@ -1728,20 +1550,29 @@ impl Handler for Component {
         let (slot_duration, _) =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
-                .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err.into()))?;
+                .map_err(|_| upstream_timeout(Upstream::SlotsConfig))?
+                .map_err(|err| upstream_call_failed(Upstream::SlotsConfig, err))?;
         let genesis_time =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
                 .await
-                .map_err(|_| upstream_timeout("genesis time"))?
-                .map_err(|err| upstream_call_failed("genesis time", err.into()))?;
+                .map_err(|_| upstream_timeout(Upstream::GenesisTime))?
+                .map_err(|err| upstream_call_failed(Upstream::GenesisTime, err))?;
         let builder_domain = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
             signing::get_domain(&self.eth2_cl, DomainName::ApplicationBuilder, 0),
         )
         .await
-        .map_err(|_| upstream_timeout("application builder domain"))?
-        .map_err(|err| upstream_call_failed("application builder domain", err.into()))?;
+        .map_err(|_| upstream_timeout(Upstream::ApplicationBuilderDomain))?
+        .map_err(|err| match err {
+            SigningError::BeaconNode(err) => {
+                upstream_call_failed(Upstream::ApplicationBuilderDomain, err)
+            }
+            other => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application builder domain",
+            )
+            .with_source(other),
+        })?;
 
         for registration in registrations {
             self.submit_one_registration(registration, slot_duration, genesis_time, builder_domain)
@@ -1768,8 +1599,8 @@ impl Handler for Component {
         let (_, slots_per_epoch) =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
-                .map_err(|_| upstream_timeout("slots config"))?
-                .map_err(|err| upstream_call_failed("slots config", err.into()))?;
+                .map_err(|_| upstream_timeout(Upstream::SlotsConfig))?
+                .map_err(|err| upstream_call_failed(Upstream::SlotsConfig, err))?;
 
         let exit_epoch = exit.0.message.epoch;
         let duty_slot = slots_per_epoch.saturating_mul(exit_epoch);
@@ -1910,7 +1741,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    signing_error_to_api_error(err, "invalid sync committee selection proof")
+                    signing_error_to_api_error(err.into(), "invalid sync committee selection proof")
                 })?;
             }
 
@@ -1983,12 +1814,40 @@ impl Handler for Component {
     }
 }
 
+/// Beacon node calls the validator API makes while serving a VC request.
+#[derive(Debug, Clone, Copy)]
+enum Upstream {
+    SlotsConfig,
+    GenesisTime,
+    ApplicationBuilderDomain,
+    AttesterDuties,
+    ProposerDuties,
+    SyncCommitteeDuties,
+    ActiveValidators,
+    Validators,
+}
+
+impl fmt::Display for Upstream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SlotsConfig => "slots config",
+            Self::GenesisTime => "genesis time",
+            Self::ApplicationBuilderDomain => "application builder domain",
+            Self::AttesterDuties => "attester duties",
+            Self::ProposerDuties => "proposer duties",
+            Self::SyncCommitteeDuties => "sync committee duties",
+            Self::ActiveValidators => "active validators",
+            Self::Validators => "validators",
+        })
+    }
+}
+
 /// Builds the `ApiError` returned when an upstream beacon-node call elapses
 /// past [`UPSTREAM_REQUEST_TIMEOUT`].
-fn upstream_timeout(endpoint: &'static str) -> ApiError {
+fn upstream_timeout(upstream: Upstream) -> ApiError {
     ApiError::new(
         StatusCode::GATEWAY_TIMEOUT,
-        format!("upstream {endpoint} timed out"),
+        format!("upstream {upstream} timed out"),
     )
 }
 
@@ -2001,50 +1860,62 @@ fn proposal_timeout() -> ApiError {
     )
 }
 
-/// Builds the `ApiError` returned when an upstream beacon-node call returns a
-/// transport-level error. Boxed so `anyhow::Error` (which doesn't itself
-/// implement `std::error::Error`) can be attached via `.into()`.
-fn upstream_call_failed(
-    endpoint: &'static str,
-    err: Box<dyn std::error::Error + Send + Sync + 'static>,
-) -> ApiError {
+/// Builds the `ApiError` returned when an upstream beacon-node call fails
+/// without an HTTP status.
+fn upstream_call_failed<E>(upstream: Upstream, err: E) -> ApiError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     ApiError::new(
         StatusCode::BAD_GATEWAY,
-        format!("upstream {endpoint} failed"),
+        format!("upstream {upstream} failed"),
     )
-    .with_boxed_source(err)
+    .with_source(err)
+}
+
+/// Upstream statuses the duty endpoints propagate to the VC as-is.
+const DUTIES_PROPAGATED_STATUSES: &[StatusCode] =
+    &[StatusCode::BAD_REQUEST, StatusCode::SERVICE_UNAVAILABLE];
+
+/// Maps a failed upstream call to the `ApiError` returned to the client: an
+/// HTTP status listed in `propagated` is forwarded faithfully, any other HTTP
+/// status is an unexpected upstream response, and everything else is a
+/// transport-level failure.
+fn upstream_error(
+    upstream: Upstream,
+    err: EthBeaconNodeApiClientError,
+    propagated: &[StatusCode],
+) -> ApiError {
+    match err {
+        EthBeaconNodeApiClientError::Http(http) if propagated.contains(&http.status) => {
+            upstream_status_error(upstream, (*http).clone())
+        }
+        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, (*http).clone()),
+        other => upstream_call_failed(upstream, other),
+    }
 }
 
 /// Builds the `ApiError` returned when the upstream responds with a faithful
-/// HTTP status that we propagate (e.g. 400, 503). The upstream body is
-/// attached as a `source` for debug logging — never serialized into the
+/// HTTP status that we propagate (e.g. 400, 503). The upstream response is
+/// attached as a `source` for debug logging, never serialized into the
 /// client-visible message.
-fn upstream_status_error<B: std::fmt::Debug>(
-    status: StatusCode,
-    endpoint: &'static str,
-    body: B,
-) -> ApiError {
+fn upstream_status_error(upstream: Upstream, http: HttpError) -> ApiError {
     ApiError::new(
-        status,
-        format!("upstream {endpoint} returned {}", status.as_u16()),
+        http.status,
+        format!("upstream {upstream} returned {}", http.status.as_u16()),
     )
-    .with_source(std::io::Error::other(format!(
-        "upstream {endpoint} body: {body:?}"
-    )))
+    .with_source(http)
 }
 
 /// Builds the `ApiError` returned when the upstream responds with an
-/// unexpected variant (e.g. `Unknown`, or `InternalServerError`). The variant
-/// is attached as a `source` so the debug log retains it but the client
-/// message stays generic.
-fn upstream_unexpected<R: std::fmt::Debug>(endpoint: &'static str, response: R) -> ApiError {
+/// unexpected status. The response is attached as a `source` so the debug log
+/// retains it but the client message stays generic.
+fn upstream_unexpected(upstream: Upstream, http: HttpError) -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
-        format!("unexpected upstream {endpoint} response"),
+        format!("unexpected upstream {upstream} response"),
     )
-    .with_source(std::io::Error::other(format!(
-        "upstream {endpoint} variant: {response:?}"
-    )))
+    .with_source(http)
 }
 
 /// Maps a [`crate::dutydb::Error`] into the `ApiError` returned to the client
@@ -2108,14 +1979,12 @@ fn map_hook_dutydb_error(err: CallbackError) -> ApiError {
 fn swap_proposer_pubshares(
     duties: &mut [ProposerDuty],
     pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
-) -> Result<(), ApiError> {
+) {
     for duty in duties {
-        let pubkey = parse_bls_pubkey(&duty.pubkey)?;
-        if let Some(share) = pub_share_by_pubkey.get(&pubkey) {
-            duty.pubkey = format_bls_pubkey(share);
+        if let Some(share) = pub_share_by_pubkey.get(&duty.pubkey) {
+            duty.pubkey = *share;
         }
     }
-    Ok(())
 }
 
 /// Like [`swap_proposer_pubshares`] but for attester duties. Attester duties
@@ -2126,9 +1995,8 @@ fn swap_attester_pubshares(
     pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
 ) -> Result<(), ApiError> {
     for duty in duties {
-        let pubkey = parse_bls_pubkey(&duty.pubkey)?;
-        let share = pub_share_by_pubkey.get(&pubkey).ok_or_else(|| {
-            // Cluster/lock-file misconfiguration — the upstream returned a
+        let share = pub_share_by_pubkey.get(&duty.pubkey).ok_or_else(|| {
+            // Cluster/lock-file misconfiguration: the upstream returned a
             // well-formed duty, but this node has no share for that validator.
             // 500 (not 502): the failure is local, not gateway-level.
             ApiError::new(
@@ -2136,7 +2004,7 @@ fn swap_attester_pubshares(
                 "pubshare not found for attester duty",
             )
         })?;
-        duty.pubkey = format_bls_pubkey(share);
+        duty.pubkey = *share;
     }
     Ok(())
 }
@@ -2147,15 +2015,14 @@ fn swap_sync_committee_pubshares(
     pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
 ) -> Result<(), ApiError> {
     for duty in duties {
-        let pubkey = parse_bls_pubkey(&duty.pubkey)?;
-        let share = pub_share_by_pubkey.get(&pubkey).ok_or_else(|| {
-            // See `swap_attester_pubshares` — same 500-not-502 reasoning.
+        let share = pub_share_by_pubkey.get(&duty.pubkey).ok_or_else(|| {
+            // See `swap_attester_pubshares`: same 500-not-502 reasoning.
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "pubshare not found for sync committee duty",
             )
         })?;
-        duty.pubkey = format_bls_pubkey(share);
+        duty.pubkey = *share;
     }
     Ok(())
 }
@@ -2176,10 +2043,9 @@ fn convert_validators(
 ) -> Result<Vec<Validator>, ApiError> {
     let mut out = Vec::with_capacity(upstream.len());
     for mut validator in upstream {
-        let pubkey = parse_bls_pubkey(&validator.validator.pubkey)?;
-        match pub_share_by_pubkey.get(&pubkey) {
+        match pub_share_by_pubkey.get(&validator.validator.pubkey) {
             Some(share) => {
-                validator.validator.pubkey = format_bls_pubkey(share);
+                validator.validator.pubkey = *share;
             }
             None if ignore_not_found => {
                 // Validator does not belong to this cluster — keep the
@@ -2209,58 +2075,34 @@ fn invert_pub_share_map(
         .collect()
 }
 
-/// Downcasts the aggregated signed data from the AggSigDB to a
-/// `BeaconCommitteeSelection`. A mismatch indicates a wiring bug — the cluster
-/// stored the wrong duty type under the `PrepareAggregator` duty — so it
-/// surfaces as 500 rather than 4xx.
-fn downcast_beacon_committee_selection(
-    signed: &dyn SignedData,
+/// Selects the `BeaconCommitteeSelection` payload of the aggregated signed
+/// data from the AggSigDB. Any other variant indicates a wiring bug — the
+/// cluster stored the wrong duty type under the `PrepareAggregator` duty — so
+/// it surfaces as 500 rather than 4xx.
+fn expect_beacon_committee_selection(
+    signed: &SignedData,
 ) -> Result<&signeddata::BeaconCommitteeSelection, ApiError> {
-    signed
-        .as_any()
-        .downcast_ref::<signeddata::BeaconCommitteeSelection>()
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid beacon committee selection",
-            )
-        })
+    match signed {
+        SignedData::BeaconCommitteeSelection(selection) => Ok(selection),
+        _ => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid beacon committee selection",
+        )),
+    }
 }
 
 /// Sync committee selections counterpart of
-/// [`downcast_beacon_committee_selection`].
-fn downcast_sync_committee_selection(
-    signed: &dyn SignedData,
+/// [`expect_beacon_committee_selection`].
+fn expect_sync_committee_selection(
+    signed: &SignedData,
 ) -> Result<&signeddata::SyncCommitteeSelection, ApiError> {
-    signed
-        .as_any()
-        .downcast_ref::<signeddata::SyncCommitteeSelection>()
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid sync committee selection",
-            )
-        })
-}
-
-fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey, ApiError> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).map_err(|err| {
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            format!("invalid pubkey hex: {err}"),
-        )
-    })?;
-    bytes.as_slice().try_into().map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            format!("invalid pubkey length: got {}, want 48", bytes.len()),
-        )
-    })
-}
-
-fn format_bls_pubkey(pubkey: &BLSPubKey) -> String {
-    format!("0x{}", hex::encode(pubkey))
+    match signed {
+        SignedData::SyncCommitteeSelection(selection) => Ok(selection),
+        _ => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid sync committee selection",
+        )),
+    }
 }
 
 /// Re-interprets a Pluto [`PubKey`] as the [`BLSPubKey`] byte-array used by
@@ -2277,27 +2119,40 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 /// with `invalid_msg`; anything else — e.g. a public key from the cluster
 /// lock or validator cache that is not a valid BLS point — is server-side
 /// state, so 500.
-fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+fn signing_error_to_api_error(
+    err: pluto_stacktrace::LocatedError<SigningError>,
+    invalid_msg: impl Into<String>,
+) -> ApiError {
     use pluto_crypto::types::Error as CryptoError;
 
-    match err {
-        SigningError::BeaconNode(_) | SigningError::Helper(HelperError::GettingSpec(_)) => {
-            ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "beacon node lookup failed during signature verification",
-            )
-            .with_source(err)
-        }
-        SigningError::ZeroSignature
-        | SigningError::UnknownAggregateAndProofVersion
-        | SigningError::Verification(
-            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_),
-        ) => ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err),
-        _ => ApiError::new(
+    let beacon_node_failure = match &*err {
+        SigningError::BeaconNode(_) => true,
+        SigningError::Helper(e) => matches!(**e, HelperError::GettingSpec(_)),
+        _ => false,
+    };
+    let invalid_signature = match &*err {
+        SigningError::ZeroSignature | SigningError::UnknownAggregateAndProofVersion => true,
+        SigningError::Verification(e) => matches!(
+            **e,
+            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_)
+        ),
+        _ => false,
+    };
+
+    if beacon_node_failure {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "beacon node lookup failed during signature verification",
+        )
+        .with_source(err)
+    } else if invalid_signature {
+        ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err)
+    } else {
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error during signature verification",
         )
-        .with_source(err),
+        .with_source(err)
     }
 }
 
@@ -2736,7 +2591,7 @@ mod tests {
     use std::sync::Mutex;
 
     use chrono::{DateTime, Utc};
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_crypto::tbls;
     use pluto_eth2api::spec::altair::{
         ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
         SyncCommitteeContribution as AltairSyncCommitteeContribution,
@@ -2752,17 +2607,33 @@ mod tests {
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, Result as DeadlineResult},
         signeddata::{
-            AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
-            SignedRandao, SyncContribution, VersionedAggregatedAttestation,
+            AttestationData as SignedAttestationData, SignedRandao, SyncContribution,
+            VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyDefinition, DutyType, ProposerDutyDefinition, PubKey, SlotNumber},
+        types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
         unsigneddata::{UnsignedDataSet, UnsignedDutyData},
         validatorapi::types::{
             AttestationDataOpts, SyncCommitteeContributionOpts, SyncCommitteeMessage,
         },
     };
-    use pluto_eth2api::valcache::{CompleteValidators, ValidatorCacheError};
+    use pluto_eth2api::{
+        HttpError,
+        valcache::{CompleteValidators, ValidatorCacheError},
+    };
+
+    /// A 500 from the validators endpoint.
+    fn beacon_node_unavailable() -> EthBeaconNodeApiClientError {
+        EthBeaconNodeApiClientError::from(HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/beacon/states/head/validators".into(),
+            body: pluto_eth2api::ErrorBody {
+                message: "beacon node unavailable".into(),
+                ..pluto_eth2api::ErrorBody::default()
+            },
+        })
+    }
 
     /// In-memory [`CachedValidatorsProvider`] for tests. Holds a fixed
     /// `validator_index -> DV root pubkey` map. `complete_validators` is not
@@ -2777,7 +2648,6 @@ mod tests {
         }
 
         /// A cache pre-populated with `validators`.
-        #[allow(dead_code, reason = "consumed by submit_* handler tests in later PRs")]
         pub(super) fn arc(
             validators: HashMap<ValidatorIndex, BLSPubKey>,
         ) -> Arc<dyn CachedValidatorsProvider> {
@@ -2817,8 +2687,7 @@ mod tests {
         // `evict_rx` doesn't observe a closed channel.
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, dutydb)
@@ -2834,21 +2703,33 @@ mod tests {
 
         let mut duties = vec![
             ProposerDuty {
-                pubkey: format_bls_pubkey(&root),
-                slot: "10".to_owned(),
-                validator_index: "1".to_owned(),
+                pubkey: root,
+                slot: 10,
+                validator_index: 1,
             },
             ProposerDuty {
-                pubkey: format_bls_pubkey(&stranger),
-                slot: "11".to_owned(),
-                validator_index: "2".to_owned(),
+                pubkey: stranger,
+                slot: 11,
+                validator_index: 2,
             },
         ];
 
-        swap_proposer_pubshares(&mut duties, &map).unwrap();
+        swap_proposer_pubshares(&mut duties, &map);
 
-        assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
-        assert_eq!(duties[1].pubkey, format_bls_pubkey(&stranger));
+        assert_eq!(duties[0].pubkey, share);
+        assert_eq!(duties[1].pubkey, stranger);
+    }
+
+    fn attester_duty(pubkey: BLSPubKey, slot: u64, validator_index: u64) -> AttesterDuty {
+        AttesterDuty {
+            pubkey,
+            slot,
+            committee_index: 0,
+            committee_length: 16,
+            committees_at_slot: 4,
+            validator_committee_index: 0,
+            validator_index,
+        }
     }
 
     #[test]
@@ -2859,28 +2740,12 @@ mod tests {
 
         let map = HashMap::from([(root, share)]);
 
-        let mut duties = vec![AttesterDuty {
-            pubkey: format_bls_pubkey(&root),
-            slot: "1".to_owned(),
-            committee_index: "0".to_owned(),
-            committee_length: "16".to_owned(),
-            committees_at_slot: "4".to_owned(),
-            validator_committee_index: "0".to_owned(),
-            validator_index: "5".to_owned(),
-        }];
+        let mut duties = vec![attester_duty(root, 1, 5)];
 
         swap_attester_pubshares(&mut duties, &map).unwrap();
-        assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
+        assert_eq!(duties[0].pubkey, share);
 
-        let mut stranger_duties = vec![AttesterDuty {
-            pubkey: format_bls_pubkey(&unknown),
-            slot: "2".to_owned(),
-            committee_index: "0".to_owned(),
-            committee_length: "16".to_owned(),
-            committees_at_slot: "4".to_owned(),
-            validator_committee_index: "0".to_owned(),
-            validator_index: "6".to_owned(),
-        }];
+        let mut stranger_duties = vec![attester_duty(unknown, 2, 6)];
         let err = swap_attester_pubshares(&mut stranger_duties, &map).unwrap_err();
         assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -2894,31 +2759,20 @@ mod tests {
         let map = HashMap::from([(root, share)]);
 
         let mut duties = vec![SyncCommitteeDuty {
-            pubkey: format_bls_pubkey(&root),
-            validator_index: "12".to_owned(),
-            validator_sync_committee_indices: vec!["0".to_owned()],
+            pubkey: root,
+            validator_index: 12,
+            validator_sync_committee_indices: vec![0],
         }];
         swap_sync_committee_pubshares(&mut duties, &map).unwrap();
-        assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
+        assert_eq!(duties[0].pubkey, share);
 
         let mut stranger = vec![SyncCommitteeDuty {
-            pubkey: format_bls_pubkey(&unknown),
-            validator_index: "13".to_owned(),
+            pubkey: unknown,
+            validator_index: 13,
             validator_sync_committee_indices: vec![],
         }];
         let err = swap_sync_committee_pubshares(&mut stranger, &map).unwrap_err();
         assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn swap_rejects_malformed_pubkey() {
-        let mut duties = vec![ProposerDuty {
-            pubkey: "0xnothex".to_owned(),
-            slot: "0".to_owned(),
-            validator_index: "0".to_owned(),
-        }];
-        let err = swap_proposer_pubshares(&mut duties, &HashMap::new()).unwrap_err();
-        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
@@ -2948,7 +2802,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT,
                 validator_index: V_IDX,
                 committee_index: COMM_IDX,
@@ -2996,7 +2851,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT,
                 validator_index: 9,
                 committee_index: COMM_IDX,
@@ -3060,8 +2916,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (trim_tx, trim_rx) = channel::<Duty>(8);
         let dutydb = Arc::new(MemDB::new(deadliner, trim_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
 
@@ -3096,7 +2951,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: SLOT.saturating_add(1),
                 validator_index: 0,
                 committee_index: 0,
@@ -3155,7 +3011,8 @@ mod tests {
                 source: pluto_eth2api::spec::phase0::Checkpoint::default(),
                 target: pluto_eth2api::spec::phase0::Checkpoint::default(),
             },
-            duty: SignedAttesterDuty {
+            duty: AttesterDuty {
+                pubkey: [0u8; 48],
                 slot: 1,
                 validator_index: 0,
                 committee_index: 0,
@@ -3213,31 +3070,91 @@ mod tests {
     /// the debug log.
     #[test]
     fn upstream_status_error_does_not_leak_body_into_message() {
-        use pluto_eth2api::BlindedBlock400Response;
-
-        let body = BlindedBlock400Response {
-            code: 503.0,
+        let body = pluto_eth2api::ErrorBody {
+            code: Some(503),
             message: "secret upstream stacktrace path=/etc/secret".to_owned(),
-            stacktraces: Some(vec!["at /etc/secret/lighthouse:42".to_owned()]),
+            stacktraces: vec!["at /etc/secret/lighthouse:42".to_owned()],
+            failures: Vec::new(),
         };
-        let err = upstream_status_error(StatusCode::SERVICE_UNAVAILABLE, "attester duties", body);
+        let http = HttpError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/validator/duties/attester/1".into(),
+            body: body.clone(),
+        };
+        let err = upstream_status_error(Upstream::AttesterDuties, http);
 
         assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!err.message.contains("secret"));
         assert!(!err.message.contains("stacktrace"));
         // But the source carries it for debug logging.
-        let src = err.source.as_ref().unwrap().to_string();
-        assert!(src.contains("secret"));
+        let source = err
+            .source
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<HttpError>()
+            .unwrap();
+        assert_eq!(source.body.message, body.message);
     }
 
     /// `upstream_unexpected` mirrors `upstream_status_error`'s no-leak shape
-    /// for the `Unknown` / `InternalServerError` arms.
+    /// for statuses the endpoint does not propagate.
     #[test]
-    fn upstream_unexpected_does_not_leak_variant_into_message() {
-        let err = upstream_unexpected("attester duties", GetAttesterDutiesResponse::Unknown);
+    fn upstream_unexpected_does_not_leak_response_into_message() {
+        let http = HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            method: reqwest::Method::POST,
+            endpoint: "/eth/v1/validator/duties/attester/1".into(),
+            body: pluto_eth2api::ErrorBody {
+                message: "secret".to_owned(),
+                ..Default::default()
+            },
+        };
+        let err = upstream_unexpected(Upstream::AttesterDuties, http);
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
-        assert!(!err.message.contains("Unknown"));
-        assert!(err.source.as_ref().unwrap().to_string().contains("Unknown"));
+        assert!(!err.message.contains("secret"));
+        let source = err
+            .source
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<HttpError>()
+            .unwrap();
+        assert_eq!(source.body.message, "secret");
+    }
+
+    /// `upstream_error` forwards the listed statuses, treats other HTTP
+    /// statuses as unexpected, and everything else as a failed call.
+    #[test]
+    fn upstream_error_maps_by_status() {
+        let http = |status| {
+            EthBeaconNodeApiClientError::from(HttpError {
+                status,
+                method: reqwest::Method::GET,
+                endpoint: "/eth/v1/validator/duties/proposer/1".into(),
+                body: pluto_eth2api::ErrorBody::default(),
+            })
+        };
+
+        let err = upstream_error(
+            Upstream::ProposerDuties,
+            http(StatusCode::BAD_REQUEST),
+            DUTIES_PROPAGATED_STATUSES,
+        );
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        let err = upstream_error(
+            Upstream::ProposerDuties,
+            http(StatusCode::NOT_FOUND),
+            DUTIES_PROPAGATED_STATUSES,
+        );
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+        assert!(err.message.contains("unexpected"));
+        let err = upstream_error(
+            Upstream::ProposerDuties,
+            EthBeaconNodeApiClientError::EmptyForkSchedule,
+            DUTIES_PROPAGATED_STATUSES,
+        );
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+        assert!(err.message.contains("failed"));
     }
 
     // ====================================================================
@@ -3263,8 +3180,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
     }
 
@@ -3397,12 +3313,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.to_string(), "s2");
 
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("d1".into())
-        });
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("d2".into())
-        });
+        component
+            .register_await_agg_sig_db(|_duty, _pk| async { Err::<SignedData, _>("d1".into()) });
+        component
+            .register_await_agg_sig_db(|_duty, _pk| async { Err::<SignedData, _>("d2".into()) });
         let err = (component.await_agg_sig_db_fn.as_ref().unwrap())(
             Duty::new(SlotNumber::new(0), DutyType::Attester),
             core_pubkey(0),
@@ -3451,11 +3365,8 @@ mod tests {
 
     /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
     /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
-    /// Each fork has a distinct epoch so `resolve_fork_version` is
-    /// deterministic (the fork_schedule HashMap iteration order does not
-    /// affect the result).
     fn signing_spec_fixture() -> serde_json::Value {
-        json!({
+        pluto_testutil::default_spec_with(json!({
             "SECONDS_PER_SLOT": "12",
             "SLOTS_PER_EPOCH": "16",
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
@@ -3478,7 +3389,7 @@ mod tests {
             "ELECTRA_FORK_EPOCH": "50",
             "FULU_FORK_VERSION": "0x06070809",
             "FULU_FORK_EPOCH": "60"
-        })
+        }))
     }
 
     async fn mock_beacon_for_signing() -> BeaconMock {
@@ -3503,7 +3414,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
         (component, mock)
     }
@@ -3514,10 +3425,8 @@ mod tests {
     #[tokio::test]
     async fn verify_partial_sig_accepts_valid_and_rejects_invalid() {
         // Generate a BLS keypair to act as this node's public share.
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
 
         let dv_root = dv_pubkey(0xAA);
         let map = HashMap::from([(dv_root, pubshare)]);
@@ -3534,7 +3443,7 @@ mod tests {
             pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
                 .await
                 .unwrap();
-        let good_signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let good_signature = tbls::sign(&secret, &signing_root).unwrap();
 
         component
             .verify_partial_sig(&dv_root, domain, epoch, message_root, &good_signature)
@@ -3585,8 +3494,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         component
@@ -3605,10 +3513,8 @@ mod tests {
     /// the 400 the VC would misread as an invalid signature.
     #[tokio::test]
     async fn beacon_outage_during_verification_maps_to_502_not_400() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xAB);
 
         // Unroutable beacon node: domain resolution fails before any BLS
@@ -3621,8 +3527,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -3645,7 +3550,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+                VerifyPartialSigError::Signing(ref e) if matches!(**e, SigningError::BeaconNode(_))
             ),
             "expected upstream signing error, got {err:?}"
         );
@@ -3658,7 +3563,7 @@ mod tests {
     /// Genuine signature failures keep mapping to 400.
     #[test]
     fn verify_partial_sig_error_maps_signature_failures_to_400() {
-        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature.into());
         assert_eq!(
             verify_partial_sig_error(err).status_code,
             StatusCode::BAD_REQUEST
@@ -3704,8 +3609,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
 
         let expected = HashMap::from([(1u64, dv_pubkey(0xA1)), (7u64, dv_pubkey(0xA7))]);
         let component = Component::new_insecure(
@@ -3733,13 +3637,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable().into(),
                 ))
             }
         }
@@ -3752,8 +3656,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component.fetch_active_validators().await.unwrap_err();
@@ -3798,7 +3701,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "selections-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new_insecure(
             eth2_cl,
             dutydb,
@@ -3831,7 +3734,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -3865,7 +3768,7 @@ mod tests {
         component.register_await_agg_sig_db(move |_duty, _pk| {
             let agg = agg_clone.clone();
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedBeaconCommitteeSelection::new(agg),
                 ))
             }
@@ -3928,7 +3831,7 @@ mod tests {
                 _ => 999,
             };
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedBeaconCommitteeSelection::new(V1BeaconCommitteeSelection {
                         slot,
                         validator_index: val_idx,
@@ -4048,7 +3951,7 @@ mod tests {
         component.register_await_agg_sig_db(move |_duty, _pk| {
             let agg = agg_clone.clone();
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedSyncCommitteeSelection::new(agg),
                 ))
             }
@@ -4106,7 +4009,7 @@ mod tests {
                 _ => 999,
             };
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedSyncCommitteeSelection::new(V1SyncCommitteeSelection {
                         slot,
                         validator_index: val_idx,
@@ -4250,7 +4153,7 @@ mod tests {
         // `PrepareAggregator` duty, which `downcast_beacon_committee_selection`
         // cannot satisfy.
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedSyncCommitteeSelection::new(
+            Ok::<SignedData, CallbackError>(SignedData::from(SignedSyncCommitteeSelection::new(
                 V1SyncCommitteeSelection {
                     slot: 1,
                     validator_index: 1,
@@ -4280,7 +4183,7 @@ mod tests {
             make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedBeaconCommitteeSelection::new(
+            Ok::<SignedData, CallbackError>(SignedData::from(SignedBeaconCommitteeSelection::new(
                 V1BeaconCommitteeSelection {
                     slot: 1,
                     validator_index: 1,
@@ -4328,7 +4231,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let mut component = Component::new(
             eth2_cl,
             dutydb,
@@ -4467,10 +4370,8 @@ mod tests {
         const VAL_IDX: u64 = 5;
         const EPOCH: u64 = 3;
 
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xCC);
         let map = HashMap::from([(dv_root, pubshare)]);
         let active = HashMap::from([(VAL_IDX, dv_root)]);
@@ -4484,7 +4385,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -4600,10 +4501,8 @@ mod tests {
     /// upstream + real BLS to drive the verification path.
     #[tokio::test]
     async fn submit_validator_registrations_rejects_bad_signature() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = dv_pubkey(0xA5);
         let map = HashMap::from([(dv_root, pubshare)]);
 
@@ -4616,7 +4515,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new(eth2_cl, dutydb, 1, map, true, TestValidatorCache::empty());
 
         let reg = make_signed_registration(dv_root, 24, [0x42; 96]);
@@ -4653,8 +4552,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let mut component =
             Component::new_insecure(eth2_cl, dutydb, 7, TestValidatorCache::arc(active));
 
@@ -4902,13 +4800,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                    beacon_node_unavailable().into(),
                 ))
             }
         }
@@ -4921,8 +4819,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component
@@ -4997,7 +4894,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         // Empty share map: lookup for `dv_root` will return
         // `VerifyPartialSigError::UnknownPubKey`, which the handler maps
         // to 400.
@@ -5023,10 +4920,8 @@ mod tests {
     /// share passes the outer partial-sig verify and the set fans out.
     #[tokio::test]
     async fn submit_sync_committee_messages_accepts_valid_partial_sig() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = [0x77_u8; 48];
 
         let slot: u64 = 1;
@@ -5043,7 +4938,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         let map = HashMap::from([(dv_root, pubshare)]);
         let cancel = CancellationToken::new();
@@ -5054,7 +4949,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
         let mut component = Component::new(
             eth2_cl,
@@ -5096,10 +4991,8 @@ mod tests {
     /// the signing root.
     #[tokio::test]
     async fn verify_partial_sig_round_trips_sync_committee_domain() {
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let pubshare = tbls::secret_to_public_key(&secret).unwrap();
         let dv_root = [0xAB_u8; 48];
         let map = HashMap::from([(dv_root, pubshare)]);
 
@@ -5112,7 +5005,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
 
         let message_root: Root = [0xCD; 32];
@@ -5124,7 +5017,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+        let signature = tbls::sign(&secret, &signing_root).unwrap();
 
         component
             .verify_partial_sig(
@@ -5146,10 +5039,8 @@ mod tests {
     async fn submit_sync_committee_contributions_rejects_invalid_partial_sig() {
         // A valid BLS point: an unparseable root pubkey would map to 500
         // (server-side state), not the 400 under test.
-        let secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let dv_root = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let dv_root = tbls::secret_to_public_key(&secret).unwrap();
         let mock = mock_beacon_for_signing().await;
         let cancel = CancellationToken::new();
         let (deadliner, _deadliner_rx) = DeadlinerTask::start(
@@ -5159,7 +5050,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         // `insecure_test = false` but no share registered for `dv_root`. The
         // inner selection-proof verify runs first; because the selection
         // proof is a zero-byte signature here it will be rejected with 400
@@ -5195,14 +5086,10 @@ mod tests {
         // Root secret signs the inner selection proof; share secret signs
         // the outer partial sig. Both pubkeys are derived from the BLS
         // secret keys and wired through the per-validator share map.
-        let root_secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let root_pubkey = BlstImpl.secret_to_public_key(&root_secret).unwrap();
-        let share_secret = BlstImpl
-            .generate_insecure_secret(rand::rngs::OsRng)
-            .unwrap();
-        let share_pubkey = BlstImpl.secret_to_public_key(&share_secret).unwrap();
+        let root_secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let root_pubkey = tbls::secret_to_public_key(&root_secret).unwrap();
+        let share_secret = tbls::generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        let share_pubkey = tbls::secret_to_public_key(&share_secret).unwrap();
 
         let slot: u64 = 1;
         let subcommittee_index: u64 = 3;
@@ -5233,9 +5120,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let selection_proof = BlstImpl
-            .sign(&root_secret, &selection_proof_signing_root)
-            .unwrap();
+        let selection_proof = tbls::sign(&root_secret, &selection_proof_signing_root).unwrap();
 
         // Outer: sign HTR(ContributionAndProof) — including the just-computed
         // selection_proof — with the share secret under
@@ -5258,7 +5143,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let outer_signature = BlstImpl.sign(&share_secret, &outer_signing_root).unwrap();
+        let outer_signature = tbls::sign(&share_secret, &outer_signing_root).unwrap();
 
         let map = HashMap::from([(root_pubkey, share_pubkey)]);
         let cancel = CancellationToken::new();
@@ -5269,7 +5154,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let active: HashMap<ValidatorIndex, BLSPubKey> =
             HashMap::from([(aggregator_index, root_pubkey)]);
         let mut component = Component::new(
@@ -5365,7 +5250,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, mock)
@@ -5376,10 +5261,10 @@ mod tests {
     /// — `lookup_proposer_pubkey` only reads the map keys, so the
     /// value's contents are immaterial to these tests.
     fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet {
-        let definition = ProposerDutyDefinition {
-            pubkey,
-            v_idx: 0,
-            slot: 0.into(),
+        let definition = pluto_eth2api::v1::ProposerDuty {
+            pubkey: pubkey.0,
+            validator_index: 0,
+            slot: 0,
         };
         let mut set = DutyDefinitionSet::new();
         set.insert(pubkey, DutyDefinition::Proposer(definition));
@@ -5684,18 +5569,18 @@ mod tests {
             let mut set: DutyDefinitionSet = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0xAA),
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: core_pubkey(0xAA),
-                    v_idx: 0,
-                    slot: 0.into(),
+                DutyDefinition::Proposer(pluto_eth2api::v1::ProposerDuty {
+                    pubkey: core_pubkey(0xAA).0,
+                    validator_index: 0,
+                    slot: 0,
                 }),
             );
             set.insert(
                 core_pubkey(0xBB),
-                DutyDefinition::Proposer(ProposerDutyDefinition {
-                    pubkey: core_pubkey(0xBB),
-                    v_idx: 0,
-                    slot: 0.into(),
+                DutyDefinition::Proposer(pluto_eth2api::v1::ProposerDuty {
+                    pubkey: core_pubkey(0xBB).0,
+                    validator_index: 0,
+                    slot: 0,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6028,7 +5913,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let mut component = Component::new(
             eth2_cl,
             Arc::clone(&dutydb),
@@ -6171,30 +6056,28 @@ mod tests {
     // `validators` tests
     // ----------------------------------------------------------------------
 
-    use pluto_eth2api::{ValidatorResponseValidator, ValidatorStatus};
+    use pluto_eth2api::{ValidatorsResponse, spec::phase0, v1::ValidatorStatus};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
 
-    /// Builds a `Validator` (i.e. `GetStateValidatorsResponseResponseDatum`)
-    /// with the given index and pubkey. Other fields are filled with
-    /// placeholder values acceptable to the eth2api type.
+    /// Builds a `Validator` with the given index and pubkey. Other fields are
+    /// filled with placeholder values.
     fn make_validator_datum(index: u64, pubkey: &BLSPubKey) -> Validator {
         Validator {
-            balance: "32000000000".to_owned(),
-            index: index.to_string(),
+            balance: 32_000_000_000,
+            index,
             status: ValidatorStatus::ActiveOngoing,
-            validator: ValidatorResponseValidator {
-                pubkey: format_bls_pubkey(pubkey),
-                withdrawal_credentials:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-                effective_balance: "32000000000".to_owned(),
+            validator: phase0::Validator {
+                pubkey: *pubkey,
+                withdrawal_credentials: [0; 32],
+                effective_balance: 32_000_000_000,
                 slashed: false,
-                activation_eligibility_epoch: "0".to_owned(),
-                activation_epoch: "0".to_owned(),
-                exit_epoch: "18446744073709551615".to_owned(),
-                withdrawable_epoch: "18446744073709551615".to_owned(),
+                activation_eligibility_epoch: 0,
+                activation_epoch: 0,
+                exit_epoch: u64::MAX,
+                withdrawable_epoch: u64::MAX,
             },
         }
     }
@@ -6212,7 +6095,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
         Component::new(
             eth2_cl,
             dutydb,
@@ -6235,8 +6118,8 @@ mod tests {
         let out = convert_validators(upstream, &map, false).unwrap();
 
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].validator.pubkey, format_bls_pubkey(&share));
-        assert_eq!(out[0].index, "7");
+        assert_eq!(out[0].validator.pubkey, share);
+        assert_eq!(out[0].index, 7);
     }
 
     /// With `ignore_not_found = true`, an unknown pubkey is passed through
@@ -6255,10 +6138,10 @@ mod tests {
         let out = convert_validators(upstream, &map, true).unwrap();
 
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].validator.pubkey, format_bls_pubkey(&share));
+        assert_eq!(out[0].validator.pubkey, share);
         // Unknown entry is preserved verbatim.
-        assert_eq!(out[1].validator.pubkey, format_bls_pubkey(&unknown));
-        assert_eq!(out[1].index, "2");
+        assert_eq!(out[1].validator.pubkey, unknown);
+        assert_eq!(out[1].index, 2);
     }
 
     /// With `ignore_not_found = false`, an unknown pubkey is rejected.
@@ -6272,16 +6155,6 @@ mod tests {
         let upstream = vec![make_validator_datum(3, &unknown)];
         let err = convert_validators(upstream, &map, false).unwrap_err();
         assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    /// A malformed pubkey from the upstream is surfaced as 502 — the
-    /// gateway returned data we cannot interpret.
-    #[test]
-    fn convert_validators_rejects_malformed_upstream_pubkey() {
-        let mut datum = make_validator_datum(0, &[0; 48]);
-        datum.validator.pubkey = "0xnothex".to_owned();
-        let err = convert_validators(vec![datum], &HashMap::new(), true).unwrap_err();
-        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
     }
 
     /// `invert_pub_share_map` is the share → root direction needed when
@@ -6306,7 +6179,7 @@ mod tests {
         let server = MockServer::start().await;
         let root = [0xCA_u8; 48];
         let share = [0xFE_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
+        let body = ValidatorsResponse {
             data: vec![make_validator_datum(42, &root)],
             execution_optimistic: false,
             finalized: true,
@@ -6330,8 +6203,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.data.len(), 1);
-        assert_eq!(response.data[0].validator.pubkey, format_bls_pubkey(&share));
-        assert_eq!(response.data[0].index, "42");
+        assert_eq!(response.data[0].validator.pubkey, share);
+        assert_eq!(response.data[0].index, 42);
         assert!(response.finalized);
         assert!(!response.execution_optimistic);
         assert!(response.dependent_root.is_none());
@@ -6346,7 +6219,7 @@ mod tests {
         let known_root = [0x10_u8; 48];
         let share = [0x20_u8; 48];
         let stranger = [0x30_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
+        let body = ValidatorsResponse {
             data: vec![
                 make_validator_datum(1, &known_root),
                 make_validator_datum(2, &stranger),
@@ -6372,114 +6245,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.data.len(), 2);
-        assert_eq!(response.data[0].validator.pubkey, format_bls_pubkey(&share));
+        assert_eq!(response.data[0].validator.pubkey, share);
         // Stranger entry is preserved with the upstream's root pubkey.
-        assert_eq!(
-            response.data[1].validator.pubkey,
-            format_bls_pubkey(&stranger)
-        );
-    }
-
-    /// A registered seen-pubkeys observer receives the DV root pubkey for each
-    /// cluster validator the VC references (and skips validators this cluster
-    /// does not own). This feeds `/readyz`'s "validators seen" state, which
-    /// otherwise sticks at "vc missing validators" after an epoch rollover.
-    #[tokio::test]
-    async fn validators_reports_seen_cluster_root_pubkeys() {
-        let server = MockServer::start().await;
-        let known_root = [0x11_u8; 48];
-        let share = [0x22_u8; 48];
-        let stranger = [0x33_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
-            data: vec![
-                make_validator_datum(1, &known_root),
-                make_validator_datum(2, &stranger),
-            ],
-            execution_optimistic: false,
-            finalized: true,
-        };
-        Mock::given(method("POST"))
-            .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let mut component =
-            make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        component.register_seen_pubkeys(Arc::new(move |pubkey| {
-            sink.lock().expect("seen lock").push(pubkey);
-        }));
-
-        component
-            .validators(ValidatorsOpts {
-                state: "head".to_owned(),
-                pubkeys: vec![share],
-                indices: vec![],
-            })
-            .await
-            .unwrap();
-
-        // The cluster-owned validator's root pubkey is reported (via both the
-        // share→root request translation and the response rewrite — production
-        // dedups these in a set); the stranger the cluster does not own is
-        // never reported.
-        let observed: std::collections::HashSet<PubKey> =
-            seen.lock().expect("seen lock").iter().copied().collect();
-        assert_eq!(
-            observed,
-            std::collections::HashSet::from([PubKey::new(known_root)])
-        );
-    }
-
-    /// Regression: a requested share resolves to a cluster root even when the
-    /// beacon node returns no validator row for it (e.g. not yet activated).
-    /// The root must still be marked seen — from the share→root translation —
-    /// so `/readyz` does not stick at "vc missing validators".
-    #[tokio::test]
-    async fn validators_reports_seen_pubkey_when_upstream_returns_no_rows() {
-        let server = MockServer::start().await;
-        let known_root = [0x44_u8; 48];
-        let share = [0x55_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
-            // The beacon node has no row for the requested validator yet.
-            data: vec![],
-            execution_optimistic: false,
-            finalized: true,
-        };
-        Mock::given(method("POST"))
-            .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let mut component =
-            make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        component.register_seen_pubkeys(Arc::new(move |pubkey| {
-            sink.lock().expect("seen lock").push(pubkey);
-        }));
-
-        let response = component
-            .validators(ValidatorsOpts {
-                state: "head".to_owned(),
-                pubkeys: vec![share],
-                indices: vec![],
-            })
-            .await
-            .unwrap();
-
-        // Empty upstream response, yet the requested validator's root is still
-        // reported seen via the share→root translation.
-        assert!(response.data.is_empty());
-        assert_eq!(
-            *seen.lock().expect("seen lock"),
-            vec![PubKey::new(known_root)]
-        );
+        assert_eq!(response.data[1].validator.pubkey, stranger);
     }
 
     /// When the caller filters by index (any non-empty `indices`),
@@ -6491,7 +6259,7 @@ mod tests {
         let known_root = [0x40_u8; 48];
         let share = [0x50_u8; 48];
         let stranger = [0x60_u8; 48];
-        let body = GetStateValidatorsResponseResponse {
+        let body = ValidatorsResponse {
             // The upstream returned a validator we did not ask for — its
             // pubkey is not in our share map.
             data: vec![make_validator_datum(99, &stranger)],
@@ -6549,7 +6317,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_delay(UPSTREAM_REQUEST_TIMEOUT * 2)
-                    .set_body_json(GetStateValidatorsResponseResponse {
+                    .set_body_json(ValidatorsResponse {
                         data: vec![],
                         execution_optimistic: false,
                         finalized: false,
@@ -6576,17 +6344,16 @@ mod tests {
         let server = MockServer::start().await;
         let root = [0xA1_u8; 48];
         let share = [0xA2_u8; 48];
-        let mut bad = make_validator_datum(1, &root);
-        bad.validator.pubkey = "not-a-hex-pubkey".to_owned();
+        let mut bad = serde_json::to_value(ValidatorsResponse {
+            data: vec![make_validator_datum(1, &root)],
+            execution_optimistic: false,
+            finalized: false,
+        })
+        .unwrap();
+        bad["data"][0]["validator"]["pubkey"] = serde_json::json!("not-a-hex-pubkey");
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                GetStateValidatorsResponseResponse {
-                    data: vec![bad],
-                    execution_optimistic: false,
-                    finalized: false,
-                },
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(bad))
             .mount(&server)
             .await;
 
@@ -6606,16 +6373,14 @@ mod tests {
     /// into the client-visible message.
     #[tokio::test]
     async fn validators_propagates_upstream_400() {
-        use pluto_eth2api::BlindedBlock400Response;
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/eth/v1/beacon/states/head/validators"))
             .respond_with(
-                ResponseTemplate::new(400).set_body_json(BlindedBlock400Response {
-                    code: 400.0,
+                ResponseTemplate::new(400).set_body_json(pluto_eth2api::ErrorBody {
+                    code: Some(400),
                     message: "secret upstream message".to_owned(),
-                    stacktraces: None,
+                    ..Default::default()
                 }),
             )
             .mount(&server)
@@ -6641,7 +6406,7 @@ mod tests {
 
     use pluto_eth2api::{
         spec::electra,
-        v1::BeaconCommitteeSelection as Eth2BeaconCommitteeSelection,
+        v1::{self, BeaconCommitteeSelection as Eth2BeaconCommitteeSelection},
         versioned::{
             AttestationPayload, SignedAggregateAndProofPayload,
             VersionedAttestation as Eth2VersionedAttestation,
@@ -6649,12 +6414,9 @@ mod tests {
         },
     };
 
-    use crate::{
-        signeddata::{
-            VersionedAttestation as SignedVersionedAttestation,
-            VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof,
-        },
-        types::AttesterDutyDefinition,
+    use crate::signeddata::{
+        VersionedAttestation as SignedVersionedAttestation,
+        VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof,
     };
 
     /// Build an insecure component (skips BLS verify) pinned to a proposal-spec
@@ -6672,7 +6434,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap();
         let component = Component {
             eth2_cl,
             dutydb,
@@ -6688,7 +6450,6 @@ mod tests {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            seen_pubkeys: None,
         };
         (component, mock)
     }
@@ -6755,16 +6516,14 @@ mod tests {
             let mut set = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0x01),
-                DutyDefinition::Attester(AttesterDutyDefinition {
-                    pubkey: core_pubkey(0x01),
-                    duty: signeddata::AttesterDuty {
-                        slot: SLOT,
-                        validator_index: VAL_IDX,
-                        committee_index: COMM_IDX,
-                        committee_length: 64,
-                        committees_at_slot: 1,
-                        validator_committee_index: BIT as u64,
-                    },
+                DutyDefinition::Attester(v1::AttesterDuty {
+                    pubkey: core_pubkey(0x01).0,
+                    slot: SLOT,
+                    validator_index: VAL_IDX,
+                    committee_index: COMM_IDX,
+                    committee_length: 64,
+                    committees_at_slot: 1,
+                    validator_committee_index: BIT as u64,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6799,16 +6558,14 @@ mod tests {
             let mut set = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0x01),
-                DutyDefinition::Attester(AttesterDutyDefinition {
-                    pubkey: core_pubkey(0x01),
-                    duty: signeddata::AttesterDuty {
-                        slot: 9,
-                        validator_index: 1,
-                        committee_index: COMM_IDX,
-                        committee_length: 64,
-                        committees_at_slot: 1,
-                        validator_committee_index: 0,
-                    },
+                DutyDefinition::Attester(v1::AttesterDuty {
+                    pubkey: core_pubkey(0x01).0,
+                    slot: 9,
+                    validator_index: 1,
+                    committee_index: COMM_IDX,
+                    committee_length: 64,
+                    committees_at_slot: 1,
+                    validator_committee_index: 0,
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6995,8 +6752,9 @@ mod tests {
                     duty,
                     Duty::new_prepare_aggregator_duty(SlotNumber::new(SLOT))
                 );
-                Ok(Box::new(SignedBeaconCommitteeSelection::new(aggregated))
-                    as Box<dyn SignedData>)
+                Ok(SignedData::from(SignedBeaconCommitteeSelection::new(
+                    aggregated,
+                )))
             }
         });
 
@@ -7029,7 +6787,7 @@ mod tests {
         // The AggSigDB hook is checked first; register it so the test reaches
         // the validator-not-found path.
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("unused".into())
+            Err::<SignedData, _>("unused".into())
         });
         let selection = Eth2BeaconCommitteeSelection {
             slot: 9,
@@ -7055,13 +6813,13 @@ mod tests {
             // Echo back a selection keyed by the requested pubkey's slot is not
             // available here; return a fixed aggregated selection.
             let _ = pk;
-            Ok(Box::new(SignedBeaconCommitteeSelection::new(
+            Ok(SignedData::from(SignedBeaconCommitteeSelection::new(
                 Eth2BeaconCommitteeSelection {
                     slot: 0,
                     validator_index: 0,
                     selection_proof: [0xCD; 96],
                 },
-            )) as Box<dyn SignedData>)
+            )))
         });
 
         let selections = vec![

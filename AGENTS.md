@@ -33,8 +33,11 @@ pluto/
     parsigex/              # Partial-signature exchange protocol
     peerinfo/              # Peer info utilities
     priority/              # Priority queue / duty prioritisation
+    proto/                 # Generated protobuf types and Charon-compatible encoding shims
     relay-server/          # Relay server implementation
     ssz/                   # SSZ serialisation helpers
+    stacktrace/            # `#[located]` error attribute and stack-trace capture
+    test-compose/          # Docker-compose smoke-test harness (test infrastructure, not shipped)
     testutil/              # Test helpers/fixtures (workspace-internal)
     tracing/               # Observability/tracing utilities
   scripts/                 # Helper shell scripts (cluster comparison, DKG runner, etc.)
@@ -54,6 +57,16 @@ pluto/
 
 - Default to **functional equivalence** with the Go implementation.
 
+### Error types
+
+A `thiserror` type with an unnamed `#[from]` field carries `#[pluto_stacktrace::located]` as its outermost attribute, so the raise location and a stack trace are captured on conversion.
+
+- The field's type becomes `pluto_stacktrace::LocatedError<T>`: build it with `.into()` and match through it with `**`.
+- `Display` is the plain `thiserror` message; the location and the trace are reachable only through `Debug`.
+- The attribute rejects a type with no unnamed `#[from]` field.
+- Write the conversion as `?`, a closure (`.map_err(|e| e.into())`), or an explicit `.into()`; passing `Into::into` or `Type::from` as a function value captures the location of a `core` shim.
+- `error!` renders an error with `?err` where it is dropped and with `%err` where it is propagated, so a trace is printed once.
+
 ## Tooling / Quality Gates
 
 Environment:
@@ -66,6 +79,7 @@ Commands (run from `pluto/`):
 ```bash
 cargo +nightly fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo test --workspace --features pluto-eth2api/integration
+# Smoke tests are opt-in (--features smoke); see crates/test-compose/README.md.
 cargo deny check --hide-inclusion-graph
 ```

@@ -73,9 +73,10 @@ fn parse_exposition(text: &str) -> Vec<MetricFamily> {
             // # HELP / # UNIT / # EOF / other comment.
         } else if let Some(family) = current.as_mut() {
             if let Some((name, metric)) = parse_sample(line, family.metric_type) {
-                // Counter/gauge families are queried by the checks, so they must
-                // contain only their own series: reject a sample whose name does
-                // not match the `# TYPE` name, which would otherwise be folded
+                // Counter/gauge families are queried by the checks, so they
+                // must contain only their own series: reject a
+                // sample whose name does not match the `# TYPE`
+                // name, which would otherwise be folded
                 // into (e.g. summed onto) a queried metric. Histogram/info
                 // families are never queried; keep all their lines so the
                 // cardinality scan still sees them.
@@ -86,10 +87,11 @@ fn parse_exposition(text: &str) -> Vec<MetricFamily> {
                     tracing::debug!(sample = line, "dropping sample: name mismatches its family");
                 }
             } else {
-                // We encode this text ourselves, so an unparseable sample means a
-                // parser gap. Surface it at debug rather than dropping silently
-                // (which could mask a queried metric). Not warn/error: those feed
-                // back into `app_log_*_total` and the checker.
+                // We encode this text ourselves, so an unparseable sample means
+                // a parser gap. Surface it at debug rather than
+                // dropping silently (which could mask a queried
+                // metric). Not warn/error: those feed back into
+                // `app_log_*_total` and the checker.
                 tracing::debug!(sample = line, "dropping unparseable metric sample");
             }
         }
@@ -257,7 +259,8 @@ mod tests {
 
         let families = gather_registry(&registry).expect("gather");
 
-        // Counter `_total` is preserved as the registered base name (no doubling).
+        // Counter `_total` is preserved as the registered base name (no
+        // doubling).
         let log_fam = family(&families, "app_log_error_total");
         assert_eq!(log_fam.metric_type, MetricType::Counter);
         assert_eq!(log_fam.metrics.len(), 1);
@@ -351,8 +354,9 @@ demo{path=\"a\\\"b\",note=\"x\\\\y\"} 3";
         assert_eq!(gauge.metrics.len(), 1);
         assert_eq!(gauge.metrics[0].value, Some(SampleValue::Gauge(1.0)));
 
-        // Histogram family is kept (for the cardinality scan); its sub-lines did
-        // not leak into the families above and carry no counter/gauge value.
+        // Histogram family is kept (for the cardinality scan); its sub-lines
+        // did not leak into the families above and carry no
+        // counter/gauge value.
         let hist = family(&families, "demo_latency_seconds");
         assert_eq!(hist.metric_type, MetricType::Histogram);
         assert!(!hist.metrics.is_empty());
@@ -376,8 +380,8 @@ app_log_error_total_bucket{le=\"1\"} 99";
     #[test]
     fn format_pin_counter_encoding() {
         // Pins vise's OpenMetricsForPrometheus output: a future vise change
-        // (e.g. `_total` doubling, a `_created` line, or different spacing) must
-        // fail here rather than silently break the gatherer.
+        // (e.g. `_total` doubling, a `_created` line, or different spacing)
+        // must fail here rather than silently break the gatherer.
         let log = LogLike::default();
         log.error_total.inc_by(3);
         let mut registry = Registry::empty();

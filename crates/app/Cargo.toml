@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 axum.workspace = true
 backon.workspace = true
 chrono.workspace = true
@@ -27,7 +26,7 @@ pluto-infosync.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 vise.workspace = true
-prost.workspace = true
+pluto-proto.workspace = true
 prost-types.workspace = true
 regex.workspace = true
 thiserror.workspace = true
@@ -48,6 +47,7 @@ pluto-cluster.workspace = true
 pluto-k1util.workspace = true
 pluto-crypto.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 # Normal (non-dev) dependency: the beacon/validator mocks are wired into the
 # production `pluto run` path for simnet mode (`--simnet-beacon-mock` /
 # `--simnet-validator-mock`), mirroring Charon which always compiles its mocks
@@ -58,6 +58,7 @@ pluto-testutil.workspace = true
 pluto-build-proto.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 libp2p.workspace = true
 wiremock.workspace = true
 test-case.workspace = true

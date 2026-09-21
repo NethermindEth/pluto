@@ -48,9 +48,7 @@ impl ApiError {
         self
     }
 
-    /// Attaches a boxed source error for debug logging. Use this when the
-    /// upstream error is not `std::error::Error` itself (e.g. `anyhow::Error`,
-    /// which only implements `AsRef<dyn Error>` and converts via `.into()`).
+    /// Attaches an already boxed source error for debug logging.
     #[must_use]
     pub fn with_boxed_source(
         mut self,
@@ -101,15 +99,16 @@ struct ErrorBody {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // The `source` never reaches the client (it can carry internal detail),
-        // but it is the only place the underlying cause is recorded — e.g. which
-        // field an SSZ/JSON body failed to decode. Log it here, on the single
-        // path every error response takes, otherwise it is silently dropped.
+        // but it is the only place the underlying cause is recorded — e.g.
+        // which field an SSZ/JSON body failed to decode. Log it here,
+        // on the single path every error response takes, otherwise it
+        // is silently dropped.
         if let Some(source) = &self.source {
             if self.status_code.is_server_error() {
                 tracing::error!(
                     status = self.status_code.as_u16(),
                     message = %self.message,
-                    source = %DisplayChain(source.as_ref()),
+                    source = ?source,
                     "validator api error"
                 );
             } else {

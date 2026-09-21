@@ -24,7 +24,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{Instrument as _, warn};
 
 use super::{
     SignFunc,
@@ -138,6 +138,7 @@ impl Component {
     }
 
     /// Called externally each slot. Mirrors Go's `Component.SlotTicked`.
+    #[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
     pub async fn slot_ticked(&self, slot: u64) -> Result<()> {
         if self.delay_on_startup().await {
             return Ok(());
@@ -192,7 +193,8 @@ impl Component {
     /// Refreshes attester + sync-committee state for the lookahead window.
     /// Mirrors Go's `manageEpochState`.
     async fn manage_epoch_state(&self, epoch: MetaEpoch) -> Result<()> {
-        // Drop attesters / sync-comm members for the past `EPOCH_WINDOW` epochs.
+        // Drop attesters / sync-comm members for the past `EPOCH_WINDOW`
+        // epochs.
         let mut e = epoch;
         for _ in 0..EPOCH_WINDOW {
             self.delete_attesters(e).await;
@@ -213,7 +215,7 @@ impl Component {
     async fn start_attesters(&self, epoch: MetaEpoch) {
         for slot in epoch.slots() {
             let attester = Arc::new(SlotAttester::new(
-                Arc::new(self.inner.eth2_cl.clone()),
+                self.inner.eth2_cl.clone(),
                 slot.slot,
                 Arc::clone(&self.inner.sign_func),
                 self.inner.pubkeys.clone(),
@@ -270,6 +272,7 @@ impl Drop for Component {
     }
 }
 
+#[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
 async fn run_scheduler(
     inner: Arc<Inner>,
     cancel: CancellationToken,
@@ -287,7 +290,7 @@ async fn run_scheduler(
                 let Some(scheduled) = maybe else { break };
                 let inner_for_task = Arc::clone(&inner);
                 let cancel_for_task = cancel.clone();
-                duties.spawn(async move {
+                let duty_task = async move {
                     let start_time = scheduled.start_time;
                     let slot = scheduled.slot;
                     let duty_label = scheduled.duty_type.clone();
@@ -312,7 +315,10 @@ async fn run_scheduler(
                             }
                         }
                     }
-                });
+                };
+                // `JoinSet::spawn` starts the task with an empty span stack,
+                // so re-attach the `vmock` span opened by this function.
+                duties.spawn(duty_task.instrument(tracing::Span::current()));
             }
             // Reap finished duties to keep the JoinSet bounded. Disabled when
             // empty — `Some(_)` does not match `None`.
@@ -375,10 +381,11 @@ async fn run_duty_via_inner(inner: &Inner, duty: ScheduleTuple) -> Result<()> {
         DutyType::BuilderRegistration => {
             // The simnet beacon mock has no builder-registration submission
             // path, so there is nothing to perform. Charon's vmock errors on
-            // this duty ("unexpected duty"), and its `dutiesForSlot` enqueues it
-            // ~slots_per_epoch times at each epoch boundary — the schedule-tuple
-            // key includes the look-ahead slot, so the shared epoch-start time
-            // is not deduped — which this port mirrors exactly. Charon tolerates
+            // this duty ("unexpected duty"), and its `dutiesForSlot` enqueues
+            // it ~slots_per_epoch times at each epoch boundary —
+            // the schedule-tuple key includes the look-ahead slot,
+            // so the shared epoch-start time is not deduped — which
+            // this port mirrors exactly. Charon tolerates
             // the resulting warning burst; the smoke-test alert gate does not,
             // so skip it silently rather than error.
             Ok(())

@@ -157,6 +157,80 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn length_delimited_round_trip() {
+        // 127/128 straddle the one-to-two byte varint prefix boundary.
+        let payloads: [Vec<u8>; 5] = [
+            vec![],
+            vec![1_u8],
+            vec![7_u8; 127],
+            vec![9_u8; 128],
+            vec![3_u8; 300],
+        ];
+
+        for payload in payloads {
+            let mut cursor = Cursor::new(Vec::new());
+
+            write_length_delimited(&mut cursor, &payload)
+                .await
+                .expect("write should succeed");
+            cursor.set_position(0);
+
+            let decoded = read_length_delimited(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .expect("read should succeed");
+
+            assert_eq!(decoded, payload);
+        }
+    }
+
+    #[tokio::test]
+    async fn length_delimited_frames_are_read_back_in_order() {
+        let mut cursor = Cursor::new(Vec::new());
+
+        // Two frames in one stream: the length prefix separates them.
+        write_length_delimited(&mut cursor, b"first")
+            .await
+            .expect("write should succeed");
+        write_length_delimited(&mut cursor, b"second")
+            .await
+            .expect("write should succeed");
+        cursor.set_position(0);
+
+        for want in [b"first".as_slice(), b"second".as_slice()] {
+            let decoded = read_length_delimited(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .expect("read should succeed");
+            assert_eq!(decoded, want);
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_length_delimited_message_fails() {
+        let mut cursor = Cursor::new(Vec::new());
+        write_length_delimited(&mut cursor, &[1, 2, 3, 4])
+            .await
+            .expect("write should succeed");
+        cursor.set_position(0);
+
+        // The framing is valid; only the caller's limit rejects it.
+        let error = read_length_delimited(&mut cursor, 3)
+            .await
+            .expect_err("payloads above the limit must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn truncated_length_delimited_payload_fails() {
+        // The varint announces 4 bytes but only 2 follow.
+        let mut cursor = Cursor::new(vec![4, 1, 2]);
+
+        let error = read_length_delimited(&mut cursor, MAX_MESSAGE_SIZE)
+            .await
+            .expect_err("a truncated payload must fail");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
     async fn fixed_size_round_trip() {
         let payload = vec![1, 2, 3, 4];
         let mut cursor = Cursor::new(Vec::new());

@@ -18,6 +18,7 @@ use crate::{
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Consensus controller error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to construct the default QBFT consensus implementation.
@@ -52,7 +53,7 @@ pub struct Config {
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
     /// Injected feature set, resolved once at construction.
-    pub feature_set: Arc<FeatureSet>,
+    pub feature_set: &'static FeatureSet,
 }
 
 /// Controls the active consensus protocol implementation.
@@ -181,7 +182,7 @@ mod tests {
         let (deadliner, expired_rx) =
             DeadlinerTask::start(ct, "controller-test", NeverExpiringCalculator);
 
-        let fs = Arc::new(FeatureSet::new());
+        let fs: &'static FeatureSet = Box::leak(Box::new(FeatureSet::new()));
         Config {
             peers: peers(),
             local_peer_idx: 0,
@@ -192,7 +193,7 @@ mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: false,
-            timer_func: get_round_timer_func(fs.clone()),
+            timer_func: get_round_timer_func(fs),
             feature_set: fs,
         }
     }

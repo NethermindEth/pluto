@@ -45,12 +45,29 @@ pub(crate) fn no_labels() -> Selector {
     })
 }
 
+/// A label name paired with the compiled regex its value must match, built
+/// once per selector rather than once per metric series.
+pub(crate) struct LabelMatcher {
+    name: &'static str,
+    /// [`None`] if the pattern failed to compile, which never matches.
+    regex: Option<Regex>,
+}
+
+impl LabelMatcher {
+    pub(crate) fn new(name: &'static str, pattern: &str) -> Self {
+        Self {
+            name,
+            regex: Regex::new(pattern).ok(),
+        }
+    }
+}
+
 /// Sums the values of series matching all of `labels`.
-pub(crate) fn count_labels(labels: Vec<LabelPair>) -> Selector {
+pub(crate) fn count_labels(labels: &'static [LabelMatcher]) -> Selector {
     Box::new(move |fam: &MetricFamily| {
         let mut sum = 0.0_f64;
         for metric in &fam.metrics {
-            if labels_contain(&metric.labels, &labels) {
+            if labels_contain(&metric.labels, labels) {
                 sum += metric.value_or_zero();
             }
         }
@@ -60,14 +77,14 @@ pub(crate) fn count_labels(labels: Vec<LabelPair>) -> Selector {
 
 /// Sums the values of series matching all of `labels`; errors on non
 /// gauge/counter families.
-pub(crate) fn sum_labels(labels: Vec<LabelPair>) -> Selector {
+pub(crate) fn sum_labels(labels: &'static [LabelMatcher]) -> Selector {
     Box::new(move |fam: &MetricFamily| {
         if fam.metric_type != MetricType::Gauge && fam.metric_type != MetricType::Counter {
             return Err(Error::UnsupportedMetricType);
         }
         let mut sum = 0.0_f64;
         for metric in &fam.metrics {
-            if labels_contain(&metric.labels, &labels) {
+            if labels_contain(&metric.labels, labels) {
                 sum += metric.value_or_zero();
             }
         }
@@ -75,27 +92,13 @@ pub(crate) fn sum_labels(labels: Vec<LabelPair>) -> Selector {
     })
 }
 
-/// Returns true if every pair in `contain` matches some label in `labels`:
-/// names must be equal and the `contain` value is matched as a regex against
-/// the label value. A regex that fails to compile is treated as no match.
-pub(crate) fn labels_contain(labels: &[LabelPair], contain: &[LabelPair]) -> bool {
-    for c in contain {
-        let mut found = false;
-        for l in labels {
-            if l.name != c.name {
-                continue;
-            }
-            if Regex::new(&c.value)
-                .map(|re| re.is_match(&l.value))
-                .unwrap_or(false)
-            {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return false;
-        }
-    }
-    true
+/// Returns true if every matcher in `contain` matches some label in `labels`:
+/// names must be equal and the matcher's regex must match the label value. A
+/// matcher whose regex failed to compile is treated as no match.
+pub(crate) fn labels_contain(labels: &[LabelPair], contain: &[LabelMatcher]) -> bool {
+    contain.iter().all(|c| {
+        labels
+            .iter()
+            .any(|l| l.name == c.name && c.regex.as_ref().is_some_and(|re| re.is_match(&l.value)))
+    })
 }

@@ -6,6 +6,7 @@ use reqwest::{Method, StatusCode};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Error type for Obol API client operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// No exit found for the given validator public key (HTTP 404).
@@ -44,7 +45,7 @@ pub enum Error {
 
     /// Hex decoding error.
     #[error("hex decoding error: {0}")]
-    HexDecode(#[from] hex::FromHexError),
+    HexDecode(#[from] pluto_ssz::HexDecodeError),
 
     /// Empty hex string.
     #[error("empty hex string")]
@@ -85,6 +86,6 @@ pub enum Error {
 
 impl From<pluto_ssz::Error<pluto_ssz::HasherError>> for Error {
     fn from(error: pluto_ssz::Error<pluto_ssz::HasherError>) -> Self {
-        Self::Ssz(pluto_cluster::ssz::SSZError::from(error))
+        Self::Ssz(pluto_cluster::ssz::SSZError::from(error).into())
     }
 }

@@ -82,6 +82,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::Instrument as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     #[test]
@@ -100,6 +101,51 @@ mod tests {
 
         assert_eq!(TRACING_METRICS.error_total[&topic.to_owned()].get(), 1);
         assert_eq!(TRACING_METRICS.warn_total[&topic.to_owned()].get(), 1);
+    }
+
+    #[tokio::test]
+    async fn instrumented_spawn_keeps_topic_across_task_boundary() {
+        // `tokio::spawn` starts a task with an empty span stack, so a subtask
+        // only keeps its parent's topic when the future is explicitly
+        // re-attached to the current span. Callers that spawn from inside a
+        // topic span must do this by hand; the two assertions below pin both
+        // halves of that contract.
+        let topic = "metrics_layer_spawn_topic";
+        let subscriber = tracing_subscriber::registry().with(MetricsLayer);
+
+        let before = TRACING_METRICS.error_total[&topic.to_owned()].get();
+
+        // `Instrument` captures the dispatcher as well as the span, so the
+        // default subscriber set here applies inside the spawned task.
+        let guard = tracing::subscriber::set_default(subscriber);
+        let span = tracing::info_span!("component", topic);
+
+        let instrumented = {
+            let _enter = span.enter();
+            tokio::spawn(
+                async {
+                    tracing::error!("boom from instrumented task");
+                }
+                .instrument(tracing::Span::current()),
+            )
+        };
+        instrumented.await.unwrap();
+
+        let bare = {
+            let _enter = span.enter();
+            tokio::spawn(async {
+                tracing::error!("boom from bare task");
+            })
+        };
+        bare.await.unwrap();
+
+        drop(guard);
+
+        assert_eq!(
+            TRACING_METRICS.error_total[&topic.to_owned()].get(),
+            before.saturating_add(1),
+            "only the instrumented spawn should be counted under the topic"
+        );
     }
 
     #[test]

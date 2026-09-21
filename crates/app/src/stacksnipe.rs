@@ -278,7 +278,8 @@ mod tests {
 
         populate_proc(base, 42, "lighthouse", b"lighthouse_1");
         populate_proc(base, 43, "nimbus", b"nimbus_1");
-        // lodestar runs under a `node` process; the name comes from the cmdline.
+        // lodestar runs under a `node` process; the name comes from the
+        // cmdline.
         populate_proc(base, 44, "node", b"lodestar vc 1");
         // Not part of the validator stack; must be ignored.
         populate_proc(base, 52, "systemd-resolved", b"run_1");
@@ -322,7 +323,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let missing = dir.path().join("does-not-exist");
 
-        // The walk yields nothing (no error), so the callback fires with empties.
+        // The walk yields nothing (no error), so the callback fires with
+        // empties.
         let (names, cli_params) = run_once(&missing).await;
         assert!(names.is_empty());
         assert!(cli_params.is_empty());
@@ -398,7 +400,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let base = dir.path();
 
-        // Trailing NUL and inter-argument NULs: empty tokens dropped, joined " ".
+        // Trailing NUL and inter-argument NULs: empty tokens dropped, joined "
+        // ".
         populate_proc(base, 42, "lighthouse", b"lighthouse\0--datadir\0/data\0");
 
         let components = snipe(base);

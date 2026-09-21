@@ -15,23 +15,24 @@ use pluto_core::{
     signeddata::VersionedSignedValidatorRegistration,
     types::{ParSignedData, ParSignedDataSet, PubKey},
 };
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv::pubkey_to_eth2};
+use pluto_crypto::{tbls, types};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 use pluto_eth2util::{deposit, network, registration};
 use tracing::{info, warn};
 
 use crate::{
-    aggregate::{agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    aggregate,
     dkg::AppendConfig,
     exchanger::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG},
     share::Share,
-    validators::create_dist_validators,
+    validators,
 };
 
 /// Result type for DKG signing helpers.
 pub type Result<T> = std::result::Result<T, SigningError>;
 
 /// Error type for DKG signing helpers.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Failed to build a core public key from bytes.
@@ -112,7 +113,7 @@ pub fn sign_lock_hash(share_idx: u64, shares: &[Share], hash: &[u8]) -> Result<P
 
     for share in shares {
         let pub_key = share_pubkey(share, "signing lock hash")?;
-        let sig = BlstImpl.sign(&share.secret_share, hash)?;
+        let sig = tbls::sign(&share.secret_share, hash)?;
 
         set.insert(pub_key, ParSignedData::new(sig, share_idx));
     }
@@ -138,13 +139,13 @@ pub fn sign_deposit_msgs(
     let mut set = ParSignedDataSet::new();
 
     for (share, withdrawal_address) in shares.iter().zip(withdrawal_addresses.iter()) {
-        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let eth2_pubkey = types::pubkey_to_eth2(share.pub_key);
         let pub_key = share_pubkey(share, "signing deposit message")?;
         let withdrawal_address = pluto_eth2util::helpers::checksum_address(withdrawal_address)?;
 
         let msg = deposit::new_message(eth2_pubkey, &withdrawal_address, amount, compounding)?;
         let sig_root = deposit::get_message_signing_root(&msg, network_name)?;
-        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+        let sig = tbls::sign(&share.secret_share, &sig_root)?;
 
         set.insert(pub_key, ParSignedData::new(sig, share_idx));
         msgs.insert(pub_key, msg);
@@ -177,7 +178,7 @@ pub fn sign_validator_registrations(
     let mut set = ParSignedDataSet::new();
 
     for (share, fee_recipient) in shares.iter().zip(fee_recipients.iter()) {
-        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let eth2_pubkey = types::pubkey_to_eth2(share.pub_key);
         let pub_key = share_pubkey(share, "signing validator registration")?;
 
         let reg_msg = registration::new_message(
@@ -187,7 +188,7 @@ pub fn sign_validator_registrations(
             u64::try_from(timestamp.timestamp())?,
         )?;
         let sig_root = registration::get_message_signing_root(&reg_msg, fork_version_arr);
-        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+        let sig = tbls::sign(&share.secret_share, &sig_root)?;
 
         let signed_reg = VersionedSignedValidatorRegistration::new(
             versioned::VersionedSignedValidatorRegistration {
@@ -233,7 +234,7 @@ pub(crate) async fn sign_and_agg_deposit_data(
             .checked_add(u64::try_from(i)?)
             .ok_or(SigningError::Overflow)?;
         let peer_sigs = exchanger.exchange(sig_type, set).await?;
-        let deposit_data = agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
+        let deposit_data = aggregate::agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
         result.push(deposit_data);
     }
 
@@ -241,7 +242,6 @@ pub(crate) async fn sign_and_agg_deposit_data(
 }
 
 /// Signs, exchanges, and aggregates validator registrations.
-#[allow(dead_code, reason = "will be used in dkg later ")]
 pub(crate) async fn sign_and_agg_validator_registrations(
     exchanger: &Exchanger,
     shares: &[Share],
@@ -270,7 +270,7 @@ pub(crate) async fn sign_and_agg_validator_registrations(
     )?;
 
     let peer_sigs = exchanger.exchange(SIG_VALIDATOR_REG, set).await?;
-    Ok(agg_validator_registrations(
+    Ok(aggregate::agg_validator_registrations(
         &peer_sigs,
         shares,
         &msgs,
@@ -283,7 +283,7 @@ pub(crate) async fn sign_and_agg_validator_registrations(
 /// into the existing lock and the definition is re-hashed; signing happens over
 /// the union of `existing_shares` and `new_shares` unless the append is
 /// unverified, in which case signing is skipped.
-#[allow(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
+#[expect(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
 pub(crate) async fn sign_and_aggregate_lock_hash(
     existing_shares: &[Share],
     new_shares: &[Share],
@@ -294,7 +294,7 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
     val_regs: Vec<VersionedSignedValidatorRegistration>,
     append_config: Option<&AppendConfig>,
 ) -> Result<Lock> {
-    let mut validators = create_dist_validators(new_shares, &deposit_datas, &val_regs)?;
+    let mut validators = validators::create_dist_validators(new_shares, &deposit_datas, &val_regs)?;
 
     if let Some(append) = append_config {
         let mut merged = append.cluster_lock.distributed_validators.clone();
@@ -362,9 +362,10 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
         })
         .collect::<Result<_>>()?;
 
-    let (agg_sig, all_pubshares) = agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
+    let (agg_sig, all_pubshares) =
+        aggregate::agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
 
-    BlstImpl.verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
+    tbls::verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
     lock.signature_aggregate = agg_sig.to_vec();
 
     Ok(lock)
@@ -389,19 +390,16 @@ mod tests {
         let mut res = Vec::with_capacity(num_validators);
 
         for seed in 0..num_validators {
-            let secret = BlstImpl
-                .generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(
-                    u64::try_from(seed)
-                        .expect("seed should fit")
-                        .checked_add(1)
-                        .expect("seed increment should not overflow"),
-                ))
-                .expect("secret generation should succeed");
-            let pub_key = BlstImpl
-                .secret_to_public_key(&secret)
-                .expect("public key derivation should succeed");
-            let shares = BlstImpl
-                .threshold_split(&secret, total, threshold)
+            let secret = tbls::generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(
+                u64::try_from(seed)
+                    .expect("seed should fit")
+                    .checked_add(1)
+                    .expect("seed increment should not overflow"),
+            ))
+            .expect("secret generation should succeed");
+            let pub_key =
+                tbls::secret_to_public_key(&secret).expect("public key derivation should succeed");
+            let shares = tbls::threshold_split(&secret, total, threshold)
                 .expect("threshold split should succeed");
 
             res.push(Share {
@@ -414,8 +412,7 @@ mod tests {
                     .map(|(idx, secret_share)| {
                         (
                             idx,
-                            BlstImpl
-                                .secret_to_public_key(&secret_share)
+                            tbls::secret_to_public_key(&secret_share)
                                 .expect("public share derivation should succeed"),
                         )
                     })
@@ -481,8 +478,7 @@ mod tests {
                 .signed_data
                 .signature()
                 .expect("signature should exist");
-            BlstImpl
-                .verify(&share.public_shares[&2], &hash, &sig)
+            tbls::verify(&share.public_shares[&2], &hash, &sig)
                 .expect("partial signature should verify against share public key");
         }
     }

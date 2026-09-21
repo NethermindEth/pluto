@@ -1,20 +1,20 @@
 //! Types for the Charon core.
 
-use std::{any::Any, collections::HashMap, fmt::Display, iter};
+use std::{collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
-use dyn_clone::DynClone;
-use dyn_eq::DynEq;
-use pluto_ssz::HashRoot;
+use pluto_eth2api::v1;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug as StdDebug;
 
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
     parsigex_codec::{deserialize_signed_data, serialize_signed_data},
-    signeddata::{AttesterDuty, SignedDataError},
 };
+
+/// Signed duty data, re-exported from [`crate::signeddata`] where the closed
+/// enum over every signed payload lives.
+pub use crate::signeddata::SignedData;
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,18 +54,43 @@ pub enum DutyType {
 
 impl Display for DutyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(s) = self.as_str() {
+            return f.write_str(s);
+        }
+        // DutySentinel renders as a JSON object, so it keeps the serde path.
         // safe to unwrap because we know the duty type is valid
         let v = serde_json::to_value(self).expect("failed to serialize duty type");
-        if let Some(s) = v.as_str() {
-            write!(f, "{}", s)
-        } else {
-            // fallback for non-string variants (structs, numbers, etc.)
-            write!(f, "{}", v)
-        }
+        write!(f, "{}", v)
     }
 }
 
 impl DutyType {
+    /// Returns the rendered name for this duty type, or [`None`] for
+    /// [`DutyType::DutySentinel`], which has no flat string form.
+    ///
+    /// The strings MUST match the `snake_case` serde encoding: they are used as
+    /// metric label values and in [`Display`].
+    pub fn as_str(&self) -> Option<&'static str> {
+        let s = match self {
+            DutyType::Unknown => "unknown",
+            DutyType::Proposer => "proposer",
+            DutyType::Attester => "attester",
+            DutyType::Signature => "signature",
+            DutyType::Exit => "exit",
+            DutyType::BuilderProposer => "builder_proposer",
+            DutyType::BuilderRegistration => "builder_registration",
+            DutyType::Randao => "randao",
+            DutyType::PrepareAggregator => "prepare_aggregator",
+            DutyType::Aggregator => "aggregator",
+            DutyType::SyncMessage => "sync_message",
+            DutyType::PrepareSyncContribution => "prepare_sync_contribution",
+            DutyType::SyncContribution => "sync_contribution",
+            DutyType::InfoSync => "info_sync",
+            DutyType::DutySentinel(_) => return None,
+        };
+        Some(s)
+    }
+
     /// Returns true if the duty type is valid.
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
@@ -483,213 +508,37 @@ impl AsRef<[u8]> for PubKey {
     }
 }
 
-/// Attestation duties to be performed by validators for a particular epoch.
-///
-/// Mirrors Charon's `core.AttesterDefinition`, which embeds the eth2
-/// `v1.AttesterDuty`. Pluto's [`AttesterDuty`] omits the validator public key,
-/// so it is carried alongside the embedded duty.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AttesterDutyDefinition {
-    /// The validator's BLS public key.
-    pub pubkey: PubKey,
-    /// The attester duty to perform.
-    pub duty: AttesterDuty,
-}
-
-impl TryFrom<pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum>
-    for AttesterDutyDefinition
-{
-    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
-
-    fn try_from(
-        value: pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum,
-    ) -> Result<Self, Self::Error> {
-        let pubkey = PubKey::try_from(value.pubkey.as_str())
-            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let validator_index = value.validator_index.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
-        })?;
-        let slot = value
-            .slot
-            .parse::<u64>()
-            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into()))?;
-        let committee_index = value.committee_index.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_index".into())
-        })?;
-        let committee_length = value.committee_length.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_length".into())
-        })?;
-        let committees_at_slot = value.committees_at_slot.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committees_at_slot".into())
-        })?;
-        let validator_committee_index =
-            value
-                .validator_committee_index
-                .parse::<u64>()
-                .map_err(|_| {
-                    pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
-                        "validator_committee_index".into(),
-                    )
-                })?;
-
-        Ok(AttesterDutyDefinition {
-            pubkey,
-            duty: AttesterDuty {
-                slot,
-                validator_index,
-                committee_index,
-                committee_length,
-                committees_at_slot,
-                validator_committee_index,
-            },
-        })
-    }
-}
-
-/// Indicates that a validator must propose a block in a given epoch
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProposerDutyDefinition {
-    /// The validator's BLS public key
-    pub pubkey: PubKey,
-    ///Index of validator in validator registry.
-    pub v_idx: u64,
-    /// The slot at which the validator must propose a block.
-    pub slot: SlotNumber,
-}
-
-impl From<pluto_eth2api::ProposerDuty> for ProposerDutyDefinition {
-    fn from(value: pluto_eth2api::ProposerDuty) -> ProposerDutyDefinition {
-        ProposerDutyDefinition {
-            pubkey: PubKey::from(value.pubkey),
-            v_idx: value.validator_index,
-            slot: SlotNumber::from(value.slot),
-        }
-    }
-}
-
-/// Sync committee duties for a particular epoch
-#[derive(Debug, Clone, PartialEq)]
-pub struct SyncCommitteeDutyDefinition {
-    /// The validator's BLS public key
-    pub pubkey: PubKey,
-    /// Index of validator in validator registry.
-    pub validator_index: u64,
-    /// The indices of the validator in the sync committee.
-    pub validator_sync_committee_indices: Vec<u64>,
-}
-
-impl TryFrom<pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum>
-    for SyncCommitteeDutyDefinition
-{
-    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
-
-    fn try_from(
-        value: pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum,
-    ) -> Result<Self, Self::Error> {
-        let pubkey = PubKey::try_from(value.pubkey.as_str())
-            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let validator_index = value.validator_index.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
-        })?;
-        let validator_sync_committee_indices = value
-            .validator_sync_committee_indices
-            .iter()
-            .map(|idx| {
-                idx.parse::<u64>().map_err(|_| {
-                    pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
-                        "validator_sync_committee_indices".into(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<u64>, _>>()?;
-
-        Ok(SyncCommitteeDutyDefinition {
-            pubkey,
-            validator_index,
-            validator_sync_committee_indices,
-        })
-    }
-}
-
-/// All duty definitions for a validator in a given epoch.
+/// The beacon-node duty a validator must perform in a given epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
     /// Attester duty definition.
-    Attester(AttesterDutyDefinition),
+    Attester(v1::AttesterDuty),
     /// Proposer duty definition.
-    Proposer(ProposerDutyDefinition),
+    Proposer(v1::ProposerDuty),
     /// Sync committee duty definition.
-    SyncCommittee(SyncCommitteeDutyDefinition),
+    SyncCommittee(v1::SyncCommitteeDuty),
 }
 
 /// A set of duty definitions for all validators in a given epoch, indexed by
 /// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
-/// Signed data type
-pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
-    /// signature returns the signed duty data's signature.
-    fn signature(&self) -> Result<Signature, SignedDataError>;
-
-    /// Returns a copy of signed duty data with the signature replaced.
-    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
-    where
-        Self: Sized;
-
-    /// Object-safe equivalent of [`SignedData::set_signature`].
-    fn set_signature_boxed(
-        &self,
-        signature: Signature,
-    ) -> Result<Box<dyn SignedData>, SignedDataError>;
-
-    /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> Result<HashRoot, SignedDataError>;
-}
-
-dyn_eq::eq_trait_object!(SignedData);
-dyn_clone::clone_trait_object!(SignedData);
-
 /// ParSignedData is a partially signed duty data only signed by a single
 /// threshold BLS share.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParSignedData {
     /// Partially signed duty data.
-    pub signed_data: Box<dyn SignedData>,
+    pub signed_data: SignedData,
 
     /// Threshold BLS share index.
     pub share_idx: u64,
 }
 
-impl Clone for ParSignedData {
-    fn clone(&self) -> Self {
-        Self {
-            signed_data: self.signed_data.clone(),
-            share_idx: self.share_idx,
-        }
-    }
-}
-
-impl PartialEq for ParSignedData {
-    fn eq(&self, other: &Self) -> bool {
-        self.share_idx == other.share_idx && self.signed_data == other.signed_data
-    }
-}
-
-impl Eq for ParSignedData {}
-
 impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u64) -> Self {
+    pub fn new(partially_signed_data: impl Into<SignedData>, share_idx: u64) -> Self {
         Self {
-            signed_data: Box::new(partially_signed_data),
-            share_idx,
-        }
-    }
-
-    /// Create a new partially signed data from a boxed signed data.
-    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
-        Self {
-            signed_data: partially_signed_data,
+            signed_data: partially_signed_data.into(),
             share_idx,
         }
     }
@@ -699,7 +548,7 @@ impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
     type Error = ParSigExCodecError;
 
     fn try_from(data: &ParSignedData) -> Result<Self, Self::Error> {
-        let encoded = serialize_signed_data(data.signed_data.as_ref())?;
+        let encoded = serialize_signed_data(&data.signed_data)?;
         let share_idx =
             i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
         let signature = data
@@ -723,7 +572,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedData)> for ParSignedData {
         let share_idx =
             u64::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
         let signed_data = deserialize_signed_data(duty_type, &data.data)?;
-        Ok(Self::new_boxed(signed_data, share_idx))
+        Ok(Self::new(signed_data, share_idx))
     }
 }
 
@@ -798,7 +647,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
 }
 
 /// A set of signed duty data.
-pub type SignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
+pub type SignedDataSet = HashMap<PubKey, SignedData>;
 
 /// Slot struct
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -819,25 +668,37 @@ pub struct Slot {
 impl Slot {
     /// Get the epoch of the slot
     pub fn epoch(&self) -> u64 {
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "saturating division cannot overflow or panic"
+        )]
         self.slot.inner().saturating_div(self.slots_per_epoch)
     }
 
     /// Returns true if this is the last slot in the epoch.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "comparison uses wrapping and saturating operations that cannot panic"
+    )]
     pub fn last_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch)
             == self.slots_per_epoch.saturating_sub(1)
     }
 
     /// Returns true if this is the first slot in the epoch.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "wrapping remainder cannot panic"
+    )]
     pub fn first_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch) == 0
     }
 
     /// Returns the next slot
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "time addition of slot_duration is bounded and cannot realistically overflow"
+    )]
     pub fn next_slot(&self) -> Slot {
         Slot {
             slot: self.slot.next(),
@@ -856,6 +717,7 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signeddata::MockSignedData;
 
     #[test]
     fn pub_key_to_string() {
@@ -863,8 +725,8 @@ mod tests {
 
         let key = PubKey::new([0; PK_LEN]);
 
-        // Check whether the string representation is the same as the go's public key
-        // length
+        // Check whether the string representation is the same as the go's
+        // public key length
         assert_eq!(key.to_string().len(), ORIGINAL_PK_LEN);
         assert_eq!(
             key.to_string(),
@@ -1053,6 +915,43 @@ mod tests {
         assert!(!DutyType::DutySentinel(Box::new(DutyType::Attester)).is_valid());
     }
 
+    /// `Display` renders duty types into metric label values, so it must stay
+    /// byte-identical to the serde encoding it used to round-trip through.
+    #[test]
+    fn duty_type_as_str_matches_serde() {
+        let all = [
+            DutyType::Unknown,
+            DutyType::Proposer,
+            DutyType::Attester,
+            DutyType::Signature,
+            DutyType::Exit,
+            DutyType::BuilderProposer,
+            DutyType::BuilderRegistration,
+            DutyType::Randao,
+            DutyType::PrepareAggregator,
+            DutyType::Aggregator,
+            DutyType::SyncMessage,
+            DutyType::PrepareSyncContribution,
+            DutyType::SyncContribution,
+            DutyType::InfoSync,
+        ];
+        for dt in &all {
+            let json = serde_json::to_value(dt).expect("serialize");
+            let expected = json.as_str().expect("unit variants encode as strings");
+            assert_eq!(dt.as_str(), Some(expected), "as_str for {dt:?}");
+            assert_eq!(dt.to_string(), expected, "Display for {dt:?}");
+        }
+    }
+
+    /// `DutySentinel` has no flat string form; it keeps the JSON-object
+    /// rendering the previous serde round-trip produced.
+    #[test]
+    fn duty_type_sentinel_display_keeps_json_form() {
+        let sentinel = DutyType::DutySentinel(Box::new(DutyType::Attester));
+        assert_eq!(sentinel.as_str(), None);
+        assert_eq!(sentinel.to_string(), r#"{"duty_sentinel":"attester"}"#);
+    }
+
     #[test]
     fn duty_type_to_i32_literal_charon_numbers() {
         // Numbers are the canonical Charon core/types.go @ v1.7.1 enum values
@@ -1202,40 +1101,16 @@ mod tests {
         assert_eq!(pk.abbreviated(), "2a2_a2a");
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    struct MockSignedData;
-
-    impl MockSignedData {
-        fn boxed(&self) -> Box<dyn SignedData> {
-            Box::new(self.clone())
-        }
-    }
-
-    impl SignedData for MockSignedData {
-        fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok([42u8; SIGNATURE_LENGTH])
-        }
-
-        fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
-            Ok(self.clone())
-        }
-
-        fn set_signature_boxed(
-            &self,
-            signature: Signature,
-        ) -> Result<Box<dyn SignedData>, SignedDataError> {
-            Ok(Box::new(self.set_signature(signature)?))
-        }
-
-        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
-            Ok([42u8; 32])
-        }
+    fn mock_signed_data() -> SignedData {
+        MockSignedData::new([42u8; SIGNATURE_LENGTH])
+            .with_message_root([42u8; 32])
+            .into()
     }
 
     #[test]
     fn partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
-        let par_signed = ParSignedData::new(MockSignedData, 0);
+        let par_signed = ParSignedData::new(mock_signed_data(), 0);
         partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
         let retrieved = partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN]));
         assert!(retrieved.is_some());
@@ -1250,8 +1125,8 @@ mod tests {
     #[test]
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
-        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData.boxed());
-        let expected = MockSignedData.boxed();
+        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), mock_signed_data());
+        let expected = mock_signed_data();
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
             Some(&expected)

@@ -56,7 +56,17 @@ pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<Conse
             let runtime = config.runtime;
             move |round| new_timer(Arc::clone(&round_timer), runtime.clone(), round)
         }),
-        compare: Arc::new(move |request| compare(compare_attestations, request)),
+        // The core hosts `compare` on its own `std::thread::spawn`, which starts
+        // with an empty span stack — unlike the other callbacks, which run
+        // inline on the thread that already entered the `qbft` span. Carry the
+        // span in and enter it so the warnings in `compare` keep their topic.
+        compare: Arc::new({
+            let span = tracing::Span::current();
+            move |request| {
+                let _entered = span.enter();
+                compare(compare_attestations, request);
+            }
+        }),
         decide: Box::new(move |request| {
             decide(request, Arc::clone(&decide_callback), subscribers.clone());
         }),
@@ -148,7 +158,7 @@ fn decide(
     let decoded = match decode_supported_any(any_value) {
         Ok(decoded) => decoded,
         Err(err) => {
-            tracing::error!(error = %err, "Invalid any value");
+            tracing::error!(error = ?err, "Invalid any value");
             return;
         }
     };
