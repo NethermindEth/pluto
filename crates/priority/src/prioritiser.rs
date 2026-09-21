@@ -29,6 +29,7 @@ use pluto_core::{
 use pluto_p2p::p2p_context::P2PContext;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{
     calculate,
@@ -474,31 +475,34 @@ fn exchange(
         let responses = responses.clone();
         let own = own.clone();
 
-        tokio::spawn(async move {
-            let send = sender.send_receive(peer, own);
-            let response = tokio::select! {
-                () = ct.cancelled() => return,
-                res = send => match res {
-                    Ok(resp) => resp,
-                    Err(_) => return, // Transport already logged.
-                },
-            };
+        tokio::spawn(
+            async move {
+                let send = sender.send_receive(peer, own);
+                let response = tokio::select! {
+                    () = ct.cancelled() => return,
+                    res = send => match res {
+                        Ok(resp) => resp,
+                        Err(_) => return, // Transport already logged.
+                    },
+                };
 
-            if peer.to_string() != response.peer_id {
-                tracing::warn!(%peer, "Invalid priority message peer id");
-                return;
-            }
+                if peer.to_string() != response.peer_id {
+                    tracing::warn!(%peer, "Invalid priority message peer id");
+                    return;
+                }
 
-            if let Err(err) = validator(&response) {
-                tracing::warn!(%peer, %err, "Invalid priority message from peer");
-                return;
-            }
+                if let Err(err) = validator(&response) {
+                    tracing::warn!(%peer, %err, "Invalid priority message from peer");
+                    return;
+                }
 
-            tokio::select! {
-                () = ct.cancelled() => {}
-                _ = responses.send(response) => {}
+                tokio::select! {
+                    () = ct.cancelled() => {}
+                    _ = responses.send(response) => {}
+                }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
     }
 }
 
@@ -518,14 +522,20 @@ fn start_consensus(
     let consensus = inner.consensus.clone();
     let duty = duty.clone();
     let ct = ct.clone();
-    tokio::spawn(async move {
-        // Fire-and-forget so the instance keeps servicing peer requests while
-        // consensus runs. The instance token reaches consensus, so cancellation
-        // tears the proposal down; a propose failure is unexpected.
-        if let Err(err) = consensus.propose_priority(duty, result, &ct).await {
-            tracing::warn!(%err, "Priority protocol consensus");
+    tokio::spawn(
+        async move {
+            // Fire-and-forget so the instance keeps servicing peer requests
+            // while consensus runs. The instance token reaches consensus, so
+            // cancellation tears the proposal down; a propose failure is
+            // unexpected.
+            if let Err(err) = consensus.propose_priority(duty, result, &ct).await {
+                tracing::warn!(%err, "Priority protocol consensus");
+            }
         }
-    });
+        // `tokio::spawn` starts the task with an empty span stack; re-attach
+        // the caller's span so the warning above keeps its topic.
+        .instrument(tracing::Span::current()),
+    );
 
     Ok(())
 }

@@ -48,6 +48,7 @@ use tokio::{
     time::sleep,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 /// A safe far-future duration (~10 years) for timeout calculations.
 /// Using Duration::MAX can cause panics when computing Instant::now() +
@@ -214,7 +215,7 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
             curr_duty: Duty::new(SlotNumber::new(0), DutyType::Unknown),
             curr_deadline: DateTime::<Utc>::MAX_UTC,
         };
-        tokio::spawn(task.run_task());
+        tokio::spawn(task.run_task().instrument(tracing::Span::current()));
 
         let handle = DeadlinerHandle {
             cancel_token,

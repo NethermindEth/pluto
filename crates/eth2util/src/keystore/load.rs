@@ -5,6 +5,7 @@ use std::{
 
 use pluto_crypto::types::PrivateKey;
 use regex::Regex;
+use tracing::Instrument as _;
 
 use super::{
     error::{KeystoreError, Result},
@@ -112,29 +113,35 @@ pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
             .await
             .expect("semaphore not closed");
 
-        set.spawn(async move {
-            let _permit = permit; // released when this task completes
+        let span = tracing::Span::current();
+        set.spawn(
+            async move {
+                let _permit = permit; // released when this task completes
 
-            let b = tokio::fs::read_to_string(&path).await?;
-            let store: Keystore = serde_json::from_str(&b)?;
-            let password = super::store::load_password(&path).await?;
-            let file_index = extract_file_index(path.to_string_lossy())?;
+                let b = tokio::fs::read_to_string(&path).await?;
+                let store: Keystore = serde_json::from_str(&b)?;
+                let password = super::store::load_password(&path).await?;
+                let file_index = extract_file_index(path.to_string_lossy())?;
 
-            // `decrypt` runs scrypt/PBKDF2 (CPU- and memory-heavy); run it on
-            // the blocking pool so it never blocks an async reactor
-            // thread.
-            let (private_key, path) = tokio::task::spawn_blocking(move || {
-                let key = super::store::decrypt(&store, &password)?;
-                Ok::<_, KeystoreError>((key, path))
-            })
-            .await??;
+                // `decrypt` runs scrypt/PBKDF2 (CPU- and memory-heavy); run it
+                // on the blocking pool so it never blocks an async reactor
+                // thread.
+                let decrypt_span = tracing::Span::current();
+                let (private_key, path) = tokio::task::spawn_blocking(move || {
+                    let _entered = decrypt_span.enter();
+                    let key = super::store::decrypt(&store, &password)?;
+                    Ok::<_, KeystoreError>((key, path))
+                })
+                .await??;
 
-            Ok::<KeyFile, KeystoreError>(KeyFile {
-                private_key,
-                filename: path,
-                file_index,
-            })
-        });
+                Ok::<KeyFile, KeystoreError>(KeyFile {
+                    private_key,
+                    filename: path,
+                    file_index,
+                })
+            }
+            .instrument(span),
+        );
     }
 
     if set.is_empty() {
@@ -235,7 +242,11 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         // `decrypt` is CPU-intensive (key derivation), so use `spawn_blocking`
         // to avoid blocking the async runtime. The closure has no
         // `.await` calls.
+        let span = tracing::Span::current();
         set.spawn_blocking(move || {
+            // The blocking pool starts with an empty span stack; enter the
+            // caller's span so `decrypt`'s KDF warnings keep their topic.
+            let _entered = span.enter();
             let _permit = permit; // released when this blocking task finishes
             // First try the password file that matches the keystore file.
             let mut err = None;

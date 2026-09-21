@@ -17,7 +17,7 @@ use libp2p::{Multiaddr, PeerId, multiaddr};
 use pluto_eth2util::enr::{EnrEntry, Record};
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, warn};
+use tracing::{Instrument as _, Span, debug, info, instrument, warn};
 use vise_exporter::{MetricsExporter, MetricsServer};
 
 use crate::{
@@ -123,11 +123,20 @@ pub async fn enr_server(
 ) -> Result<()> {
     info!("Starting ENR server");
 
-    // Start external host resolver task if configured
+    // Start external host resolver task if configured.
+    //
+    // `tokio::spawn` gives the new task an empty span stack, so the resolver
+    // would lose the `relay` topic this server runs under and its warnings
+    // would land on `app_log_warn_total{topic=""}`. Re-attaching the current
+    // span restores what charon gets for free by handing the goroutine its
+    // `context.Context`.
     let resolver_handle = state.p2p_config.external_host.clone().map(|external_host| {
         let state = state.clone();
         let ct = ct.child_token();
-        tokio::spawn(resolve_external_host_periodically(state, external_host, ct))
+        tokio::spawn(
+            resolve_external_host_periodically(state, external_host, ct)
+                .instrument(Span::current()),
+        )
     });
 
     info!(

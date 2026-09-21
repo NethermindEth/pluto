@@ -7,7 +7,7 @@ use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument as _, Span, debug, error, info, warn};
 
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
@@ -364,6 +364,7 @@ fn default_p2p_config() -> P2PConfig {
 }
 
 /// Runs the DKG entrypoint.
+#[tracing::instrument(name = "dkg", level = "debug", skip_all, fields(topic = "dkg"))]
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     if ct.is_cancelled() {
         return Err(DkgError::ShutdownRequestedBeforeStartup);
@@ -388,18 +389,21 @@ async fn start_private_key_lock(
     );
     let lock_ct = CancellationToken::new();
     let task_ct = lock_ct.clone();
-    let task = tokio::spawn(async move {
-        let run_svc = lock_svc.clone();
-        let mut run_task = tokio::spawn(async move { run_svc.run().await });
+    let task = tokio::spawn(
+        async move {
+            let run_svc = lock_svc.clone();
+            let mut run_task = tokio::spawn(async move { run_svc.run().await });
 
-        select! {
-            _ = task_ct.cancelled() => {
-                lock_svc.close().await;
-                log_private_key_lock_result(run_task.await);
+            select! {
+                _ = task_ct.cancelled() => {
+                    lock_svc.close().await;
+                    log_private_key_lock_result(run_task.await);
+                }
+                result = &mut run_task => log_private_key_lock_result(result),
             }
-            result = &mut run_task => log_private_key_lock_result(result),
         }
-    });
+        .instrument(Span::current()),
+    );
 
     Ok((lock_ct, task))
 }
@@ -581,7 +585,13 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     let sync_clients = handlers.sync.clone();
     let sync_server = handlers.sync_server.clone();
     let network_ct = ct.child_token();
-    let network_task = tokio::spawn(drive_dkg_network(node, network_ct.clone()));
+    // A bare `tokio::spawn` starts the driver with an empty span stack, which
+    // would drop the `dkg` topic set by `run` and count the driver's warnings
+    // on `app_log_warn_total{topic=""}`. Re-attach the current span so the
+    // subtask keeps it, mirroring charon passing `context.Context` into the
+    // goroutine.
+    let network_task =
+        tokio::spawn(drive_dkg_network(node, network_ct.clone()).instrument(Span::current()));
 
     let result = run_ceremony()
         .conf(&conf)
@@ -902,14 +912,17 @@ async fn start_sync_protocol(
         let client = client.clone();
         let client_ct = cancellation.child_token();
         let cancel_on_error = cancellation.clone();
-        tasks.push(tokio::spawn(async move {
-            if let Err(error) = client.run(client_ct).await
-                && !matches!(error, crate::sync::Error::Canceled)
-            {
-                error!(?error, "Sync failed to peer");
-                cancel_on_error.cancel();
+        tasks.push(tokio::spawn(
+            async move {
+                if let Err(error) = client.run(client_ct).await
+                    && !matches!(error, crate::sync::Error::Canceled)
+                {
+                    error!(?error, "Sync failed to peer");
+                    cancel_on_error.cancel();
+                }
             }
-        }));
+            .instrument(Span::current()),
+        ));
     }
 
     let mut ticker = tokio::time::interval(Duration::from_millis(250));

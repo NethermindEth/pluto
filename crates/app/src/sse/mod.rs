@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
+use tracing::Instrument as _;
 
 use pluto_eth2api::{BeaconNodeEvent, EthBeaconNodeApiClient, EventTopic};
 
@@ -118,8 +119,9 @@ impl SseListenerBuilder {
         let (events_tx, events_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()));
-        tokio::spawn(actor.run(events_rx, msg_rx, ct));
+        let span = tracing::Span::current();
+        tokio::spawn(run_pump(client, addr, events_tx, ct.clone()).instrument(span.clone()));
+        tokio::spawn(actor.run(events_rx, msg_rx, ct).instrument(span));
 
         Ok(SseListenerHandle { sender: msg_tx })
     }

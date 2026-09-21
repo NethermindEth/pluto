@@ -685,6 +685,10 @@ impl InclusionChecker {
     /// Drives inclusion checking until `cancel` fires: once per due slot, ask
     /// the beacon node whether that slot produced a block, feed the verdict to
     /// the core, then trim submissions old enough to count as missed.
+    ///
+    /// Runs under the `tracker` topic, matching charon's
+    /// `InclusionChecker.Run`.
+    #[tracing::instrument(name = "tracker", level = "debug", skip_all, fields(topic = "tracker"))]
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         let mut checked_slot: Option<u64> = None;

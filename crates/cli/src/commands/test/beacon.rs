@@ -29,6 +29,7 @@ use tokio::{
     time::{Instant, interval, interval_at, sleep},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
@@ -316,10 +317,13 @@ pub async fn run(
         let endpoint = endpoint.clone();
         let shutdown = shutdown.clone();
 
-        set.spawn(async move {
-            let results = test_single_beacon(&args, &queued, &endpoint, shutdown).await;
-            (endpoint, results)
-        });
+        set.spawn(
+            async move {
+                let results = test_single_beacon(&args, &queued, &endpoint, shutdown).await;
+                (endpoint, results)
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     let mut test_results: HashMap<String, Vec<TestResult>> = HashMap::new();
@@ -633,9 +637,9 @@ async fn beacon_ping_load_test(
             _ = interval.tick() => {
                 let cancel = load_cancel.clone();
                 let target = target.to_string();
-                set.spawn(async move {
-                    ping_beacon_continuously(cancel, target).await
-                });
+                set.spawn(
+                    ping_beacon_continuously(cancel, target).instrument(tracing::Span::current()),
+                );
             }
         }
     }
@@ -811,10 +815,10 @@ async fn beacon_simulation_test(
     tracing::info!("Starting general cluster requests...");
     let cluster_cancel = sim_cancel.clone();
     let cluster_target = target.to_string();
-    let cluster_handle =
-        tokio::spawn(
-            async move { single_cluster_simulation(cluster_cancel, &cluster_target).await },
-        );
+    let cluster_handle = tokio::spawn(
+        async move { single_cluster_simulation(cluster_cancel, &cluster_target).await }
+            .instrument(tracing::Span::current()),
+    );
 
     // Validator simulations
     let mut validator_set = tokio::task::JoinSet::new();
@@ -833,9 +837,10 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_set.spawn(async move {
-            single_validator_simulation(cancel, &target, intensity, sync_duties).await
-        });
+        validator_set.spawn(
+            async move { single_validator_simulation(cancel, &target, intensity, sync_duties).await }
+                .instrument(tracing::Span::current()),
+        );
     }
 
     let proposal_duties = DutiesPerformed {
@@ -852,9 +857,12 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_set.spawn(async move {
-            single_validator_simulation(cancel, &target, intensity, proposal_duties).await
-        });
+        validator_set.spawn(
+            async move {
+                single_validator_simulation(cancel, &target, intensity, proposal_duties).await
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     let attester_duties = DutiesPerformed {
@@ -871,9 +879,12 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_set.spawn(async move {
-            single_validator_simulation(cancel, &target, intensity, attester_duties).await
-        });
+        validator_set.spawn(
+            async move {
+                single_validator_simulation(cancel, &target, intensity, attester_duties).await
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     tracing::info!("Waiting for simulation to complete...");
@@ -1094,9 +1105,10 @@ async fn single_validator_simulation(
     let att_handle = if duties.attestation {
         let cancel = cancel.clone();
         let target = target.to_string();
-        Some(tokio::spawn(async move {
-            attestation_duty(cancel, &target, intensity.attestation_duty).await
-        }))
+        Some(tokio::spawn(
+            async move { attestation_duty(cancel, &target, intensity.attestation_duty).await }
+                .instrument(tracing::Span::current()),
+        ))
     } else {
         None
     };
@@ -1105,9 +1117,10 @@ async fn single_validator_simulation(
     let agg_handle = if duties.aggregation {
         let cancel = cancel.clone();
         let target = target.to_string();
-        Some(tokio::spawn(async move {
-            aggregation_duty(cancel, &target, intensity.aggregator_duty).await
-        }))
+        Some(tokio::spawn(
+            async move { aggregation_duty(cancel, &target, intensity.aggregator_duty).await }
+                .instrument(tracing::Span::current()),
+        ))
     } else {
         None
     };
@@ -1116,9 +1129,10 @@ async fn single_validator_simulation(
     let prop_handle = if duties.proposal {
         let cancel = cancel.clone();
         let target = target.to_string();
-        Some(tokio::spawn(async move {
-            proposal_duty(cancel, &target, intensity.proposal_duty).await
-        }))
+        Some(tokio::spawn(
+            async move { proposal_duty(cancel, &target, intensity.proposal_duty).await }
+                .instrument(tracing::Span::current()),
+        ))
     } else {
         None
     };
@@ -1131,20 +1145,23 @@ async fn single_validator_simulation(
     if duties.sync_committee {
         let cancel = cancel.clone();
         let target = target.to_string();
-        tokio::spawn(async move {
-            sync_committee_duties(
-                cancel,
-                &target,
-                intensity.sync_committee_submit,
-                intensity.sync_committee_subscribe,
-                intensity.sync_committee_contribution,
-                sc_msg_tx,
-                sc_produce_tx,
-                sc_sub_tx,
-                sc_contrib_tx,
-            )
-            .await;
-        });
+        tokio::spawn(
+            async move {
+                sync_committee_duties(
+                    cancel,
+                    &target,
+                    intensity.sync_committee_submit,
+                    intensity.sync_committee_subscribe,
+                    intensity.sync_committee_contribution,
+                    sc_msg_tx,
+                    sc_produce_tx,
+                    sc_sub_tx,
+                    sc_contrib_tx,
+                )
+                .await;
+            }
+            .instrument(tracing::Span::current()),
+        );
     } else {
         drop(sc_sub_tx);
         drop(sc_msg_tx);
@@ -1451,16 +1468,28 @@ async fn sync_committee_duties(
 ) {
     let c1 = cancel.clone();
     let t1 = target.to_string();
-    tokio::spawn(async move {
-        sync_committee_contribution_duty(c1, &t1, tick_time_contribution, produce_tx, contrib_tx)
+    tokio::spawn(
+        async move {
+            sync_committee_contribution_duty(
+                c1,
+                &t1,
+                tick_time_contribution,
+                produce_tx,
+                contrib_tx,
+            )
             .await;
-    });
+        }
+        .instrument(tracing::Span::current()),
+    );
 
     let c2 = cancel.clone();
     let t2 = target.to_string();
-    tokio::spawn(async move {
-        sync_committee_message_duty(c2, &t2, tick_time_submit, msg_tx).await;
-    });
+    tokio::spawn(
+        async move {
+            sync_committee_message_duty(c2, &t2, tick_time_submit, msg_tx).await;
+        }
+        .instrument(tracing::Span::current()),
+    );
 
     // Subscribe loop
     if cancel

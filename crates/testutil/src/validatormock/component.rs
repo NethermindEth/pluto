@@ -24,7 +24,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{Instrument as _, warn};
 
 use super::{
     SignFunc,
@@ -138,6 +138,7 @@ impl Component {
     }
 
     /// Called externally each slot. Mirrors Go's `Component.SlotTicked`.
+    #[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
     pub async fn slot_ticked(&self, slot: u64) -> Result<()> {
         if self.delay_on_startup().await {
             return Ok(());
@@ -271,6 +272,7 @@ impl Drop for Component {
     }
 }
 
+#[tracing::instrument(name = "vmock", level = "debug", skip_all, fields(topic = "vmock"))]
 async fn run_scheduler(
     inner: Arc<Inner>,
     cancel: CancellationToken,
@@ -288,7 +290,7 @@ async fn run_scheduler(
                 let Some(scheduled) = maybe else { break };
                 let inner_for_task = Arc::clone(&inner);
                 let cancel_for_task = cancel.clone();
-                duties.spawn(async move {
+                let duty_task = async move {
                     let start_time = scheduled.start_time;
                     let slot = scheduled.slot;
                     let duty_label = scheduled.duty_type.clone();
@@ -313,7 +315,10 @@ async fn run_scheduler(
                             }
                         }
                     }
-                });
+                };
+                // `JoinSet::spawn` starts the task with an empty span stack,
+                // so re-attach the `vmock` span opened by this function.
+                duties.spawn(duty_task.instrument(tracing::Span::current()));
             }
             // Reap finished duties to keep the JoinSet bounded. Disabled when
             // empty — `Some(_)` does not match `None`.

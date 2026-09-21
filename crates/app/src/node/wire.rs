@@ -48,6 +48,7 @@ use pluto_eth2api::{
 };
 use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::node::AppError;
 
@@ -518,9 +519,13 @@ pub async fn wire_core_workflow(
                     let duty = duty.clone();
                     // The core's callback is sync but `inclusion_checked` is
                     // async, so hand the event to the runtime.
-                    tokio::spawn(async move {
-                        tracker.inclusion_checked(duty, pubkey, err).await;
-                    });
+                    let span = tracing::Span::current();
+                    tokio::spawn(
+                        async move {
+                            tracker.inclusion_checked(duty, pubkey, err).await;
+                        }
+                        .instrument(span),
+                    );
                 }),
                 tracker_feature_set,
             )
@@ -635,26 +640,35 @@ pub async fn wire_core_workflow(
             move |duty: Duty, value: pbcore::UnsignedDataSet| {
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
-                tokio::spawn(async move {
-                    let core_set =
-                        match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                // `tokio::spawn` starts the task with an empty span stack, so
+                // re-attach the caller's span.
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let core_set = match unsigneddata::unsigned_data_set_from_proto(
+                            &duty.duty_type,
+                            &value,
+                        ) {
                             Ok(set) => set,
                             Err(err) => {
                                 tracing::warn!(?err, "dutydb: decode unsigned data set");
                                 return;
                             }
                         };
-                    let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
-                    // Logged before the error moves into the tracker's `Arc`.
-                    let step_err = match dutydb.store(duty.clone(), core_set).await {
-                        Ok(()) => None,
-                        Err(err) => {
-                            tracing::warn!(?err, "dutydb: store");
-                            Some(owned_step_err(err))
-                        }
-                    };
-                    tracker.duty_db_stored(duty, &pubkeys, step_err).await;
-                });
+                        let pubkeys: Vec<PubKey> = core_set.keys().copied().collect();
+                        // Logged before the error moves into the tracker's
+                        // `Arc`.
+                        let step_err = match dutydb.store(duty.clone(), core_set).await {
+                            Ok(()) => None,
+                            Err(err) => {
+                                tracing::warn!(?err, "dutydb: store");
+                                Some(owned_step_err(err))
+                            }
+                        };
+                        tracker.duty_db_stored(duty, &pubkeys, step_err).await;
+                    }
+                    .instrument(span),
+                );
                 Ok(())
             },
         ));

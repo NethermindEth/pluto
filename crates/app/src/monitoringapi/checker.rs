@@ -8,7 +8,7 @@ use pluto_eth2api::EthBeaconNodeApiClient;
 use pluto_p2p::p2p_context::P2PContext;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{Instrument as _, Span, error, warn};
 
 use super::{
     metrics::MONITORING_METRICS,
@@ -52,17 +52,24 @@ pub fn start_ready_checker(
     let readiness = ReadyState::new();
     // Both background tasks are detached; their lifecycle is bound to `ct` and
     // they stop when the token is cancelled.
-    let _version_task = tokio::spawn(run_beacon_node_version_metric(
-        beacon_node.clone(),
-        ct.clone(),
-    ));
-    let _task = tokio::spawn(run_ready_checker(
-        p2p_context,
-        beacon_node,
-        validator_api_calls,
-        ct,
-        readiness.clone(),
-    ));
+    //
+    // `tokio::spawn` starts a task with an empty span stack, so both futures
+    // are re-attached to the caller's span; charon's monitoring API sets no
+    // topic of its own and runs as a lifecycle hook, which puts its logs on
+    // `app-start`.
+    let _version_task = tokio::spawn(
+        run_beacon_node_version_metric(beacon_node.clone(), ct.clone()).instrument(Span::current()),
+    );
+    let _task = tokio::spawn(
+        run_ready_checker(
+            p2p_context,
+            beacon_node,
+            validator_api_calls,
+            ct,
+            readiness.clone(),
+        )
+        .instrument(Span::current()),
+    );
 
     readiness
 }
