@@ -5095,6 +5095,7 @@ dependencies = [
 name = "pluto-app"
 version = "1.7.1"
 dependencies = [
+ "async-trait",
  "axum",
  "backon",
  "bon",
