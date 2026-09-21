@@ -5,7 +5,7 @@ use std::{fmt, net::SocketAddr, str::FromStr, time::Duration};
 use libp2p::{Multiaddr, multiaddr, ping};
 use url::Url;
 
-use crate::utils::{TransportProtocol, with_transport};
+use crate::utils::{self, TransportProtocol};
 
 /// Shared default relay endpoints used by commands and P2P-facing configs.
 pub const DEFAULT_RELAYS: [&str; 5] = [
@@ -229,7 +229,7 @@ fn resolve_listen_addr(addr: impl AsRef<str>, proto: TransportProtocol) -> Resul
 
 /// Renders `socket_addr` as a `proto` multiaddr.
 fn multi_addr_from_socket_addr(socket_addr: SocketAddr, proto: TransportProtocol) -> Multiaddr {
-    with_transport(Multiaddr::from(socket_addr.ip()), socket_addr.port(), proto)
+    utils::with_transport(Multiaddr::from(socket_addr.ip()), socket_addr.port(), proto)
 }
 
 #[cfg(test)]
