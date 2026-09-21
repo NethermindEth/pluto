@@ -158,8 +158,7 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
     }
 
     if parsigex_codec::looks_like_json(data) {
-        return crate::signeddata::versioned_proposal_from_json(data)
-            .map_err(ParSigExCodecError::from);
+        return crate::signeddata::versioned_proposal_from_json(data).map_err(|err| err.into());
     }
 
     Err(ParSigExCodecError::UnsignedData(
@@ -188,8 +187,7 @@ fn decode_aggregated_attestation(
         {
             return Ok(VersionedAggregatedAttestation(decoded.0));
         }
-        let att: phase0::Attestation =
-            serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        let att: phase0::Attestation = serde_json::from_slice(data)?;
         return Ok(wrap_phase0_aggregated_attestation(att));
     }
 
@@ -217,7 +215,7 @@ fn decode_sync_contribution(data: &[u8]) -> Result<SyncContribution, ParSigExCod
     }
 
     if parsigex_codec::looks_like_json(data) {
-        let contribution = serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        let contribution = serde_json::from_slice(data)?;
         return Ok(SyncContribution(contribution));
     }
 
@@ -232,8 +230,7 @@ fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodec
     }
 
     if parsigex_codec::looks_like_json(data) {
-        let decoded: AttestationDataJson =
-            serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        let decoded: AttestationDataJson = serde_json::from_slice(data)?;
         return Ok(AttestationData {
             data: decoded.attestation_data,
             duty: decoded.attestation_duty,

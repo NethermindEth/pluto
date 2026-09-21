@@ -76,9 +76,7 @@ impl SszHashable for ExitBlob {
 
         let pk = self.public_key.as_ref().ok_or_else(|| {
             use pluto_cluster::ssz::SSZError;
-            Error::Ssz(SSZError::UnsupportedVersion(
-                "missing public key".to_string(),
-            ))
+            Error::Ssz(SSZError::UnsupportedVersion("missing public key".to_string()).into())
         })?;
         let pk_bytes = helper::from_0x(pk, SSZ_LEN_PUB_KEY)?;
         hh.put_bytes(&pk_bytes)?;
@@ -334,7 +332,7 @@ impl Client {
             // stores signatures at array position share_id-1, e.g.,
             // share 1 at position 0)
             let share_idx = u64::try_from(sig_idx)
-                .map_err(Error::FailedToConvertShareIndex)?
+                .map_err(|e| Error::FailedToConvertShareIndex(e.into()))?
                 .checked_add(1)
                 .ok_or(Error::MathOverflow)?;
             raw_signatures.insert(share_idx, sig);

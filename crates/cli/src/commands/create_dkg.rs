@@ -164,6 +164,7 @@ pub struct CreateDkgArgs {
     pub operator_addresses: Vec<String>,
 }
 
+#[pluto_stacktrace::located]
 #[derive(Error, Debug)]
 pub enum CreateDkgError {
     #[error("existing cluster-definition.json found. Try again after deleting it")]
@@ -445,6 +446,7 @@ fn validate_dkg_config(
 }
 
 /// Errors that can occur during withdrawal address validation.
+#[pluto_stacktrace::located]
 #[derive(Error, Debug)]
 pub enum WithdrawalValidationError {
     /// Invalid withdrawal address.

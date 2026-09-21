@@ -21,6 +21,7 @@ const TRIM_EPOCH_OFFSET: u64 = 3;
 const CHANNEL_BUFFER_SIZE: usize = 100;
 
 /// Errors that can occur during the scheduling process.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SchedulerError {
     /// Beacon Node API client error.

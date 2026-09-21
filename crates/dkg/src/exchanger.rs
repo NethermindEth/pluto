@@ -101,6 +101,7 @@ impl Default for DataByPubkey {
 }
 
 /// Errors returned by exchanger operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ExchangerError {
     /// The cancellation token was triggered while waiting.
@@ -185,9 +186,12 @@ impl Exchanger {
                     let sig_type = duty.slot.inner();
                     handle.broadcast_and_wait(duty, set).await.map_err(|e| {
                         warn!(sig_type, error = %e, "Failed to broadcast parsigex data during DKG");
-                        MemDBError::InternalSubscriber(InternalSubscriberError::ParsigexBroadcast {
-                            source: Box::new(e),
-                        })
+                        MemDBError::InternalSubscriber(
+                            InternalSubscriberError::ParsigexBroadcast {
+                                source: Box::new(e),
+                            }
+                            .into(),
+                        )
                     })?;
                     Ok(())
                 }

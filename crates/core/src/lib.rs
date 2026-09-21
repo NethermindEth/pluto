@@ -64,10 +64,6 @@ pub mod fetcher;
 
 mod parsigex_codec;
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "SSZ codec arithmetic is bounded by compile-time-constant byte sizes and offsets"
-)]
 pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;

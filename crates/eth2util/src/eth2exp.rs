@@ -6,6 +6,7 @@ use pluto_eth2api::{
 };
 
 /// Error type for aggregator selection operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Eth2ExpError {
     /// Failed to fetch the chain spec from the beacon node.

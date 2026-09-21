@@ -207,7 +207,7 @@ async fn calculate_tracker_delay(
     let genesis = eth2_cl
         .fetch_genesis_time()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
 
     let elapsed = chrono::Utc::now()
         .signed_duration_since(genesis)
@@ -471,7 +471,7 @@ pub async fn wire_core_workflow(
     let (slot_duration, _slots_per_epoch) = eth2_cl
         .fetch_slots_config()
         .await
-        .map_err(AppError::BeaconApi)?;
+        .map_err(|e| AppError::BeaconApi(e.into()))?;
     let tracker_lag = slot_duration
         .saturating_mul(u32::try_from(INCL_MISSED_LAG + INCL_CHECK_LAG).unwrap_or(u32::MAX));
 
@@ -530,7 +530,7 @@ pub async fn wire_core_workflow(
                 tracker_feature_set,
             )
             .await
-            .map_err(AppError::BeaconApi)?,
+            .map_err(|e| AppError::BeaconApi(e.into()))?,
         )
     };
 
@@ -555,7 +555,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
             Box::pin(async move {
-                let signed: Box<dyn SignedData> = aggsigdb.wait_for(duty, pubkey).await?;
+                let signed: SignedData = aggsigdb.wait_for(duty, pubkey).await?;
                 Ok(signed)
             })
         })
@@ -1155,6 +1155,7 @@ where
 
 /// Failure driving a duty's consensus instance: either the deadline could not
 /// be computed or the consensus round itself failed.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 enum DutyConsensusError {
     #[error(transparent)]

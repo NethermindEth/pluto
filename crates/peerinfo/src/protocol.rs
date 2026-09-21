@@ -67,6 +67,7 @@ pub struct ProtocolState {
 }
 
 /// Errors that can occur during the protocol.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
     /// Failed to parse peer version.

@@ -32,6 +32,7 @@ const RELAY_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_MAX_BODY: usize = 1024 * 1024;
 
 /// Bootnode error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum BootnodeError {
     /// Failed to get peer from multiaddr.
@@ -197,7 +198,7 @@ async fn resolve_relay(
         {
             Ok(addrs) => addrs,
             Err(e) => {
-                tracing::error!(err = %e, url = %relay_url, "Failed resolving relay addresses from URL");
+                tracing::error!(err = ?e, url = %relay_url, "Failed resolving relay addresses from URL");
                 return;
             }
         };
@@ -228,7 +229,7 @@ async fn resolve_relay(
                     mutable.set(peer);
                 }
                 Err(e) => {
-                    tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");
+                    tracing::error!(err = ?e, addrs = ?addrs, "Failed resolving relay ID from addresses");
                 }
             }
         }
@@ -276,7 +277,7 @@ async fn query_relay_addrs(
             .await
             .map_err(|e| {
                 tracing::warn!(err = %e, "Failure querying relay addresses (will try again)");
-                BootnodeError::NewRequest(e)
+                BootnodeError::NewRequest(e.into())
             })?;
 
         if !resp.status().is_success() {
@@ -344,7 +345,7 @@ async fn read_relay_body_capped(resp: reqwest::Response, max: usize) -> Result<S
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             tracing::warn!(err = %e, "Failure reading relay addresses (will try again)");
-            BootnodeError::NewRequest(e)
+            BootnodeError::NewRequest(e.into())
         })?;
         if buf.len().saturating_add(chunk.len()) > max {
             tracing::warn!(max, "Relay address body too large (will try again)");
@@ -366,7 +367,7 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
     let ip = record.ip().ok_or(BootnodeError::EnrNoIp)?;
 
     let public_key = record.public_key.ok_or(BootnodeError::GetPeerIdFromEnrKey(
-        PeerError::MissingPublicKeyInEnr,
+        PeerError::MissingPublicKeyInEnr.into(),
     ))?;
 
     let peer_id = peer::peer_id_from_key(public_key)?;

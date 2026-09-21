@@ -80,17 +80,21 @@ pub fn new_eth2_verifier(
                 .get(&par_signed_data.share_idx)
                 .ok_or(VerifyError::InvalidShareIndex)?;
 
-            // `verify_eth2_signed_data` takes an already-upcast
-            // `&dyn Eth2SignedData`; the upcast failure (Charon's
+            // `verify_eth2_signed_data` takes an already-narrowed
+            // `Eth2SignedData`; the narrowing failure (Charon's
             // `data.(core.Eth2SignedData)` type assertion) maps to the
             // "invalid signed data family" error.
-            let eth2_data =
-                eth2signeddata::as_eth2_signed_data(par_signed_data.signed_data.as_ref())
-                    .ok_or(VerifyError::InvalidSignedDataFamily)?;
+            let eth2_data = par_signed_data
+                .signed_data
+                .as_eth2_signed_data()
+                .ok_or(VerifyError::InvalidSignedDataFamily)?;
 
             eth2signeddata::verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
                 .await
-                .map_err(|source| VerifyError::InvalidSignature { duty, source })
+                .map_err(|source| VerifyError::InvalidSignature {
+                    duty,
+                    source: Box::new(source),
+                })
         })
     })
 }
@@ -354,9 +358,9 @@ impl Behaviour {
             }
 
             if !peer_store.has_connection(&peer) {
-                let error = Failure::Io(std::io::Error::other(format!(
-                    "peer {peer} is not connected"
-                )));
+                let error = Failure::Io(
+                    std::io::Error::other(format!("peer {peer} is not connected")).into(),
+                );
                 if failure.is_none() {
                     failure = Some(error.clone());
                 }
@@ -386,7 +390,7 @@ impl Behaviour {
                 result_tx,
                 request_id,
                 failure.unwrap_or_else(|| {
-                    Failure::Io(std::io::Error::other("no peers available for broadcast"))
+                    Failure::Io(std::io::Error::other("no peers available for broadcast").into())
                 }),
             );
             return;
@@ -559,7 +563,7 @@ impl NetworkBehaviour for Behaviour {
                 .map(|(id, _)| *id)
                 .collect();
             for request_id in affected {
-                let error = Failure::Io(std::io::Error::other("connection closed"));
+                let error = Failure::Io(std::io::Error::other("connection closed").into());
                 self.emit_broadcast_error(request_id, Some(peer_id), error.clone());
                 self.finish_broadcast_result(request_id, peer_id, Some(error));
             }
@@ -650,16 +654,14 @@ mod eth2_verifier_tests {
 
     /// Signs the eth2 signing root of `data` for the given domain/epoch with
     /// `secret`, returning a copy of `data` carrying that signature.
-    async fn sign<T>(
+    async fn sign(
         client: &EthBeaconNodeApiClient,
         secret: &PrivateKey,
-        data: &T,
+        data: impl Into<SignedData>,
         domain: DomainName,
         epoch: phase0::Epoch,
-    ) -> T
-    where
-        T: SignedData + Sized,
-    {
+    ) -> SignedData {
+        let data: SignedData = data.into();
         let message_root = data.message_root().unwrap();
         let signing_root = get_data_root(client, domain, epoch, message_root)
             .await
@@ -698,7 +700,7 @@ mod eth2_verifier_tests {
         let signed = sign(
             client,
             &shares[&share_idx],
-            &att,
+            att,
             DomainName::BeaconAttester,
             4,
         )
@@ -726,7 +728,7 @@ mod eth2_verifier_tests {
         // Sign with share 2's secret but claim share index 3, so the verifier
         // looks up share 3's public key and the signature fails to verify.
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&2], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(client, &shares[&2], att, DomainName::BeaconAttester, 4).await;
         let par = ParSignedData::new(signed, 3);
 
         let mut pub_shares_by_key = HashMap::new();
@@ -750,7 +752,7 @@ mod eth2_verifier_tests {
         let (shares, _pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(client, &shares[&1], att, DomainName::BeaconAttester, 4).await;
         let par = ParSignedData::new(signed, 1);
 
         // Empty map: the validator public key is not part of the cluster lock.
@@ -774,7 +776,7 @@ mod eth2_verifier_tests {
         let (shares, pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(client, &shares[&1], att, DomainName::BeaconAttester, 4).await;
         // Claim a share index that was never produced by the split.
         let par = ParSignedData::new(signed, TOTAL_SHARES + 1);
 

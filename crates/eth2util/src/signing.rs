@@ -79,6 +79,7 @@ impl DomainName {
 }
 
 /// Signing error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Beacon-node domain lookup failed.

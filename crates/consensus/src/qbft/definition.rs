@@ -158,7 +158,7 @@ fn decide(
     let decoded = match decode_supported_any(any_value) {
         Ok(decoded) => decoded,
         Err(err) => {
-            tracing::error!(error = %err, "Invalid any value");
+            tracing::error!(error = ?err, "Invalid any value");
             return;
         }
     };

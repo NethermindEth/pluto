@@ -56,6 +56,7 @@ use tracing::Instrument as _;
 const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 
 /// Error types for deadline operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DeadlineError {
     /// Failed to fetch beacon node configuration.

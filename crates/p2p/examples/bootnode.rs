@@ -308,7 +308,7 @@ pub async fn main() -> Result<()> {
                             peer_id = ?peer_id,
                             peer_type = peer_type,
                             connection_id = ?connection_id,
-                            error = %error,
+                            error = ?error,
                             "Outgoing connection ERROR - check if relay is reachable"
                         );
                     }
@@ -325,7 +325,7 @@ pub async fn main() -> Result<()> {
                             connection_id = ?connection_id,
                             local_addr = %local_addr,
                             send_back_addr = %send_back_addr,
-                            error = %error,
+                            error = ?error,
                             "Incoming connection ERROR"
                         );
                     }

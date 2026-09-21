@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pluto_core::{
     signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::{ParSignedData, PubKey, SignedData},
+    types::{ParSignedData, PubKey},
 };
 use pluto_crypto::{
     tbls,
@@ -17,6 +17,7 @@ use crate::share::Share;
 pub type Result<T> = std::result::Result<T, AggregateError>;
 
 /// Error type for DKG aggregation helpers.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum AggregateError {
     /// Failed to convert raw bytes into a threshold signature.

@@ -580,7 +580,7 @@ async fn create_mev_block(
                 break;
             }
 
-            Err(CliError::MevTest(MevTestError::StatusCodeNot200)) => {
+            Err(CliError::MevTest(ref e)) if matches!(**e, MevTestError::StatusCodeNot200) => {
                 let elapsed = start_iteration.elapsed();
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))

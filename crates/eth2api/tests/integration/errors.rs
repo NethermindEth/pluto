@@ -27,7 +27,7 @@ const UNKNOWN_ROOT: &str = "0x00000000000000000000000000000000000000000000000000
 /// The [`HttpError`] of a request the node rejected.
 fn http_error<T: fmt::Debug>(result: Result<T, EthBeaconNodeApiClientError>) -> HttpError {
     match result {
-        Err(EthBeaconNodeApiClientError::Http(error)) => error,
+        Err(EthBeaconNodeApiClientError::Http(error)) => (*error).clone(),
         other => panic!("expected an HTTP error, got {other:?}"),
     }
 }
@@ -502,7 +502,7 @@ async fn publish_aggregate_and_proofs_v2_refuses_an_empty_batch_before_sending()
     assert!(
         matches!(
             result,
-            Err(EthBeaconNodeApiClientError::Payload(PayloadError::Empty))
+            Err(EthBeaconNodeApiClientError::Payload(ref e)) if matches!(**e, PayloadError::Empty)
         ),
         "unexpected result {result:?}"
     );

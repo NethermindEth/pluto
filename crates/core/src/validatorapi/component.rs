@@ -95,7 +95,7 @@ pub type AwaitSyncContributionFn = Arc<
 
 /// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
 pub type AwaitAggSigDbFn = Arc<
-    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
+    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<SignedData, CallbackError>>
         + Send
         + Sync
         + 'static,
@@ -321,7 +321,7 @@ impl Component {
     pub fn register_await_agg_sig_db<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty, PubKey) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Box<dyn SignedData>, CallbackError>> + Send + 'static,
+        Fut: Future<Output = Result<SignedData, CallbackError>> + Send + 'static,
     {
         self.await_agg_sig_db_fn = Some(Arc::new(move |duty, pubkey| Box::pin(f(duty, pubkey))));
     }
@@ -364,17 +364,16 @@ impl Component {
 
         // The domain choice is hard-wired to the signed-data wrapper passed
         // in. Each handler picks the right wrapper and we map here.
-        let signed: &dyn SignedData = par_sig.signed_data.as_ref();
-        let any_signed = signed as &dyn Any;
-        let domain_name = if any_signed.is::<SignedSyncMessage>() {
-            DomainName::SyncCommittee
-        } else if any_signed.is::<SignedSyncContributionAndProof>() {
-            DomainName::ContributionAndProof
-        } else {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "unsupported signed-data wrapper for verify_partial_sig_for",
-            ));
+        let signed = &par_sig.signed_data;
+        let domain_name = match signed {
+            SignedData::SignedSyncMessage(_) => DomainName::SyncCommittee,
+            SignedData::SignedSyncContributionAndProof(_) => DomainName::ContributionAndProof,
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unsupported signed-data wrapper for verify_partial_sig_for",
+                ));
+            }
         };
 
         let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
@@ -818,6 +817,7 @@ impl Component {
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
@@ -1221,7 +1221,7 @@ impl Handler for Component {
                     .await
                     .map_err(|err| {
                         signing_error_to_api_error(
-                            err,
+                            err.into(),
                             "aggregate selection proof verification failed",
                         )
                     })?;
@@ -1348,7 +1348,7 @@ impl Handler for Component {
                     .with_boxed_source(err)
                 })?;
 
-                let selection = downcast_beacon_committee_selection(signed.as_ref())?;
+                let selection = expect_beacon_committee_selection(&signed)?;
                 resp.push(selection.0.clone());
             }
         }
@@ -1441,7 +1441,7 @@ impl Handler for Component {
                     .with_boxed_source(err)
                 })?;
 
-                let selection = downcast_sync_committee_selection(signed.as_ref())?;
+                let selection = expect_sync_committee_selection(&signed)?;
                 resp.push(selection.0.clone());
             }
         }
@@ -1741,7 +1741,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    signing_error_to_api_error(err, "invalid sync committee selection proof")
+                    signing_error_to_api_error(err.into(), "invalid sync committee selection proof")
                 })?;
             }
 
@@ -1862,7 +1862,10 @@ fn proposal_timeout() -> ApiError {
 
 /// Builds the `ApiError` returned when an upstream beacon-node call fails
 /// without an HTTP status.
-fn upstream_call_failed(upstream: Upstream, err: EthBeaconNodeApiClientError) -> ApiError {
+fn upstream_call_failed<E>(upstream: Upstream, err: E) -> ApiError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         format!("upstream {upstream} failed"),
@@ -1885,9 +1888,9 @@ fn upstream_error(
 ) -> ApiError {
     match err {
         EthBeaconNodeApiClientError::Http(http) if propagated.contains(&http.status) => {
-            upstream_status_error(upstream, http)
+            upstream_status_error(upstream, (*http).clone())
         }
-        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, http),
+        EthBeaconNodeApiClientError::Http(http) => upstream_unexpected(upstream, (*http).clone()),
         other => upstream_call_failed(upstream, other),
     }
 }
@@ -2072,38 +2075,34 @@ fn invert_pub_share_map(
         .collect()
 }
 
-/// Downcasts the aggregated signed data from the AggSigDB to a
-/// `BeaconCommitteeSelection`. A mismatch indicates a wiring bug — the cluster
-/// stored the wrong duty type under the `PrepareAggregator` duty — so it
-/// surfaces as 500 rather than 4xx.
-fn downcast_beacon_committee_selection(
-    signed: &dyn SignedData,
+/// Selects the `BeaconCommitteeSelection` payload of the aggregated signed
+/// data from the AggSigDB. Any other variant indicates a wiring bug — the
+/// cluster stored the wrong duty type under the `PrepareAggregator` duty — so
+/// it surfaces as 500 rather than 4xx.
+fn expect_beacon_committee_selection(
+    signed: &SignedData,
 ) -> Result<&signeddata::BeaconCommitteeSelection, ApiError> {
-    signed
-        .as_any()
-        .downcast_ref::<signeddata::BeaconCommitteeSelection>()
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid beacon committee selection",
-            )
-        })
+    match signed {
+        SignedData::BeaconCommitteeSelection(selection) => Ok(selection),
+        _ => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid beacon committee selection",
+        )),
+    }
 }
 
 /// Sync committee selections counterpart of
-/// [`downcast_beacon_committee_selection`].
-fn downcast_sync_committee_selection(
-    signed: &dyn SignedData,
+/// [`expect_beacon_committee_selection`].
+fn expect_sync_committee_selection(
+    signed: &SignedData,
 ) -> Result<&signeddata::SyncCommitteeSelection, ApiError> {
-    signed
-        .as_any()
-        .downcast_ref::<signeddata::SyncCommitteeSelection>()
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid sync committee selection",
-            )
-        })
+    match signed {
+        SignedData::SyncCommitteeSelection(selection) => Ok(selection),
+        _ => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid sync committee selection",
+        )),
+    }
 }
 
 /// Re-interprets a Pluto [`PubKey`] as the [`BLSPubKey`] byte-array used by
@@ -2120,27 +2119,40 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 /// with `invalid_msg`; anything else — e.g. a public key from the cluster
 /// lock or validator cache that is not a valid BLS point — is server-side
 /// state, so 500.
-fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+fn signing_error_to_api_error(
+    err: pluto_stacktrace::LocatedError<SigningError>,
+    invalid_msg: impl Into<String>,
+) -> ApiError {
     use pluto_crypto::types::Error as CryptoError;
 
-    match err {
-        SigningError::BeaconNode(_) | SigningError::Helper(HelperError::GettingSpec(_)) => {
-            ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "beacon node lookup failed during signature verification",
-            )
-            .with_source(err)
-        }
-        SigningError::ZeroSignature
-        | SigningError::UnknownAggregateAndProofVersion
-        | SigningError::Verification(
-            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_),
-        ) => ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err),
-        _ => ApiError::new(
+    let beacon_node_failure = match &*err {
+        SigningError::BeaconNode(_) => true,
+        SigningError::Helper(e) => matches!(**e, HelperError::GettingSpec(_)),
+        _ => false,
+    };
+    let invalid_signature = match &*err {
+        SigningError::ZeroSignature | SigningError::UnknownAggregateAndProofVersion => true,
+        SigningError::Verification(e) => matches!(
+            **e,
+            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_)
+        ),
+        _ => false,
+    };
+
+    if beacon_node_failure {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "beacon node lookup failed during signature verification",
+        )
+        .with_source(err)
+    } else if invalid_signature {
+        ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err)
+    } else {
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error during signature verification",
         )
-        .with_source(err),
+        .with_source(err)
     }
 }
 
@@ -3301,12 +3313,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.to_string(), "s2");
 
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("d1".into())
-        });
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("d2".into())
-        });
+        component
+            .register_await_agg_sig_db(|_duty, _pk| async { Err::<SignedData, _>("d1".into()) });
+        component
+            .register_await_agg_sig_db(|_duty, _pk| async { Err::<SignedData, _>("d2".into()) });
         let err = (component.await_agg_sig_db_fn.as_ref().unwrap())(
             Duty::new(SlotNumber::new(0), DutyType::Attester),
             core_pubkey(0),
@@ -3540,7 +3550,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+                VerifyPartialSigError::Signing(ref e) if matches!(**e, SigningError::BeaconNode(_))
             ),
             "expected upstream signing error, got {err:?}"
         );
@@ -3553,7 +3563,7 @@ mod tests {
     /// Genuine signature failures keep mapping to 400.
     #[test]
     fn verify_partial_sig_error_maps_signature_failures_to_400() {
-        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature.into());
         assert_eq!(
             verify_partial_sig_error(err).status_code,
             StatusCode::BAD_REQUEST
@@ -3627,13 +3637,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
         }
@@ -3758,7 +3768,7 @@ mod tests {
         component.register_await_agg_sig_db(move |_duty, _pk| {
             let agg = agg_clone.clone();
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedBeaconCommitteeSelection::new(agg),
                 ))
             }
@@ -3821,7 +3831,7 @@ mod tests {
                 _ => 999,
             };
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedBeaconCommitteeSelection::new(V1BeaconCommitteeSelection {
                         slot,
                         validator_index: val_idx,
@@ -3941,7 +3951,7 @@ mod tests {
         component.register_await_agg_sig_db(move |_duty, _pk| {
             let agg = agg_clone.clone();
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedSyncCommitteeSelection::new(agg),
                 ))
             }
@@ -3999,7 +4009,7 @@ mod tests {
                 _ => 999,
             };
             async move {
-                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                Ok::<SignedData, CallbackError>(SignedData::from(
                     SignedSyncCommitteeSelection::new(V1SyncCommitteeSelection {
                         slot,
                         validator_index: val_idx,
@@ -4143,7 +4153,7 @@ mod tests {
         // `PrepareAggregator` duty, which `downcast_beacon_committee_selection`
         // cannot satisfy.
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedSyncCommitteeSelection::new(
+            Ok::<SignedData, CallbackError>(SignedData::from(SignedSyncCommitteeSelection::new(
                 V1SyncCommitteeSelection {
                     slot: 1,
                     validator_index: 1,
@@ -4173,7 +4183,7 @@ mod tests {
             make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedBeaconCommitteeSelection::new(
+            Ok::<SignedData, CallbackError>(SignedData::from(SignedBeaconCommitteeSelection::new(
                 V1BeaconCommitteeSelection {
                     slot: 1,
                     validator_index: 1,
@@ -4790,13 +4800,13 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
 
             async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
                 Err(ValidatorCacheError::EthBeaconNodeApiClientError(
-                    beacon_node_unavailable(),
+                    beacon_node_unavailable().into(),
                 ))
             }
         }
@@ -6742,8 +6752,9 @@ mod tests {
                     duty,
                     Duty::new_prepare_aggregator_duty(SlotNumber::new(SLOT))
                 );
-                Ok(Box::new(SignedBeaconCommitteeSelection::new(aggregated))
-                    as Box<dyn SignedData>)
+                Ok(SignedData::from(SignedBeaconCommitteeSelection::new(
+                    aggregated,
+                )))
             }
         });
 
@@ -6776,7 +6787,7 @@ mod tests {
         // The AggSigDB hook is checked first; register it so the test reaches
         // the validator-not-found path.
         component.register_await_agg_sig_db(|_duty, _pk| async {
-            Err::<Box<dyn SignedData>, _>("unused".into())
+            Err::<SignedData, _>("unused".into())
         });
         let selection = Eth2BeaconCommitteeSelection {
             slot: 9,
@@ -6802,13 +6813,13 @@ mod tests {
             // Echo back a selection keyed by the requested pubkey's slot is not
             // available here; return a fixed aggregated selection.
             let _ = pk;
-            Ok(Box::new(SignedBeaconCommitteeSelection::new(
+            Ok(SignedData::from(SignedBeaconCommitteeSelection::new(
                 Eth2BeaconCommitteeSelection {
                     slot: 0,
                     validator_index: 0,
                     selection_proof: [0xCD; 96],
                 },
-            )) as Box<dyn SignedData>)
+            )))
         });
 
         let selections = vec![

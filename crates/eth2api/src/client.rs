@@ -1172,7 +1172,7 @@ impl EthBeaconNodeApiClient {
                 topic: event.event,
                 data: event.data,
             })
-            .map_err(EthBeaconNodeApiClientError::EventStreamRead)
+            .map_err(|e| EthBeaconNodeApiClientError::EventStreamRead(e.into()))
         });
 
         Ok(stream)
@@ -1880,7 +1880,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                EthBeaconNodeApiClientError::Payload(PayloadError::BlindedOnUnblindedEndpoint)
+                EthBeaconNodeApiClientError::Payload(ref e) if matches!(**e, PayloadError::BlindedOnUnblindedEndpoint)
             ),
             "{error:?}"
         );
@@ -1973,7 +1973,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                EthBeaconNodeApiClientError::Payload(PayloadError::MixedVersions)
+                EthBeaconNodeApiClientError::Payload(ref e) if matches!(**e, PayloadError::MixedVersions)
             ),
             "{error:?}"
         );

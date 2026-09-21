@@ -76,9 +76,8 @@ pub async fn propose_block(
     }
     .tree_hash_root()
     .0;
-    let randao_sig_data = get_data_root(client, DomainName::Randao, epoch, randao_message_root)
-        .await
-        .map_err(Error::from)?;
+    let randao_sig_data =
+        get_data_root(client, DomainName::Randao, epoch, randao_message_root).await?;
     let randao = signer.sign(&pubkey, &randao_sig_data)?;
 
     // Fetch the unsigned proposal from /eth/v3/validator/blocks/{slot}.

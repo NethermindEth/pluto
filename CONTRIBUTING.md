@@ -39,8 +39,10 @@ cargo build --workspace --all-features
 To run all tests - unit and integration - run:
 
 ```sh
-cargo test --workspace --all-features
+cargo test --workspace --features pluto-eth2api/integration
 ```
+
+Smoke tests are opt-in (`--features smoke`); see `crates/test-compose/README.md`.
 
 ## Running the Rust Documentation Locally
 To build the documentation locally:

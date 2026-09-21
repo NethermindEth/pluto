@@ -65,9 +65,12 @@ pub fn get_message_signing_root(
     let fork_version_bytes = network::network_to_fork_version_bytes(network)?;
 
     let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
-        super::DepositError::NetworkError(network::NetworkError::InvalidForkVersion {
-            fork_version: hex::encode(&fork_version_bytes),
-        })
+        super::DepositError::NetworkError(
+            network::NetworkError::InvalidForkVersion {
+                fork_version: hex::encode(&fork_version_bytes),
+            }
+            .into(),
+        )
     })?;
 
     let domain =

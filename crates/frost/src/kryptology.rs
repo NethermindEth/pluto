@@ -26,6 +26,7 @@ const SCALAR_BYTES: usize = 32;
 const SCALAR_BITS: usize = 255;
 
 /// Errors from the kryptology-compatible FROST protocol.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum KryptologyError {
     /// Participant ID is zero or out of range.
@@ -884,15 +885,11 @@ mod tests {
 
         assert!(matches!(
             round1(1, 1, 3, 0, &mut rng),
-            Err(KryptologyError::FrostCoreError(
-                FrostCoreError::InvalidMinSigners
-            ))
+            Err(KryptologyError::FrostCoreError(ref e)) if matches!(**e, FrostCoreError::InvalidMinSigners)
         ));
         assert!(matches!(
             round1(1, 3, 2, 0, &mut rng),
-            Err(KryptologyError::FrostCoreError(
-                FrostCoreError::InvalidMinSigners
-            ))
+            Err(KryptologyError::FrostCoreError(ref e)) if matches!(**e, FrostCoreError::InvalidMinSigners)
         ));
         assert!(matches!(
             round1(0, 2, 3, 0, &mut rng),

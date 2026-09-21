@@ -377,7 +377,7 @@ pub(crate) async fn write_result_to_file(
 
         tmp_file
             .persist(&path_buf)
-            .map_err(|e| CliError::Io(e.error))?;
+            .map_err(|e| CliError::Io(e.error.into()))?;
 
         Ok(())
     })

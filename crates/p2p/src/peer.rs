@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use crate::name;
 
 /// Peer error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {
     /// Failed to parse public key.
@@ -168,12 +169,12 @@ impl MutablePeer {
 /// Only works for secp256k1 keys.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Result<K256PublicKey> {
     let libp2p_pk = peer_id_to_libp2p_pk(peer_id)?;
-    pluto_k1util::public_key_from_libp2p(libp2p_pk).map_err(Into::into)
+    pluto_k1util::public_key_from_libp2p(libp2p_pk).map_err(|e| e.into())
 }
 
 /// Extracts the libp2p PublicKey from a PeerId.
 pub fn peer_id_to_libp2p_pk(peer_id: &PeerId) -> Result<Libp2pPublicKey> {
-    Libp2pPublicKey::try_decode_protobuf(peer_id.as_ref().digest()).map_err(Into::into)
+    Libp2pPublicKey::try_decode_protobuf(peer_id.as_ref().digest()).map_err(|e| e.into())
 }
 
 /// Converts a K256PublicKey to a libp2p PublicKey.

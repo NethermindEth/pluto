@@ -44,6 +44,7 @@ const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum DkgError {
     /// Shutdown was requested before the DKG entrypoint started.
@@ -546,7 +547,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
             DefinitionError::PeerNotFound { peer_id } => {
                 DkgError::LocalPeerNotInDefinition { peer_id }
             }
-            other => DkgError::Definition(other),
+            other => DkgError::Definition(other.into()),
         })?;
 
     let peer_ids = def.peer_ids()?;
@@ -916,7 +917,7 @@ async fn start_sync_protocol(
                 if let Err(error) = client.run(client_ct).await
                     && !matches!(error, crate::sync::Error::Canceled)
                 {
-                    error!(%error, "Sync failed to peer");
+                    error!(?error, "Sync failed to peer");
                     cancel_on_error.cancel();
                 }
             }
@@ -927,7 +928,7 @@ async fn start_sync_protocol(
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
     loop {
         if let Some(error) = server.err().await {
-            return Err(DkgError::Sync(error));
+            return Err(DkgError::Sync(error.into()));
         }
 
         let connected_count = clients
@@ -1252,7 +1253,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            DkgError::PeerError(pluto_p2p::peer::PeerError::UnknownPublicKey)
+            DkgError::PeerError(ref e) if matches!(**e, pluto_p2p::peer::PeerError::UnknownPublicKey)
         ));
     }
 
@@ -1280,7 +1281,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            DkgError::Disk(crate::disk::DiskError::MissingRequiredFiles { .. })
+            DkgError::Disk(ref e) if matches!(**e, crate::disk::DiskError::MissingRequiredFiles { .. })
         ));
     }
 
