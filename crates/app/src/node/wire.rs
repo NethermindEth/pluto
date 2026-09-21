@@ -142,47 +142,34 @@ where
 // ---------------------------------------------------------------------------
 // Async retry wrapper layer
 //
-// Parity: charon `core.WithAsyncRetry` (`core/retry.go`), applied in
-// `app.wireCoreWorkflow` as `core.WithAsyncRetry(retry.New(deadlineFunc))`
-// alongside `WithTracing`/`WithTracking` (`app/app.go` at v1.7.1). It wraps
-// five duty-pipeline callbacks so each one is dispatched on the retry executor
-// and returns to its caller immediately:
+// Five duty-pipeline callbacks are dispatched on the retry executor and return
+// to their caller immediately: `fetcher.fetch`, `consensus.participate`,
+// `consensus.propose`, `parsigex.broadcast` and `bcast.broadcast`.
 //
-//   fetcher.Fetch, consensus.Participate, consensus.Propose,
-//   parsigex.Broadcast, bcast.Broadcast
-//
-// Because charon applies the retry option *outermost*, the tracker calls of
-// `WithTracking` sit inside the retry loop; Pluto keeps the same nesting by
-// wrapping the existing stitch closures (which already report to the tracker)
-// rather than the raw component methods.
+// The wrappers go around the existing stitch closures rather than the raw
+// component methods, which keeps the tracker reporting inside the retry loop.
 // ---------------------------------------------------------------------------
 
 /// A duty callback dispatched onto the async retry executor.
 ///
-/// Calling it spawns the wrapped work and returns immediately, mirroring
-/// charon's `go retryer.DoAsync(...); return nil`. Exposed on
-/// [`WiredComponents`] so the scheduler stitch can be driven directly by
-/// wiring tests.
+/// Calling it spawns the wrapped work and returns immediately. Exposed on
+/// [`WiredComponents`] so wiring tests can drive the scheduler stitch
+/// directly.
 pub type DutyCallback =
     Arc<dyn Fn(Duty, pluto_core::types::DutyDefinitionSet) + Send + Sync + 'static>;
 
 /// How the retry executor treats a wrapped duty callback's errors.
 ///
-/// Charon classifies each error at run time: `net.Error`s, context errors and
-/// the temporary beacon-node errors matched by `app/retry.isTemporaryBeaconErr`
-/// are retried, everything else is permanent. That heuristic reads the beacon
-/// node's error message, which Pluto's generated client does not preserve —
-/// non-2xx responses are collapsed into message-less typed errors (e.g. any
-/// non-200 attestation-data response becomes
-/// `FetcherError::NilAttestationData`), so a message-substring port here would
-/// never match.
+/// Errors are not classified at run time: the generated beacon client
+/// collapses non-2xx responses into message-less typed errors (any non-200
+/// attestation-data response becomes `FetcherError::NilAttestationData`, for
+/// one), so there is nothing left to tell a temporary beacon-node failure
+/// apart from a permanent one.
 ///
-/// Accepted divergence: the policy is fixed per call site instead. The three
-/// network-facing callbacks retry (bounded by the duty deadline and the
-/// executor's exponential backoff); consensus does not, matching charon's
-/// `core/retry.go` note that `ConsensusParticipate`/`ConsensusPropose` "don't
-/// require retrying but they should be called async" — a failed QBFT instance
-/// must not be re-run for the same duty.
+/// The policy is therefore fixed per call site: the three network-facing
+/// callbacks retry, bounded by the duty deadline and the executor's
+/// exponential backoff, while consensus runs once — re-running a failed QBFT
+/// instance for the same duty would be wrong.
 #[derive(Clone, Copy)]
 enum RetryPolicy {
     /// Retry the call until it succeeds or the duty's deadline elapses.
@@ -193,9 +180,9 @@ enum RetryPolicy {
 
 /// Builds the [`AsyncOptions`] shared by every wrapped duty callback.
 ///
-/// Deadlines come from the beacon-derived duty deadline calculator (charon's
-/// `deadlineFunc`, passed to `retry.New`), and the executor is cancelled on
-/// node shutdown so in-flight retries do not outlive the components they call.
+/// Deadlines come from the duty deadline calculator, and the executor is
+/// cancelled on node shutdown so in-flight retries do not outlive the
+/// components they call.
 fn retry_options(
     deadline_calc: &Arc<dyn DeadlineCalculator>,
     ct: &CancellationToken,
@@ -206,10 +193,9 @@ fn retry_options(
         .with_deadline(move |duty: Duty| match deadline_calc.deadline(&duty) {
             Ok(deadline) => deadline,
             Err(err) => {
-                // Charon's `deadlineFunc` returns `(_, false)` for duties
-                // without a deadline, which leaves the retry bounded only by
-                // the shutdown context; a calculator failure is treated the
-                // same way rather than dropping the duty.
+                // A duty without a deadline is retried until shutdown; do
+                // the same for a calculator failure rather than dropping the
+                // duty.
                 tracing::warn!(
                     ?err,
                     duty = %duty,
@@ -221,8 +207,6 @@ fn retry_options(
 }
 
 /// Dispatches `call` onto the async retry executor and returns immediately.
-///
-/// Parity: the body of each closure charon installs in `core.WithAsyncRetry`.
 fn spawn_retried<F, Fut, E>(
     options: AsyncOptions<Duty>,
     duty: Duty,
@@ -239,8 +223,8 @@ fn spawn_retried<F, Fut, E>(
         let fut = call();
         async move {
             fut.await.map_err(|err| {
-                // `DoAsyncError` carries no payload, so the underlying
-                // error is logged here before it is classified.
+                // `DoAsyncError` carries no payload, so log the underlying
+                // error before classifying it.
                 tracing::warn!(%err, topic, name, "duty callback failed");
                 match policy {
                     RetryPolicy::Retry => DoAsyncError::RetryableError,
@@ -251,9 +235,9 @@ fn spawn_retried<F, Fut, E>(
     }));
 }
 
-/// Returns the immediate `Ok` a wrapped callback hands back to its caller: the
-/// real work has been dispatched onto the retry executor, so — exactly as in
-/// charon's `WithAsyncRetry` closures — the caller is never told it failed.
+/// Returns the immediate `Ok` a wrapped callback hands back to its caller. The
+/// real work has been dispatched onto the retry executor, so the caller is
+/// never told whether it failed.
 fn dispatched<E>() -> std::future::Ready<Result<(), E>> {
     std::future::ready(Ok(()))
 }
@@ -437,8 +421,8 @@ pub struct WiredComponents {
     /// The fetcher (driven via scheduler subscriptions).
     pub fetcher: Arc<Fetcher>,
     /// The retry-wrapped `fetcher.fetch` duty callback the scheduler drives.
-    /// Returned so wiring tests can exercise the same wrapped callback the
-    /// scheduler does, without standing up a live duty round.
+    /// Returned so wiring tests can exercise it without standing up a live
+    /// duty round.
     pub fetch_duty: DutyCallback,
     /// Networked inclusion checker; its `run` loop is spawned and supervised by
     /// the caller.
@@ -698,8 +682,7 @@ pub async fn wire_core_workflow(
         })
     };
     // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty
-    // deadline and dispatched onto the retry executor (charon
-    // `WithAsyncRetry`: `consensus`/`propose`, async but not retried).
+    // deadline and dispatched onto the retry executor (async, not retried).
     let fetch_subscriber: Subscriber = {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
@@ -820,7 +803,7 @@ pub async fn wire_core_workflow(
     ));
 
     // Stitch: parsigdb.subscribe_internal(parsigex.broadcast), dispatched onto
-    // the retry executor (charon `WithAsyncRetry`: `parsigex`/`broadcast`).
+    // the retry executor.
     {
         let broadcast = Arc::clone(&parsigex.broadcast);
         let tracker = Arc::clone(&tracker);
@@ -904,7 +887,7 @@ pub async fn wire_core_workflow(
             .map_err(AppError::Broadcaster)?,
     );
     // Stitch: sigagg.subscribe(broadcaster.broadcast), dispatched onto the
-    // retry executor (charon `WithAsyncRetry`: `bcast`/`broadcast`).
+    // retry executor.
     {
         let broadcaster = Arc::clone(&broadcaster);
         let tracker = Arc::clone(&tracker);
@@ -934,9 +917,7 @@ pub async fn wire_core_workflow(
                         // Register for inclusion checking before broadcasting,
                         // and even if the broadcast fails: peers may still
                         // succeed, so the duty can land on-chain regardless.
-                        // Parity: charon `core/tracking.go`
-                        // `BroadcasterBroadcast`, which sits inside the retry
-                        // loop for the same reason.
+                        // This sits inside the retry loop for the same reason.
                         if let Err(err) = inclusion.submitted(&duty, &set) {
                             tracing::error!(
                                 ?err,
@@ -1053,9 +1034,8 @@ pub async fn wire_core_workflow(
     // builder before `.build()` (which blocks until chain start + sync).
     let mut sched_builder = SchedulerBuilder::new();
     // Stitch: scheduler.subscribe_duty(fetcher.fetch), dispatched onto the
-    // retry executor (charon `WithAsyncRetry`: `fetcher`/`fetch` — the one
-    // callback that is genuinely retried, so a transient beacon-node failure
-    // no longer drops the duty on this node).
+    // retry executor. This is the one callback that is genuinely retried, so a
+    // transient beacon-node failure no longer drops the duty on this node.
     let fetch_duty: DutyCallback = {
         let fetcher = Arc::clone(&fetcher);
         let ct = ct.clone();
@@ -1118,8 +1098,7 @@ pub async fn wire_core_workflow(
         );
     }
     // Stitch: scheduler.subscribe_duty(consensus.participate), dispatched onto
-    // the retry executor (charon `WithAsyncRetry`: `consensus`/`participate`,
-    // async but not retried).
+    // the retry executor (async, not retried).
     {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();

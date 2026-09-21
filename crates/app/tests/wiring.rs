@@ -995,10 +995,7 @@ impl pluto_consensus::wrapper::Consensus for RecordingConsensus {
 
 /// (g) The duty callbacks are wrapped with the async retry executor: a
 /// transient beacon-node failure on `fetcher.fetch` is retried and the duty
-/// still completes (reaching the fetcher's `consensus.propose` subscriber).
-///
-/// Parity: charon `core.WithAsyncRetry` (`core/retry.go`), wired in
-/// `app.wireCoreWorkflow` as `core.WithAsyncRetry(retry.New(deadlineFunc))`.
+/// still completes, reaching the fetcher's `consensus.propose` subscriber.
 /// Without the wrapper the scheduler stitch calls `fetch` exactly once, the
 /// first failure drops the duty on this node, and no proposal is ever made.
 #[tokio::test]
@@ -1055,8 +1052,8 @@ async fn retry_wrapper_recovers_transient_fetch_failure() {
     let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
 
     // Drive the same retry-wrapped callback the scheduler drives. It is
-    // fire-and-forget (charon's `go retryer.DoAsync(...); return nil`), so the
-    // outcome is observed through the recording consensus.
+    // fire-and-forget, so the outcome is observed through the recording
+    // consensus.
     (wired.fetch_duty)(duty.clone(), def);
 
     tokio::time::timeout(GUARD, async {
