@@ -32,6 +32,7 @@ use reqwest::Method;
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use super::{
     AllCategoriesResult, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs,
@@ -477,25 +478,29 @@ async fn run_relay_http_tests(
             let url = relay.to_string();
             let ct = ct.clone();
             let queued = queued.to_vec();
-            tokio::spawn(async move {
-                let key = format!("relay {url}");
-                let mut target_results = Vec::new();
-                for test in &queued {
-                    if ct.is_cancelled() {
-                        target_results
-                            .push(TestResult::new(test.name).fail(CliError::TimeoutInterrupted));
-                        continue;
+            tokio::spawn(
+                async move {
+                    let key = format!("relay {url}");
+                    let mut target_results = Vec::new();
+                    for test in &queued {
+                        if ct.is_cancelled() {
+                            target_results.push(
+                                TestResult::new(test.name).fail(CliError::TimeoutInterrupted),
+                            );
+                            continue;
+                        }
+                        let result = match test.name {
+                            "PingRelay" => relay_ping_test(&url, &ct).await,
+                            "PingMeasureRelay" => relay_ping_measure_test(&url, &ct).await,
+                            _ => TestResult::new(test.name)
+                                .fail(TestResultError::from_string("unsupported relay test")),
+                        };
+                        target_results.push(result);
                     }
-                    let result = match test.name {
-                        "PingRelay" => relay_ping_test(&url, &ct).await,
-                        "PingMeasureRelay" => relay_ping_measure_test(&url, &ct).await,
-                        _ => TestResult::new(test.name)
-                            .fail(TestResultError::from_string("unsupported relay test")),
-                    };
-                    target_results.push(result);
+                    (key, target_results)
                 }
-                (key, target_results)
-            })
+                .instrument(tracing::Span::current()),
+            )
         })
         .collect();
 

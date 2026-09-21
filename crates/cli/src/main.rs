@@ -9,7 +9,7 @@ use clap::FromArgMatches;
 use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
-use tracing::error;
+use tracing::{Instrument as _, error};
 
 mod ascii;
 mod cli;
@@ -36,16 +36,17 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    cli.tracing.warn_unused();
+    let cmd_span = tracing::debug_span!("cmd", topic = "cmd");
+    cmd_span.in_scope(|| cli.tracing.warn_unused());
 
-    let result = run(cli.command).await;
+    let result = run(cli.command).instrument(cmd_span.clone()).await;
 
     let exit = match &result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
+        Err(err) => cmd_span.in_scope(|| {
             error!(error = %err, "command exited with error");
             ExitCode::FAILURE
-        }
+        }),
     };
 
     if let Some(loki) = loki {

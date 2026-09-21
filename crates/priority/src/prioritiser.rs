@@ -475,31 +475,34 @@ fn exchange(
         let responses = responses.clone();
         let own = own.clone();
 
-        tokio::spawn(async move {
-            let send = sender.send_receive(peer, own);
-            let response = tokio::select! {
-                () = ct.cancelled() => return,
-                res = send => match res {
-                    Ok(resp) => resp,
-                    Err(_) => return, // Transport already logged.
-                },
-            };
+        tokio::spawn(
+            async move {
+                let send = sender.send_receive(peer, own);
+                let response = tokio::select! {
+                    () = ct.cancelled() => return,
+                    res = send => match res {
+                        Ok(resp) => resp,
+                        Err(_) => return, // Transport already logged.
+                    },
+                };
 
-            if peer.to_string() != response.peer_id {
-                tracing::warn!(%peer, "Invalid priority message peer id");
-                return;
-            }
+                if peer.to_string() != response.peer_id {
+                    tracing::warn!(%peer, "Invalid priority message peer id");
+                    return;
+                }
 
-            if let Err(err) = validator(&response) {
-                tracing::warn!(%peer, %err, "Invalid priority message from peer");
-                return;
-            }
+                if let Err(err) = validator(&response) {
+                    tracing::warn!(%peer, %err, "Invalid priority message from peer");
+                    return;
+                }
 
-            tokio::select! {
-                () = ct.cancelled() => {}
-                _ = responses.send(response) => {}
+                tokio::select! {
+                    () = ct.cancelled() => {}
+                    _ = responses.send(response) => {}
+                }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
     }
 }
 

@@ -519,9 +519,13 @@ pub async fn wire_core_workflow(
                     let duty = duty.clone();
                     // The core's callback is sync but `inclusion_checked` is
                     // async, so hand the event to the runtime.
-                    tokio::spawn(async move {
-                        tracker.inclusion_checked(duty, pubkey, err).await;
-                    });
+                    let span = tracing::Span::current();
+                    tokio::spawn(
+                        async move {
+                            tracker.inclusion_checked(duty, pubkey, err).await;
+                        }
+                        .instrument(span),
+                    );
                 }),
                 tracker_feature_set,
             )
@@ -637,8 +641,7 @@ pub async fn wire_core_workflow(
                 let dutydb = Arc::clone(&dutydb);
                 let tracker = Arc::clone(&tracker);
                 // `tokio::spawn` starts the task with an empty span stack, so
-                // re-attach the caller's span: this callback runs during core
-                // wiring, under the node's `app-start` topic.
+                // re-attach the caller's span.
                 let span = tracing::Span::current();
                 tokio::spawn(
                     async move {

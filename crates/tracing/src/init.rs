@@ -2,6 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use percent_encoding::percent_decode_str;
+use tracing::Instrument as _;
 use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
     EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
@@ -120,7 +121,7 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
 
         Ok(Some(LokiWorker {
             controller,
-            handle: tokio::spawn(task),
+            handle: tokio::spawn(task.instrument(tracing::debug_span!("loki", topic = "loki"))),
         }))
     } else {
         registry.try_init()?;

@@ -388,18 +388,21 @@ async fn start_private_key_lock(
     );
     let lock_ct = CancellationToken::new();
     let task_ct = lock_ct.clone();
-    let task = tokio::spawn(async move {
-        let run_svc = lock_svc.clone();
-        let mut run_task = tokio::spawn(async move { run_svc.run().await });
+    let task = tokio::spawn(
+        async move {
+            let run_svc = lock_svc.clone();
+            let mut run_task = tokio::spawn(async move { run_svc.run().await });
 
-        select! {
-            _ = task_ct.cancelled() => {
-                lock_svc.close().await;
-                log_private_key_lock_result(run_task.await);
+            select! {
+                _ = task_ct.cancelled() => {
+                    lock_svc.close().await;
+                    log_private_key_lock_result(run_task.await);
+                }
+                result = &mut run_task => log_private_key_lock_result(result),
             }
-            result = &mut run_task => log_private_key_lock_result(result),
         }
-    });
+        .instrument(Span::current()),
+    );
 
     Ok((lock_ct, task))
 }
@@ -908,14 +911,17 @@ async fn start_sync_protocol(
         let client = client.clone();
         let client_ct = cancellation.child_token();
         let cancel_on_error = cancellation.clone();
-        tasks.push(tokio::spawn(async move {
-            if let Err(error) = client.run(client_ct).await
-                && !matches!(error, crate::sync::Error::Canceled)
-            {
-                error!(%error, "Sync failed to peer");
-                cancel_on_error.cancel();
+        tasks.push(tokio::spawn(
+            async move {
+                if let Err(error) = client.run(client_ct).await
+                    && !matches!(error, crate::sync::Error::Canceled)
+                {
+                    error!(%error, "Sync failed to peer");
+                    cancel_on_error.cancel();
+                }
             }
-        }));
+            .instrument(Span::current()),
+        ));
     }
 
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
