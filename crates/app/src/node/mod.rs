@@ -60,6 +60,7 @@ const SIMNET_SYNC_COMM_DUTIES: (u64, u64) = (2, 8);
 const SIMNET_VMOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors raised while constructing or running a distributed-validator node.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// Failed to load or verify the cluster lock.
@@ -625,7 +626,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
                     .broadcast(duty, set)
                     .await
                     .map(|_| ())
-                    .map_err(AppError::ParSigEx)
+                    .map_err(|e| AppError::ParSigEx(e.into()))
             })
         }),
         subscribe: Box::new(move |received| {
@@ -729,7 +730,7 @@ async fn run_lifecycle(
         let svc = Arc::clone(svc);
         // A lock-maintenance failure fails the run (Charon parity); a graceful
         // `close()` returns `Ok`.
-        tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
+        tasks.spawn(async move { svc.run().await.map_err(|e| AppError::PrivKeyLock(e.into())) });
     }
 
     // ---- Monitoring API ----
@@ -1057,7 +1058,7 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::Transport)?;
+        .map_err(|e| pluto_eth2api::EthBeaconNodeApiClientError::Transport(e.into()))?;
     Ok(pluto_eth2api::EthBeaconNodeApiClient::with_client(
         base_url, http,
     )?)

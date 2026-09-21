@@ -207,7 +207,18 @@ pub async fn run(
 
     pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
-        .map_err(Into::into)
+        .map_err(|e| e.into())
+}
+
+/// Whether the key could not be loaded because its file is absent.
+fn is_key_file_missing(err: &pluto_p2p::k1::K1Error) -> bool {
+    let pluto_p2p::k1::K1Error::K1UtilError(err) = err else {
+        return false;
+    };
+    let pluto_k1util::K1UtilError::FailedToReadFile(err) = &**err else {
+        return false;
+    };
+    err.kind() == std::io::ErrorKind::NotFound
 }
 
 /// Loads the relay's p2p key from its data dir, generating and persisting one
@@ -217,17 +228,14 @@ fn load_or_create_key(
 ) -> Result<k256::SecretKey, CliError> {
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
-        Err(pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(
-            io_err,
-        ))) if io_err.kind() == std::io::ErrorKind::NotFound => {
+        Err(err) if is_key_file_missing(&err) => {
             if !config.auto_p2p_key {
                 error!(
                     "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
                 );
-                let err = pluto_p2p::k1::K1Error::K1UtilError(
-                    pluto_k1util::K1UtilError::FailedToReadFile(io_err),
+                return Err(
+                    pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err.into()).into(),
                 );
-                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err).into());
             }
 
             let path = k1::key_path(&config.data_dir);
@@ -333,9 +341,11 @@ mod tests {
         let missing_key = test_relay_server_with(|args| args.relay.auto_p2p_key = false).await;
         assert!(matches!(
             missing_key,
-            Err(super::CliError::RelayP2PError(
-                pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
-            ))
+            Err(super::CliError::RelayP2PError(ref e))
+                if matches!(
+                    **e,
+                    pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
+                )
         ));
 
         // The success path — starting with an auto-generated key — is what
@@ -483,9 +493,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToBindHttpListener { .. }
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToBindHttpListener { .. }
+                    )
             ),
             "got: {err}"
         );
@@ -504,9 +516,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToBindMonitoringListener { .. }
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToBindMonitoringListener { .. }
+                    )
             ),
             "got: {err}"
         );
@@ -523,9 +537,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                super::CliError::RelayP2PError(
-                    pluto_relay_server::RelayP2PError::FailedToParseMonitoringAddr(..)
-                )
+                super::CliError::RelayP2PError(ref e)
+                    if matches!(
+                        **e,
+                        pluto_relay_server::RelayP2PError::FailedToParseMonitoringAddr(..)
+                    )
             ),
             "got: {err}"
         );
@@ -694,7 +710,7 @@ mod tests {
         let p2p_addrs = bound.p2p_addrs().await;
 
         let serve_ct = ct.child_token();
-        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(Into::into) });
+        let handle = tokio::spawn(async move { bound.serve(serve_ct).await.map_err(|e| e.into()) });
 
         Ok(TestRelay {
             http_addr,

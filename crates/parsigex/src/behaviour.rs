@@ -90,7 +90,10 @@ pub fn new_eth2_verifier(
 
             eth2signeddata::verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
                 .await
-                .map_err(|source| VerifyError::InvalidSignature { duty, source })
+                .map_err(|source| VerifyError::InvalidSignature {
+                    duty,
+                    source: Box::new(source),
+                })
         })
     })
 }
@@ -348,9 +351,9 @@ impl Behaviour {
             }
 
             if !peer_store.has_connection(&peer) {
-                let error = Failure::Io(std::io::Error::other(format!(
-                    "peer {peer} is not connected"
-                )));
+                let error = Failure::Io(
+                    std::io::Error::other(format!("peer {peer} is not connected")).into(),
+                );
                 if failure.is_none() {
                     failure = Some(error.clone());
                 }
@@ -380,7 +383,7 @@ impl Behaviour {
                 result_tx,
                 request_id,
                 failure.unwrap_or_else(|| {
-                    Failure::Io(std::io::Error::other("no peers available for broadcast"))
+                    Failure::Io(std::io::Error::other("no peers available for broadcast").into())
                 }),
             );
             return;
@@ -549,7 +552,7 @@ impl NetworkBehaviour for Behaviour {
                 .map(|(id, _)| *id)
                 .collect();
             for request_id in affected {
-                let error = Failure::Io(std::io::Error::other("connection closed"));
+                let error = Failure::Io(std::io::Error::other("connection closed").into());
                 self.emit_broadcast_error(request_id, Some(peer_id), error.clone());
                 self.finish_broadcast_result(request_id, peer_id, Some(error));
             }

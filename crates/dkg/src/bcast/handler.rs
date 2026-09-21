@@ -179,7 +179,7 @@ impl Handler {
             };
 
             if let Err(error) = result {
-                tracing::error!(peer = %remote_peer_id, %error, "bcast inbound handling failed");
+                tracing::error!(peer = %remote_peer_id, ?error, "bcast inbound handling failed");
             }
 
             None

@@ -367,7 +367,10 @@ pub(crate) async fn get_subcommittees(
     client: &EthBeaconNodeApiClient,
     duty: &SyncCommitteeDuty,
 ) -> Result<Vec<u64>> {
-    let spec = client.fetch_spec().await.map_err(Error::BeaconNode)?;
+    let spec = client
+        .fetch_spec()
+        .await
+        .map_err(|e| Error::BeaconNode(e.into()))?;
 
     let divisor = spec
         .sync_committee_size

@@ -23,6 +23,7 @@ pluto-featureset.workspace = true
 pluto-k1util.workspace = true
 pluto-p2p.workspace = true
 pluto-ssz.workspace = true
+pluto-stacktrace.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true

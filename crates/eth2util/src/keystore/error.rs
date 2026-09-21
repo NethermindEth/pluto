@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use pluto_crypto::types::PRIVATE_KEY_LENGTH;
 
 /// Error type for keystore operations.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
     /// Keystore directory does not exist.

@@ -14,6 +14,7 @@ use crate::share::{Share, ShareMsg};
 pub type Result<T> = std::result::Result<T, ValidatorsError>;
 
 /// Error type for DKG validator helpers.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorsError {
     /// Builder registration payload is missing.

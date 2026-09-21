@@ -227,7 +227,7 @@ where
 {
     info!("{LICENSE}");
 
-    runner(config, ct).await.map_err(Into::into)
+    runner(config, ct).await.map_err(|e| e.into())
 }
 
 fn validate_p2p_args(args: &DkgP2PArgs) -> Result<()> {

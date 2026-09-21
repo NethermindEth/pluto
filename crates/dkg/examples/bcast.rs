@@ -349,7 +349,7 @@ async fn maybe_start_broadcast(
             error!(
                 local_node = cluster_info.local_node_number,
                 msg_id = DEMO_MSG_ID,
-                err = %error,
+                err = ?error,
                 "Failed to enqueue broadcast"
             );
             Ok(())
@@ -372,7 +372,7 @@ fn log_bcast_event(event: bcast::Event, local_node_number: u32) {
             error!(
                 local_node = local_node_number,
                 msg_id,
-                err = %event_error,
+                err = ?event_error,
                 "Broadcast failed"
             );
         }
@@ -680,7 +680,7 @@ async fn main() -> Result<()> {
                         error!(
                             peer_id = ?peer_id,
                             connection_id = ?connection_id,
-                            err = %dial_error,
+                            err = ?dial_error,
                             "Outgoing connection error"
                         );
                     }

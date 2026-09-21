@@ -22,11 +22,16 @@ use crate::types::{Duty, DutyType, PubKey, SignedData, SignedDataSet};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Broadcaster error.
+#[pluto_stacktrace::located]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Beacon node client error.
     #[error(transparent)]
     Client(#[from] EthBeaconNodeApiClientError),
+
+    /// Validator cache error.
+    #[error(transparent)]
+    ValidatorCache(#[from] ValidatorCacheError),
 
     /// Signed-data conversion error.
     #[error("{context}: {source}")]
@@ -308,7 +313,7 @@ impl Broadcaster {
             {
                 Ok(())
             }
-            Err(source) => Err(Error::Client(source)),
+            Err(source) => Err(Error::Client(source.into())),
         }?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestations to beacon node");
@@ -380,7 +385,7 @@ impl Broadcaster {
         }
 
         if let Some(source) = last_error {
-            return Err(Error::Client(source));
+            return Err(Error::Client(source.into()));
         }
 
         Ok(())
@@ -591,9 +596,7 @@ async fn resolve_active_validators_indices(
     validator_cache: &ValidatorCache,
     epoch: phase0::Epoch,
 ) -> Result<Vec<phase0::ValidatorIndex>> {
-    let (_, validators) = validator_cache.get_by_head().await.map_err(
-        |ValidatorCacheError::EthBeaconNodeApiClientError(source)| Error::Client(source),
-    )?;
+    let (_, validators) = validator_cache.get_by_head().await?;
     let mut indices = Vec::new();
 
     for (index, validator) in validators.iter() {
