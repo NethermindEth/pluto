@@ -1,6 +1,6 @@
-//! # Charon Observability
+//! # Pluto Observability
 //!
-//! Observability and monitoring utilities for the Charon distributed validator
+//! Observability and monitoring utilities for the Pluto distributed validator
 //! node. This crate provides logging, metrics, tracing, and monitoring
 //! capabilities for tracking and debugging validator operations.
 
