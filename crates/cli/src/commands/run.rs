@@ -967,7 +967,7 @@ fn warn_ignored_flags(config: &RunConfig) {
     if !config.otlp_address.is_empty() {
         warn!(
             address = %config.otlp_address,
-            headers = ?config.otlp_headers,
+            headers = config.otlp_headers.len(),
             insecure = config.otlp_insecure,
             service = %config.otlp_service_name,
             "OTLP tracing is not yet supported by pluto run; ignoring the --otlp-* flags"
