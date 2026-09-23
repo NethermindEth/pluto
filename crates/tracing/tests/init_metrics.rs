@@ -3,7 +3,7 @@
 use pluto_tracing::{TracingConfig, init, metrics::TRACING_METRICS};
 
 #[test]
-fn default_info_filter_keeps_debug_topic_for_warn_metric() {
+fn default_info_filter_keeps_debug_topic_for_log_metrics() {
     // Use the production initializer, not a custom subscriber stack.
     let config = TracingConfig {
         override_env_filter: Some("info".into()),
@@ -12,16 +12,24 @@ fn default_info_filter_keeps_debug_topic_for_warn_metric() {
     init(&config).expect("initialize the default tracing layers");
 
     let topic = String::from("init_info_filter_topic");
-    let before = TRACING_METRICS.warn_total[&topic].get();
+    let warns_before = TRACING_METRICS.warn_total[&topic].get();
+    let errors_before = TRACING_METRICS.error_total[&topic].get();
     let span = tracing::debug_span!("health", topic = "init_info_filter_topic");
     {
         let _guard = span.enter();
         tracing::warn!("warning from a debug-level topic span");
+        tracing::error!("error from a debug-level topic span");
     }
 
     assert_eq!(
         TRACING_METRICS.warn_total[&topic].get(),
-        before.saturating_add(1),
+        warns_before.saturating_add(1),
+        "topic span disabled by the info console filter: {}",
+        span.is_disabled()
+    );
+    assert_eq!(
+        TRACING_METRICS.error_total[&topic].get(),
+        errors_before.saturating_add(1),
         "topic span disabled by the info console filter: {}",
         span.is_disabled()
     );
