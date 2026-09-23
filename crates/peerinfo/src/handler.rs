@@ -158,8 +158,8 @@ impl ConnectionHandler for Handler {
                 Poll::Ready(Ok((_stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
                     // Don't try to read again - Charon closes the stream after
-                    // each exchange. A new inbound stream
-                    // will be opened for the next request.
+                    // each exchange, and now so does `recv_peer_info`. A new
+                    // inbound stream will be opened for the next request.
                     self.inbound = None;
                 }
             }
@@ -209,9 +209,9 @@ impl ConnectionHandler for Handler {
                         self.failures = 0;
                         self.interval.reset(self.config.interval());
                         // Don't keep the stream idle for reuse - Charon closes
-                        // streams after each
-                        // exchange. A new outbound stream will be opened
-                        // for the next request.
+                        // streams after each exchange, and now so does
+                        // `send_peer_info`. A new outbound stream will be
+                        // opened for the next request.
                         self.outbound = None;
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Ok(Success {
                             peer_info,

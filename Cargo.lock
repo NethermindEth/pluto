@@ -5618,6 +5618,7 @@ dependencies = [
  "pluto-p2p",
  "pluto-proto",
  "pluto-stacktrace",
+ "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
