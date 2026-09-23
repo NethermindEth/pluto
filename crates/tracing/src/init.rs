@@ -5,7 +5,10 @@ use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
-    EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+    EnvFilter, Registry,
+    filter::LevelFilter,
+    layer::{Layer as _, SubscriberExt as _},
+    util::SubscriberInitExt as _,
 };
 
 use crate::{config::TracingConfig, layers::metrics::MetricsLayer};
@@ -71,10 +74,12 @@ impl LokiWorker {
 ///
 /// Panics when Loki is configured and this is called outside a Tokio runtime.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
-    let env_filter = if let Some(override_env_filter) = config.override_env_filter.as_ref() {
-        EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
-    } else {
-        EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
+    let make_env_filter = || {
+        if let Some(override_env_filter) = config.override_env_filter.as_ref() {
+            EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
+        } else {
+            EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
+        }
     };
 
     let console_config = config.console.clone().unwrap_or_default();
@@ -90,9 +95,8 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         .with_ansi(console_config.with_ansi);
 
     let registry = Registry::default()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(MetricsLayer);
+        .with(fmt_layer.with_filter(make_env_filter()))
+        .with(MetricsLayer.with_filter(LevelFilter::DEBUG));
 
     if let Some(loki_config) = &config.loki {
         // Match the path-stripping behaviour of `tracing_loki::layer` so the
@@ -117,7 +121,7 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         }
         let (loki_layer, controller, task) = builder.build_controller_url(loki_url)?;
 
-        let registry = registry.with(loki_layer);
+        let registry = registry.with(loki_layer.with_filter(make_env_filter()));
         registry.try_init()?;
 
         Ok(Some(LokiWorker {
