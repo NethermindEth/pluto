@@ -289,7 +289,7 @@ impl ProtocolState {
     /// Sends a peer info request and waits for a response.
     ///
     /// Returns the response `PeerInfo` on success. The stream is closed
-    /// gracefully after reading (see [`close_stream`]); the caller should
+    /// gracefully after reading (see `close_stream`); the caller should
     /// just drop it. Charon's `p2p.SendReceive` (`p2p/sender.go`)
     /// additionally half-closes the stream before reading the response.
     #[tracing::instrument(
@@ -319,7 +319,7 @@ impl ProtocolState {
 
     /// Receives a peer info request and sends a response.
     ///
-    /// The stream is closed gracefully (see [`close_stream`]) right after the
+    /// The stream is closed gracefully (see `close_stream`) right after the
     /// response is written, matching Charon's handler (`defer s.Close()` in
     /// `p2p/receive.go`): a merely-dropped substream resets instead of sending
     /// a clean FIN, which can race the peer's read. The returned stream is
