@@ -10,6 +10,10 @@ fn default_info_filter_keeps_debug_topic_for_log_metrics() {
         ..Default::default()
     };
     init(&config).expect("initialize the default tracing layers");
+    assert!(
+        !tracing::enabled!(tracing::Level::DEBUG),
+        "metrics filter must not enable DEBUG callsites at info"
+    );
 
     let topic = String::from("init_info_filter_topic");
     let warns_before = TRACING_METRICS.warn_total[&topic].get();
