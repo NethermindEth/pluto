@@ -6,7 +6,7 @@ use tracing::Instrument as _;
 use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
     EnvFilter, Registry,
-    filter::LevelFilter,
+    filter::filter_fn,
     layer::{Layer as _, SubscriberExt as _},
     util::SubscriberInitExt as _,
 };
@@ -96,7 +96,16 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
 
     let registry = Registry::default()
         .with(fmt_layer.with_filter(make_env_filter()))
-        .with(MetricsLayer.with_filter(LevelFilter::DEBUG));
+        // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events.
+        // A level filter would enable every DEBUG callsite in the process, including libp2p's poll
+        // spans.
+        .with(MetricsLayer.with_filter(filter_fn(|meta| {
+            if meta.is_span() {
+                meta.fields().field("topic").is_some()
+            } else {
+                *meta.level() <= tracing::Level::WARN
+            }
+        })));
 
     if let Some(loki_config) = &config.loki {
         // Match the path-stripping behaviour of `tracing_loki::layer` so the
