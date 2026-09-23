@@ -105,13 +105,10 @@ fn supported_peer_version(version: &str, supported: &[SemVer]) -> Result<(), Pro
 impl ProtocolState {
     /// Creates a new protocol state.
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
-        let name = pluto_p2p::name::peer_name(&peer_id);
-        let mut nicknames = HashMap::new();
-        nicknames.insert(name.clone(), local_info.nickname.clone());
         Self {
             peer_id,
-            name,
-            nicknames: Arc::new(Mutex::new(nicknames)),
+            name: pluto_p2p::name::peer_name(&peer_id),
+            nicknames: Arc::new(Mutex::new(HashMap::new())),
             local_info,
         }
     }
@@ -499,6 +496,44 @@ mod tests {
         let decoded = PeerInfo::decode(PEERINFO_EMPTY_OPTIONAL_FIELDS).unwrap();
         let expected = make_empty_optional_peerinfo();
         assert_eq!(decoded, expected);
+    }
+
+    #[tokio::test]
+    async fn new_must_not_seed_remote_peer_nickname() {
+        let local_info =
+            LocalPeerInfo::new("v1.7.1", vec![0u8; 32], "abc1234", false, "my-nickname");
+        let peer_id = PeerId::random();
+        let remote_name = pluto_p2p::name::peer_name(&peer_id);
+
+        let state = ProtocolState::new(peer_id, local_info);
+
+        assert!(
+            !state.nicknames.lock().await.contains_key(&remote_name),
+            "before any exchange the remote peer must have no nickname entry"
+        );
+
+        let now = chrono::Utc::now();
+        let peer_info = PeerInfo {
+            sent_at: Some(prost_types::Timestamp {
+                seconds: now.timestamp(),
+                nanos: 0,
+            }),
+            started_at: Some(prost_types::Timestamp {
+                seconds: now.timestamp(),
+                nanos: 0,
+            }),
+            nickname: "remote-nickname".to_string(),
+            ..make_with_git_hash_peerinfo()
+        };
+        state
+            .validate_peer_info(&peer_info, Duration::from_millis(5))
+            .await;
+
+        assert_eq!(
+            state.nicknames.lock().await.get(&remote_name),
+            Some(&"remote-nickname".to_string()),
+            "the exchange must record the remote peer's own nickname"
+        );
     }
 
     #[test]
