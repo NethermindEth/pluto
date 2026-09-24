@@ -967,7 +967,7 @@ fn warn_ignored_flags(config: &RunConfig) {
     if !config.otlp_address.is_empty() {
         warn!(
             address = %config.otlp_address,
-            headers = ?config.otlp_headers,
+            headers = config.otlp_headers.len(),
             insecure = config.otlp_insecure,
             service = %config.otlp_service_name,
             "OTLP tracing is not yet supported by pluto run; ignoring the --otlp-* flags"
@@ -1039,7 +1039,26 @@ mod tests {
         commands::common::{LogFormat, LogLevel},
     };
     use clap::{CommandFactory, Parser};
-    use std::{collections::BTreeSet, time::Duration as StdDuration};
+    use std::{
+        collections::BTreeSet,
+        io::{self, Write},
+        sync::{Arc, Mutex},
+        time::Duration as StdDuration,
+    };
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedLog {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     /// Every flag the safe `run` command must expose itself. The log and Loki
     /// flags are global and live on the root command.
@@ -1874,6 +1893,30 @@ mod tests {
             "--fallback-beacon-node-endpoints=http://c.node",
         ])
         .expect("observability flags are ignored, not rejected");
+    }
+
+    #[test]
+    fn ignored_otlp_headers_do_not_log_credentials() {
+        let config = parse_run(&[
+            "--otlp-address=https://collector.example.org",
+            "--otlp-headers=Authorization=Bearer canary-secret-otlp-token,x-honeycomb-team=canary-secret-team-token",
+        ])
+        .expect("OTLP headers should parse");
+        assert_eq!(config.otlp_headers.len(), 2);
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || CapturedLog(Arc::clone(&writer_output))),
+        );
+        tracing::subscriber::with_default(subscriber, || warn_ignored_flags(&config));
+
+        let log = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 log");
+        assert!(log.contains("OTLP tracing is not yet supported"), "{log}");
+        assert!(!log.contains("canary-secret-otlp-token"), "{log}");
+        assert!(!log.contains("canary-secret-team-token"), "{log}");
     }
 
     #[test]
