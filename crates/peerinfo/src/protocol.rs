@@ -23,11 +23,7 @@ use regex::Regex;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::{
-    LocalPeerInfo,
-    metrics::{PEERINFO_METRICS, PeerGitHashLabels, PeerNicknameLabels, PeerVersionLabels},
-    peerinfopb::v1::peerinfo::PeerInfo,
-};
+use crate::{LocalPeerInfo, metrics::PEERINFO_METRICS, peerinfopb::v1::peerinfo::PeerInfo};
 
 static GIT_HASH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9a-f]{7}$").expect("invalid regex"));
@@ -55,12 +51,12 @@ fn truncate_label(s: &str) -> String {
 
 /// State of the protocol.
 pub struct ProtocolState {
-    /// The peer ID.
-    peer_id: PeerId,
-
-    /// The peer name.
+    /// The remote peer's name.
     name: String,
 
+    /// Node-wide peer name to nickname map, shared with every other connection
+    /// (Charon holds one map on the `PeerInfo` node instance). Seeded by
+    /// [`crate::Behaviour`] with the LOCAL node's name and nickname.
     nicknames: Arc<Mutex<HashMap<String, String>>>,
 
     local_info: LocalPeerInfo,
@@ -103,17 +99,27 @@ fn supported_peer_version(version: &str, supported: &[SemVer]) -> Result<(), Pro
 }
 
 impl ProtocolState {
-    /// Creates a new protocol state.
-    pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
-        let name = pluto_p2p::name::peer_name(&peer_id);
-        let mut nicknames = HashMap::new();
-        nicknames.insert(name.clone(), local_info.nickname.clone());
+    /// Creates a new protocol state for the connection to `peer_id`.
+    ///
+    /// `nicknames` is the node-wide map owned by [`crate::Behaviour`]; it is
+    /// deliberately NOT built here, since a per-connection map would be
+    /// rebuilt on every reconnect and could never observe a nickname change.
+    pub fn new(
+        peer_id: PeerId,
+        local_info: LocalPeerInfo,
+        nicknames: Arc<Mutex<HashMap<String, String>>>,
+    ) -> Self {
         Self {
-            peer_id,
-            name,
-            nicknames: Arc::new(Mutex::new(nicknames)),
+            name: pluto_p2p::name::peer_name(&peer_id),
+            nicknames,
             local_info,
         }
+    }
+
+    /// Returns the node-wide nickname map shared with every other connection.
+    #[cfg(test)]
+    pub(crate) fn nicknames(&self) -> &Arc<Mutex<HashMap<String, String>>> {
+        &self.nicknames
     }
 
     async fn validate_peer_info(&self, peer_info: &PeerInfo, rtt: Duration) {
@@ -133,16 +139,14 @@ impl ProtocolState {
             return;
         };
 
-        let prev_nickname = {
+        {
             let mut nicknames = self.nicknames.lock().await;
             let prev_nickname = nicknames.insert(self.name.clone(), peer_info.nickname.clone());
 
             if prev_nickname.as_ref() != Some(&peer_info.nickname) {
                 info!(nicknames = ?nicknames, "Peer name to nickname mappings");
             }
-
-            prev_nickname
-        };
+        }
 
         // Validator git hash with regex.
         if !GIT_HASH_RE.is_match(&peer_info.git_hash) {
@@ -190,7 +194,6 @@ impl ProtocolState {
             started_at,
             peer_info.builder_api_enabled,
             &peer_info.nickname,
-            prev_nickname.as_ref(),
         );
 
         // Log unexpected lock hash
@@ -212,10 +215,6 @@ impl ProtocolState {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "metrics submission needs all peer-info fields as distinct arguments"
-    )]
     fn metrics_submitter(
         &self,
         clock_offset: chrono::Duration,
@@ -224,22 +223,16 @@ impl ProtocolState {
         start_time: DateTime<Utc>,
         builder_api_enabled: bool,
         nickname: &str,
-        prev_nickname: Option<&String>,
     ) {
-        let peer_name = pluto_p2p::name::peer_name(&self.peer_id);
+        let peer_name = &self.name;
 
         // nickname/version are peer-supplied and unbounded in length; truncate
-        // at the metric boundary so a pathological value cannot blow up
-        // label memory. Reset the previous series under the SAME
-        // truncated form it was stored.
+        // at the metric boundary so a pathological value cannot blow up label
+        // memory. Stale series are matched on the peer label alone, so they are
+        // cleared whatever form they were stored under.
         let nickname = truncate_label(nickname);
 
-        // Reset previous peer nickname if it changed
-        if let Some(prev) = prev_nickname {
-            let prev = truncate_label(prev);
-            PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, &prev)].set(0);
-        }
-        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, &nickname)].set(1);
+        PEERINFO_METRICS.set_peer_nickname(peer_name, &nickname);
 
         // Clamp clock offset to [-1 hour, 1 hour]
         let one_hour = chrono::Duration::hours(1);
@@ -254,11 +247,11 @@ impl ProtocolState {
         } else {
             clock_offset
         };
-        PEERINFO_METRICS.clock_offset_seconds[&peer_name].set(clamped_offset.num_seconds());
+        PEERINFO_METRICS.clock_offset_seconds[peer_name].set(clamped_offset.num_seconds());
 
         // Set start time if not zero/epoch
         if start_time != DateTime::<Utc>::UNIX_EPOCH {
-            PEERINFO_METRICS.start_time_secs[&peer_name].set(start_time.timestamp());
+            PEERINFO_METRICS.start_time_secs[peer_name].set(start_time.timestamp());
         }
 
         // Handle version - use "unknown" if empty
@@ -267,7 +260,7 @@ impl ProtocolState {
         } else {
             truncate_label(version)
         };
-        PEERINFO_METRICS.version[&PeerVersionLabels::new(&peer_name, &version)].set(1);
+        PEERINFO_METRICS.set_peer_version(peer_name, &version);
 
         // Handle git hash - use "unknown" if empty
         let git_hash = if git_hash.is_empty() {
@@ -275,13 +268,13 @@ impl ProtocolState {
         } else {
             git_hash
         };
-        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&peer_name, git_hash)].set(1);
+        PEERINFO_METRICS.set_peer_git_commit(peer_name, git_hash);
 
         // Set builder API enabled gauge
         if builder_api_enabled {
-            PEERINFO_METRICS.builder_api_enabled[&peer_name].set(1);
+            PEERINFO_METRICS.builder_api_enabled[peer_name].set(1);
         } else {
-            PEERINFO_METRICS.builder_api_enabled[&peer_name].set(0);
+            PEERINFO_METRICS.builder_api_enabled[peer_name].set(0);
         }
     }
 
@@ -383,6 +376,86 @@ mod tests {
     // LockHash: cafebabe
     // BuilderApiEnabled: false
     const PEERINFO_EMPTY_OPTIONAL_FIELDS: &[u8] = &hex!("0a0676312e362e301204cafebabe");
+
+    fn now_ts() -> prost_types::Timestamp {
+        prost_types::Timestamp {
+            seconds: chrono::Utc::now().timestamp(),
+            nanos: 0,
+        }
+    }
+
+    /// Builds a state for a random remote peer sharing a map seeded the way
+    /// [`crate::Behaviour`] seeds it: LOCAL name to LOCAL nickname.
+    fn state_for(local_nickname: &str) -> (ProtocolState, String) {
+        let local_id = PeerId::random();
+        let local_name = pluto_p2p::name::peer_name(&local_id);
+        let nicknames = Arc::new(Mutex::new(HashMap::from([(
+            local_name.clone(),
+            local_nickname.to_owned(),
+        )])));
+        let local_info =
+            LocalPeerInfo::new("v1.7.1", vec![0u8; 32], "abc1234", false, local_nickname);
+        let state = ProtocolState::new(PeerId::random(), local_info, nicknames);
+
+        (state, local_name)
+    }
+
+    fn peer_info_with(nickname: &str) -> PeerInfo {
+        PeerInfo {
+            pluto_version: "v1.7.1".to_owned(),
+            lock_hash: vec![0u8; 32].into(),
+            git_hash: "abc1234".to_owned(),
+            sent_at: Some(now_ts()),
+            started_at: Some(now_ts()),
+            builder_api_enabled: false,
+            nickname: nickname.to_owned(),
+        }
+    }
+
+    /// Regression test for the wrong-nickname mapping: the remote peer must be
+    /// recorded under ITS OWN nickname, and the local node's entry must stay
+    /// put. Previously the map was seeded with `remote name -> our nickname`,
+    /// so `nickname{peer=<remote>,peer_nickname=<ours>}` was published.
+    #[tokio::test]
+    async fn records_the_remote_nickname_and_keeps_the_local_entry() {
+        let (state, local_name) = state_for("alpha");
+
+        state
+            .validate_peer_info(&peer_info_with("bravo"), Duration::from_millis(10))
+            .await;
+
+        let nicknames = state.nicknames().lock().await;
+        assert_eq!(nicknames.get(&state.name), Some(&"bravo".to_owned()));
+        assert_eq!(nicknames.get(&local_name), Some(&"alpha".to_owned()));
+        assert_eq!(nicknames.len(), 2);
+    }
+
+    /// A peer restarting under a new nickname must leave exactly one series
+    /// reading 1, so a `peer -> peer_nickname` join stays unambiguous.
+    #[tokio::test]
+    async fn peer_rename_leaves_a_single_live_nickname_series() {
+        let (state, _) = state_for("alpha");
+
+        state
+            .validate_peer_info(&peer_info_with("bravo"), Duration::from_millis(10))
+            .await;
+        state
+            .validate_peer_info(&peer_info_with("charlie"), Duration::from_millis(10))
+            .await;
+
+        let live: Vec<_> = PEERINFO_METRICS
+            .nickname
+            .to_entries()
+            .filter(|(labels, gauge)| labels.peer() == state.name && gauge.get() == 1)
+            .map(|(labels, _)| labels.peer_nickname().to_owned())
+            .collect();
+        assert_eq!(live, vec!["charlie".to_owned()]);
+
+        assert_eq!(
+            state.nicknames().lock().await.get(&state.name),
+            Some(&"charlie".to_owned()),
+        );
+    }
 
     #[test]
     fn git_hash_regex_correct() {
