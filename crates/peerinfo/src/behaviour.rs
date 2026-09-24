@@ -4,7 +4,8 @@
 //! emitting events when peer info is received from remote peers.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -15,12 +16,13 @@ use libp2p::{
         THandlerOutEvent, ToSwarm,
     },
 };
+use tokio::sync::Mutex;
 
 use crate::{
     Failure,
     config::Config,
     handler::{Handler, Success},
-    metrics::{PEERINFO_METRICS, PeerGitHashLabels, PeerNicknameLabels, PeerVersionLabels},
+    metrics::PEERINFO_METRICS,
     peerinfopb::v1::peerinfo::PeerInfo,
 };
 
@@ -56,6 +58,14 @@ pub struct Behaviour {
     config: Config,
     /// Pending events to be emitted.
     events: VecDeque<Event>,
+    /// Node-wide peer name to nickname map, shared with every connection
+    /// handler.
+    ///
+    /// Charon keeps one such map on the `PeerInfo` node instance, seeded with
+    /// the LOCAL node's name and nickname. Holding it here rather than in each
+    /// [`Handler`] keeps it alive across reconnects and lets the companion
+    /// "Peer name to nickname mappings" log show the whole cluster.
+    nicknames: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Behaviour {
@@ -64,13 +74,9 @@ impl Behaviour {
     pub fn new(local_peer_id: PeerId, config: Config) -> Self {
         let name = pluto_p2p::name::peer_name(&local_peer_id);
 
-        PEERINFO_METRICS.version
-            [&PeerVersionLabels::new(&name, &config.local_info().pluto_version)]
-            .set(1);
-        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&name, &config.local_info().git_hash)]
-            .set(1);
-        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&name, &config.local_info().nickname)]
-            .set(1);
+        PEERINFO_METRICS.set_peer_version(&name, &config.local_info().pluto_version);
+        PEERINFO_METRICS.set_peer_git_commit(&name, &config.local_info().git_hash);
+        PEERINFO_METRICS.set_peer_nickname(&name, &config.local_info().nickname);
 
         let started_at = if let Some(started_at) = config.local_info().started_at {
             started_at.seconds
@@ -91,9 +97,15 @@ impl Behaviour {
             PEERINFO_METRICS.index[&peer_name].set(idx);
         }
 
+        // Seed with the LOCAL node's name and nickname, exactly as Charon's
+        // `newInternal` does. Seeding a REMOTE name with our own nickname would
+        // publish `nickname{peer=<remote>,peer_nickname=<ours>}`.
+        let nicknames = HashMap::from([(name, config.local_info().nickname.clone())]);
+
         Self {
             config,
             events: VecDeque::new(),
+            nicknames: Arc::new(Mutex::new(nicknames)),
         }
     }
 
@@ -114,7 +126,11 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(Handler::new(self.config.clone(), peer))
+        Ok(Handler::new(
+            self.config.clone(),
+            peer,
+            Arc::clone(&self.nicknames),
+        ))
     }
 
     fn handle_established_outbound_connection(
@@ -125,7 +141,11 @@ impl NetworkBehaviour for Behaviour {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(Handler::new(self.config.clone(), peer))
+        Ok(Handler::new(
+            self.config.clone(),
+            peer,
+            Arc::clone(&self.nicknames),
+        ))
     }
 
     fn on_swarm_event(&mut self, _event: FromSwarm) {
@@ -165,5 +185,81 @@ impl NetworkBehaviour for Behaviour {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::{
+        core::{Endpoint, transport::PortUse},
+        swarm::ConnectionId,
+    };
+
+    use super::*;
+    use crate::config::LocalPeerInfo;
+
+    fn behaviour(local: PeerId, nickname: &str) -> Behaviour {
+        let local_info = LocalPeerInfo::new("v1.7.1", vec![0u8; 32], "abc1234", false, nickname);
+        Behaviour::new(local, Config::new(local_info))
+    }
+
+    /// Charon's `newInternal` seeds the map with the LOCAL node's name; seeding
+    /// a remote name with our own nickname is what published
+    /// `nickname{peer=<remote>,peer_nickname=<ours>}`.
+    #[tokio::test]
+    async fn nicknames_seeded_with_local_name() {
+        let local = PeerId::random();
+        let behaviour = behaviour(local, "alpha");
+
+        let nicknames = behaviour.nicknames.lock().await;
+        assert_eq!(
+            &*nicknames,
+            &HashMap::from([(pluto_p2p::name::peer_name(&local), "alpha".to_owned())]),
+        );
+    }
+
+    /// The map lives on the behaviour, so every connection — including a
+    /// reconnect — sees the same nicknames rather than a freshly reseeded one.
+    #[tokio::test]
+    async fn handlers_share_the_behaviour_map() {
+        let local = PeerId::random();
+        let mut behaviour = behaviour(local, "alpha");
+        let remote = PeerId::random();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+
+        let first = behaviour
+            .handle_established_outbound_connection(
+                ConnectionId::new_unchecked(0),
+                remote,
+                &addr,
+                Endpoint::Dialer,
+                PortUse::Reuse,
+            )
+            .unwrap();
+        let second = behaviour
+            .handle_established_inbound_connection(
+                ConnectionId::new_unchecked(1),
+                remote,
+                &addr,
+                &addr,
+            )
+            .unwrap();
+
+        // A nickname learnt on one connection is visible on the other and on
+        // the behaviour itself.
+        first
+            .nicknames()
+            .lock()
+            .await
+            .insert("quiet-river".to_owned(), "bravo".to_owned());
+
+        assert_eq!(
+            second.nicknames().lock().await.get("quiet-river"),
+            Some(&"bravo".to_owned()),
+        );
+        assert_eq!(
+            behaviour.nicknames.lock().await.get("quiet-river"),
+            Some(&"bravo".to_owned()),
+        );
     }
 }
