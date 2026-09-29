@@ -26,7 +26,7 @@ Starts the long-running Pluto middleware process to perform distributed validato
   - `--fallback-beacon-node-endpoints <URLS>`: **[IGNORED]** Fallback support is not yet implemented; no failover occurs.
   - `--beacon-node-timeout <DURATION>`: Timeout for the HTTP requests Pluto makes to the configured beacon nodes. (default: `2s`)
   - `--beacon-node-submit-timeout <DURATION>`: Timeout for the submission-related HTTP requests. (default: `2s`)
-  - `--beacon-node-headers <HEADERS>`: **[UNSUPPORTED]** Comma separated list of headers formatted as `header=value`.
+  - `--beacon-node-headers <HEADERS>`: Comma separated list of headers formatted as `header=value`, sent with every beacon node request (including those the validator API proxies).
   - `--validator-api-address <ADDR>`: Listening address (ip and port) for validator-facing traffic proxying the beacon-node API. (default: `127.0.0.1:3600`)
   - `--vc-tls-cert-file <PATH>`: **[UNSUPPORTED]** The path to the TLS certificate file used by pluto for the validator client API endpoint.
   - `--vc-tls-key-file <PATH>`: **[UNSUPPORTED]** The path to the TLS private key file associated with the provided TLS certificate.
