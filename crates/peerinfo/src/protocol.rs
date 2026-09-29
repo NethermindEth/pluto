@@ -17,11 +17,12 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use futures::AsyncWriteExt;
 use libp2p::{PeerId, swarm::Stream};
 use pluto_core::version::{self, SemVer, SemVerError};
 use regex::Regex;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     LocalPeerInfo,
@@ -287,7 +288,10 @@ impl ProtocolState {
 
     /// Sends a peer info request and waits for a response.
     ///
-    /// Returns the response `PeerInfo` on success.
+    /// Returns the response `PeerInfo` on success. The stream is closed
+    /// gracefully after reading (see `close_stream`); the caller should
+    /// just drop it. Charon's `p2p.SendReceive` (`p2p/sender.go`)
+    /// additionally half-closes the stream before reading the response.
     #[tracing::instrument(
         name = "peerinfo",
         level = "debug",
@@ -306,6 +310,8 @@ impl ProtocolState {
                 .await?;
         let rtt = start.elapsed();
 
+        close_stream(&mut stream).await;
+
         self.validate_peer_info(&response, rtt).await;
 
         Ok((stream, response))
@@ -313,7 +319,11 @@ impl ProtocolState {
 
     /// Receives a peer info request and sends a response.
     ///
-    /// Returns the stream for potential reuse after successfully responding.
+    /// The stream is closed gracefully (see `close_stream`) right after the
+    /// response is written, matching Charon's handler (`defer s.Close()` in
+    /// `p2p/receive.go`): a merely-dropped substream resets instead of sending
+    /// a clean FIN, which can race the peer's read. The returned stream is
+    /// already closed; the caller should just drop it.
     #[tracing::instrument(
         name = "peerinfo",
         level = "debug",
@@ -329,7 +339,22 @@ impl ProtocolState {
             pluto_p2p::proto::read_protobuf_with_max_size(&mut stream, PEERINFO_MAX_MESSAGE_SIZE)
                 .await?;
         pluto_p2p::proto::write_protobuf(&mut stream, local_info).await?;
+
+        close_stream(&mut stream).await;
+
         Ok((stream, request))
+    }
+}
+
+/// Best-effort closes a peerinfo stream after an exchange has completed.
+///
+/// `Stream::close` half-closes only our write side (unlike Charon's
+/// `network.Stream.Close`), which is fine here since both sides are done
+/// writing by this point. Close errors are logged, not surfaced, matching
+/// `pluto_priority::p2p::handler::close_stream`.
+async fn close_stream(stream: &mut Stream) {
+    if let Err(error) = stream.close().await {
+        debug!(%error, "Error closing peerinfo stream");
     }
 }
 

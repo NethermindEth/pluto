@@ -167,3 +167,119 @@ impl NetworkBehaviour for Behaviour {
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use libp2p::{
+        Multiaddr, Swarm,
+        core::{Transport as _, transport::MemoryTransport, upgrade::Version},
+        multiaddr::Protocol,
+        swarm::SwarmEvent,
+    };
+    use pluto_p2p::utils::keypair_from_secret_key;
+    use pluto_testutil::random::generate_insecure_k1_key;
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::config::LocalPeerInfo;
+
+    /// In-process `/memory/<N>` address, where `N` is derived from the seed
+    /// (non-zero so the kernel does not auto-assign a port).
+    fn memory_addr(seed: u8) -> Multiaddr {
+        Multiaddr::empty().with(Protocol::Memory(u64::from(seed) + 1))
+    }
+
+    /// Builds a swarm over an in-process [`MemoryTransport`] running the
+    /// peerinfo [`Behaviour`], with a short exchange interval so the test
+    /// does not have to wait out the (60s default) real-world cadence.
+    fn build_swarm(seed: u8, local_info: LocalPeerInfo) -> Swarm<Behaviour> {
+        let key = generate_insecure_k1_key(seed);
+        let keypair = keypair_from_secret_key(key).expect("keypair");
+        let peer_id = keypair.public().to_peer_id();
+        let config = Config::new(local_info).with_interval(Duration::from_millis(5));
+
+        // Matches `pluto_p2p::p2p::yamux_config`: this call also switches
+        // the backend to the same (legacy) yamux version production uses.
+        let mut yamux_config = libp2p::yamux::Config::default();
+        yamux_config.set_max_num_streams(2_048);
+
+        libp2p::SwarmBuilder::with_existing_identity(keypair)
+            .with_tokio()
+            .with_other_transport(|key| {
+                MemoryTransport::default()
+                    .upgrade(Version::V1)
+                    .authenticate(libp2p::noise::Config::new(key).expect("noise config"))
+                    .multiplex(yamux_config)
+            })
+            .expect("transport")
+            .with_behaviour(|_key| Behaviour::new(peer_id, config))
+            .expect("behaviour")
+            .build()
+    }
+
+    /// End-to-end coverage that a peerinfo exchange completes over a
+    /// gracefully-closed stream (see #711).
+    ///
+    /// Exercises a real inbound `recv_peer_info` / outbound `send_peer_info`
+    /// exchange between two swarms and asserts the response arrives intact.
+    ///
+    /// Note: `MemoryTransport` doesn't reproduce the kernel-level race the
+    /// fix addresses — verified empirically by reverting the `close_stream`
+    /// calls, which still passed this test 30/30 runs — so it guards
+    /// against truncation/hangs/garbled responses, not the reset itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn inbound_response_is_fully_readable_by_remote() {
+        let info_a = LocalPeerInfo::new("v1.7.1", vec![0u8; 32], "0000000", false, "node-a");
+        let info_b = LocalPeerInfo::new("v1.7.1", vec![0xABu8; 32], "abc1234", true, "node-b");
+
+        let mut swarm_a = build_swarm(40, info_a);
+        let mut swarm_b = build_swarm(41, info_b);
+
+        let addr_b = memory_addr(41);
+        swarm_b.listen_on(addr_b.clone()).expect("listen b");
+        loop {
+            if matches!(
+                swarm_b.select_next_some().await,
+                SwarmEvent::NewListenAddr { .. }
+            ) {
+                break;
+            }
+        }
+
+        // Drive node B in the background: it answers A's inbound peerinfo
+        // request via `recv_peer_info`, which now closes the stream
+        // gracefully instead of dropping it.
+        let driver_b = tokio::spawn(async move {
+            loop {
+                let _ = swarm_b.select_next_some().await;
+            }
+        });
+
+        swarm_a.dial(addr_b).expect("dial b");
+
+        // Poll node A until its outbound exchange with B completes
+        // (`send_peer_info` read B's response after B wrote and closed).
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                if let SwarmEvent::Behaviour(Event::Received { info, .. }) =
+                    swarm_a.select_next_some().await
+                {
+                    return info;
+                }
+            }
+        })
+        .await
+        .expect("peerinfo exchange should complete");
+
+        assert_eq!(received.nickname, "node-b");
+        assert_eq!(received.pluto_version, "v1.7.1");
+        assert_eq!(received.git_hash, "abc1234");
+        assert!(received.builder_api_enabled);
+        assert_eq!(received.lock_hash.to_vec(), vec![0xABu8; 32]);
+
+        driver_b.abort();
+    }
+}
