@@ -12,9 +12,8 @@ use super::{
     helpers::{
         AllCategoriesResult, CategoryScore, TestCaseName, TestCategory, TestCategoryResult,
         TestResult, TestResultError, TestVerdict, calculate_score, evaluate_highest_rtt,
-        evaluate_rtt, filter_tests, http_client, must_output_to_file_on_quiet,
-        publish_result_to_obol_api, request_rtt, sort_tests, write_result_to_file,
-        write_result_to_writer,
+        evaluate_rtt, filter_tests, http_client, publish_result_to_obol_api, request_rtt,
+        sort_tests, write_result_to_file, write_result_to_writer,
     },
 };
 use crate::{duration::Duration, error::Result as CliResult};
@@ -293,8 +292,6 @@ pub async fn run(
     writer: &mut dyn Write,
     shutdown: CancellationToken,
 ) -> CliResult<TestCategoryResult> {
-    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
-
     tracing::info!("Starting beacon node test");
 
     let all_cases = SUPPORTED_BEACON_TEST_CASES;

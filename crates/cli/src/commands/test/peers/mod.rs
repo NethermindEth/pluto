@@ -30,8 +30,7 @@ use self::probe::{PeerProbe, PeerProbeHandle};
 use super::{
     AllCategoriesResult, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs,
     TestResult, TestResultError, calculate_score, evaluate_highest_rtt, evaluate_rtt,
-    must_output_to_file_on_quiet, publish_result_to_obol_api, write_result_to_file,
-    write_result_to_writer,
+    publish_result_to_obol_api, write_result_to_file, write_result_to_writer,
 };
 use crate::{
     commands::common,
@@ -51,7 +50,13 @@ struct TestBehaviour {
 
 #[derive(Debug)]
 enum TestBehaviourEvent {
-    Relay(relay::client::Event),
+    Relay(
+        #[expect(
+            dead_code,
+            reason = "event payload is never read; only the variant tag matters"
+        )]
+        relay::client::Event,
+    ),
     RelayManager(
         #[expect(
             dead_code,
@@ -232,8 +237,6 @@ pub async fn run(
             "only one of --enrs, --lock-file or --definition-file may be specified".to_string(),
         ));
     }
-
-    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
     tracing::info!("Starting pluto peers and relays test");
 
@@ -1038,21 +1041,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("only one of --enrs, --lock-file or --definition-file may be specified")
-        );
-    }
-
-    #[tokio::test]
-    async fn run_quiet_without_output_json_returns_error() {
-        let mut args = no_source_peers_args();
-        args.enrs = Some(vec!["enr:test".into()]);
-        args.test_config.quiet = true;
-        let mut output = Vec::new();
-        let err = run(args, &mut output, CancellationToken::new())
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("on --quiet, an --output-json is required")
         );
     }
 
