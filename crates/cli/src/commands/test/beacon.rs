@@ -302,6 +302,10 @@ pub async fn run(
     }
     sort_tests(&mut queued);
 
+    // A child token, so the timeout does not cancel the caller: `test all`
+    // runs more categories on it.
+    let shutdown = shutdown.child_token();
+    let _stop_timer = shutdown.clone().drop_guard();
     cancel_after(&shutdown, args.test_config.timeout);
 
     let start = Instant::now();

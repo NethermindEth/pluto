@@ -829,8 +829,8 @@ async fn ping_continuously(
     rtts
 }
 
-/// Retries a direct dial every second for up to `timeout`, then checks that
-/// both the relay and the direct connection are open.
+/// Tries a direct dial once per second of `timeout`, then checks that both the
+/// relay and the direct connection are open.
 ///
 /// As in Charon, a timeout under a second makes no dial attempt and only
 /// checks the connections.
@@ -843,28 +843,33 @@ async fn peer_direct_conn_test(
     tracing::info!(timeout = ?timeout, target = %target_name, "Trying to establish direct connection...");
     let result = TestResult::new("DirectConn");
 
+    // Only a backstop against a dial that never resolves: the attempt count
+    // bounds the test, as in Charon.
     let now = tokio::time::Instant::now();
     let deadline = now.checked_add(timeout).unwrap_or(now);
-    if timeout >= DIRECT_CONN_RETRY_INTERVAL {
-        loop {
-            let err = match tokio::time::timeout_at(deadline, probe.dial_direct(peer.id)).await {
-                Ok(Ok(())) => {
-                    tracing::info!(target = %target_name, "Direct connection established");
-                    break;
-                }
-                Ok(Err(e)) => TestResultError::from(e),
-                Err(_) => {
-                    TestResultError::from_string("direct connection not established within timeout")
-                }
-            };
-            if tokio::time::timeout_at(deadline, tokio::time::sleep(DIRECT_CONN_RETRY_INTERVAL))
-                .await
-                .is_err()
-            {
-                return result.fail(err);
+
+    let mut err = None;
+    for _ in 0..timeout.as_secs() {
+        match tokio::time::timeout_at(deadline, probe.dial_direct(peer.id)).await {
+            Ok(Ok(())) => {
+                err = None;
+                break;
+            }
+            Ok(Err(e)) => err = Some(TestResultError::from(e)),
+            Err(_) => {
+                err = Some(TestResultError::from_string(
+                    "direct connection not established within timeout",
+                ));
+                break;
             }
         }
+        tokio::time::sleep(DIRECT_CONN_RETRY_INTERVAL).await;
     }
+    if let Some(err) = err {
+        return result.fail(err);
+    }
+
+    tracing::info!(target = %target_name, "Direct connection established");
 
     let connections = probe.connection_count(&peer.id);
     if connections < 2 {

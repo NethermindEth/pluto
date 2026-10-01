@@ -543,6 +543,120 @@ mod tests {
         );
     }
 
+    /// `test all` arguments against unreachable endpoints, bounded by a short
+    /// `--timeout` so every category finishes quickly.
+    fn run_args(dir: &std::path::Path, extra: &[&str]) -> TestAllArgs {
+        let key = k256::SecretKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let dead = k256::SecretKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let key_file = dir.join("key");
+        pluto_k1util::save(&key, &key_file).unwrap();
+        let enrs = [&key, &dead]
+            .map(|k| {
+                pluto_eth2util::enr::Record::from_key(k)
+                    .unwrap()
+                    .to_string()
+            })
+            .join(",");
+
+        let flags = [
+            "all".to_string(),
+            "--timeout=1s".to_string(),
+            format!("--output-json={}", dir.join("out.json").display()),
+            // Distinct ports tell the categories' targets apart.
+            "--beacon-endpoints=http://127.0.0.1:1".to_string(),
+            "--validator-validator-api-address=127.0.0.1:3".to_string(),
+            "--mev-endpoints=http://127.0.0.1:2".to_string(),
+            format!("--infra-disk-io-test-file-dir={}", dir.display()),
+            format!("--peers-enrs={enrs}"),
+            format!("--peers-private-key-file={}", key_file.display()),
+            "--peers-keep-alive=0s".to_string(),
+            "--p2p-relays=".to_string(),
+        ];
+        let args: Vec<&str> = flags
+            .iter()
+            .map(String::as_str)
+            .chain(extra.iter().copied())
+            .collect();
+        match parse_test(&args) {
+            TestCommands::All(args) => *args,
+            _ => panic!("not the all command"),
+        }
+    }
+
+    fn read_output_json(dir: &std::path::Path) -> super::super::AllCategoriesResult {
+        serde_json::from_slice(&std::fs::read(dir.join("out.json")).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_prints_and_writes_every_category_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = run_args(dir.path(), &[]);
+        args.validate().unwrap();
+
+        let mut output = Vec::new();
+        run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap();
+
+        // Each category's target, in the order Charon runs them.
+        let output = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = output.lines().map(str::trim).collect();
+        let positions: Vec<usize> = [
+            "http://127.0.0.1:1",
+            "127.0.0.1:3",
+            "http://127.0.0.1:2",
+            "local",
+            "self",
+        ]
+        .iter()
+        .map(|target| {
+            lines
+                .iter()
+                .position(|l| l == target)
+                .unwrap_or_else(|| panic!("{target} missing:\n{output}"))
+        })
+        .collect();
+        assert!(positions.is_sorted(), "{positions:?}:\n{output}");
+
+        let file = read_output_json(dir.path());
+        let mev = file.mev.expect("mev results");
+        assert!(file.beacon.is_some());
+        assert!(file.validator.is_some());
+        assert!(file.infra.is_some());
+        assert!(file.peers.is_some());
+
+        // Beacon's timeout must not cancel the categories that run after it.
+        let mev_ping = &mev.targets["http://127.0.0.1:2"][0];
+        assert_ne!(
+            mev_ping.error.message(),
+            Some(CliError::TimeoutInterrupted.to_string().as_str()),
+            "{mev_ping:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_quiet_only_writes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = run_args(dir.path(), &["--quiet"]);
+        args.validate().unwrap();
+
+        let mut output = Vec::new();
+        run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(output.is_empty(), "{}", String::from_utf8_lossy(&output));
+        let file = read_output_json(dir.path());
+        assert!(
+            file.beacon.is_some()
+                && file.validator.is_some()
+                && file.mev.is_some()
+                && file.infra.is_some()
+                && file.peers.is_some(),
+            "{file:?}"
+        );
+    }
+
     #[test]
     fn all_lists_every_category() {
         let all = list_test_cases(TestCategory::All);
