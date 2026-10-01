@@ -274,8 +274,10 @@ pub struct TestAllInfraArgs {
 }
 
 impl TestAllArgs {
-    /// Rejects `--test-cases`, which cannot select tests across categories.
+    /// Checks the shared test config, then rejects `--test-cases`, which
+    /// cannot select tests across categories.
     pub(crate) fn validate(&self) -> Result<()> {
+        self.test_config.validate()?;
         if self.test_config.test_cases.is_some() {
             return Err(CliError::Other(
                 "test-cases cannot be specified when explicitly running all test cases."
@@ -385,32 +387,79 @@ pub async fn run(args: TestAllArgs, writer: &mut dyn Write, ct: CancellationToke
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{AlphaCommands, Cli, Commands, TestCommands};
+    use crate::{
+        cli::{AlphaCommands, Cli, Commands, TestCommands},
+        commands::test::{TestCategory, list_test_cases},
+    };
     use clap::FromArgMatches as _;
 
-    fn parse(extra: &[&str]) -> TestAllArgs {
-        let args = [
-            "pluto",
-            "alpha",
-            "test",
-            "all",
-            "--beacon-endpoints=http://beacon",
-            "--mev-endpoints=http://mev",
-        ]
-        .into_iter()
-        .chain(extra.iter().copied());
+    /// Parses `pluto alpha test <args>`.
+    fn parse_test(args: &[&str]) -> TestCommands {
+        let args = ["pluto", "alpha", "test"]
+            .into_iter()
+            .chain(args.iter().copied());
         let matches = crate::cli::build_command()
             .try_get_matches_from(args)
             .unwrap();
         match Cli::from_arg_matches(&matches).unwrap().command {
             Commands::Alpha(alpha) => match alpha.command {
-                AlphaCommands::Test(test) => match test.command {
-                    TestCommands::All(args) => *args,
-                    _ => panic!("not the all command"),
-                },
+                AlphaCommands::Test(test) => test.command,
             },
             _ => panic!("not the alpha command"),
         }
+    }
+
+    fn parse(extra: &[&str]) -> TestAllArgs {
+        let args = [
+            "all",
+            "--beacon-endpoints=http://beacon",
+            "--mev-endpoints=http://mev",
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .collect::<Vec<_>>();
+        match parse_test(&args) {
+            TestCommands::All(args) => *args,
+            _ => panic!("not the all command"),
+        }
+    }
+
+    #[test]
+    fn defaults_match_the_standalone_commands() {
+        let all = parse(&[]);
+        let standalone = parse_test;
+
+        let TestCommands::Peers(mut peers) = standalone(&["peers"]) else {
+            unreachable!()
+        };
+        let TestCommands::Beacon(mut beacon) = standalone(&["beacon", "--endpoints=http://beacon"])
+        else {
+            unreachable!()
+        };
+        let TestCommands::Validator(mut validator) = standalone(&["validator"]) else {
+            unreachable!()
+        };
+        let TestCommands::Mev(mut mev) = standalone(&["mev", "--endpoints=http://mev"]) else {
+            unreachable!()
+        };
+        let TestCommands::Infra(mut infra) = standalone(&["infra"]) else {
+            unreachable!()
+        };
+
+        peers.test_config.quiet = true;
+        beacon.test_config.quiet = true;
+        validator.test_config.quiet = true;
+        mev.test_config.quiet = true;
+        infra.test_config.quiet = true;
+
+        assert_eq!(format!("{:?}", all.peers_args()), format!("{peers:?}"));
+        assert_eq!(format!("{:?}", all.beacon_args()), format!("{beacon:?}"));
+        assert_eq!(
+            format!("{:?}", all.validator_args()),
+            format!("{validator:?}")
+        );
+        assert_eq!(format!("{:?}", all.mev_args()), format!("{mev:?}"));
+        assert_eq!(format!("{:?}", all.infra_args()), format!("{infra:?}"));
     }
 
     #[test]
@@ -473,11 +522,22 @@ mod tests {
     }
 
     #[test]
+    fn mev_flag_combinations_are_only_checked_standalone() {
+        // Charon applies this check in the standalone `mev` command's
+        // `PreRunE` only.
+        assert!(parse(&["--mev-load-test"]).validate().is_ok());
+        assert!(
+            parse_test(&["mev", "--endpoints=http://mev", "--load-test"])
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn quiet_requires_output_json() {
-        assert!(parse(&["--quiet"]).test_config.validate().is_err());
+        assert!(parse(&["--quiet"]).validate().is_err());
         assert!(
             parse(&["--quiet", "--output-json=out.json"])
-                .test_config
                 .validate()
                 .is_ok()
         );
@@ -485,7 +545,7 @@ mod tests {
 
     #[test]
     fn all_lists_every_category() {
-        let all = super::super::list_test_cases(super::super::TestCategory::All);
+        let all = list_test_cases(TestCategory::All);
         for name in [
             "DirectConn",
             "Libp2pTCPPortOpen",
@@ -495,11 +555,11 @@ mod tests {
             assert!(all.iter().any(|n| n == name), "{name} missing: {all:?}");
         }
         for category in [
-            super::super::TestCategory::Beacon,
-            super::super::TestCategory::Validator,
-            super::super::TestCategory::Infra,
+            TestCategory::Beacon,
+            TestCategory::Validator,
+            TestCategory::Infra,
         ] {
-            let cases = super::super::list_test_cases(category);
+            let cases = list_test_cases(category);
             assert!(!cases.is_empty());
             assert!(cases.iter().all(|c| all.contains(c)));
         }

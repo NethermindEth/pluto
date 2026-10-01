@@ -109,20 +109,28 @@ impl TestCaseMev {
     }
 }
 
+impl TestMevArgs {
+    /// Requires `--beacon-node-endpoint` exactly when `--load-test` is set.
+    ///
+    /// Only the standalone `mev` command checks this, like Charon's `PreRunE`;
+    /// `alpha test all` does not.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.load_test && self.beacon_node_endpoint.is_none() {
+            return Err(MevTestError::BeaconNodeEndpointRequired.into());
+        }
+        if !self.load_test && self.beacon_node_endpoint.is_some() {
+            return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
+        }
+        Ok(())
+    }
+}
+
 /// Runs the MEV relay tests.
 pub async fn run(
     args: TestMevArgs,
     writer: &mut dyn Write,
     token: CancellationToken,
 ) -> Result<TestCategoryResult> {
-    // Validate flag combinations.
-    if args.load_test && args.beacon_node_endpoint.is_none() {
-        return Err(MevTestError::BeaconNodeEndpointRequired.into());
-    }
-    if !args.load_test && args.beacon_node_endpoint.is_some() {
-        return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
-    }
-
     info!("Starting MEV relays test");
 
     let queued_tests = {

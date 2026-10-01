@@ -730,7 +730,7 @@ async fn peer_ping_test(probe: &PeerProbeHandle, peer: &Peer) -> TestResult {
                 Ok(_) => return Ok(()),
                 Err(e) if e.is_relay_error() => return Err(e),
                 Err(e) => {
-                    tracing::warn!(peer_name = %peer.name, err = %e, "Ping to peer failed, retrying in 3 sec...");
+                    tracing::warn!(peer_name = %peer.name, err = %e, retry_in = ?PING_RETRY_INTERVAL, "Ping to peer failed, retrying");
                     last_err = Some(e);
                     tokio::time::sleep(PING_RETRY_INTERVAL).await;
                 }
@@ -759,6 +759,11 @@ async fn peer_ping_measure_test(probe: &PeerProbeHandle, peer: &Peer) -> TestRes
 
 /// Starts one more continuous pinger every second for `load_duration` and
 /// grades the highest RTT observed.
+///
+/// Every ping opens its own stream, as in Charon. A rust-libp2p remote (such as
+/// a Pluto node) answers one inbound ping stream at a time and drops the
+/// previous one, so against it most concurrent pings fail and are recorded as
+/// zero RTTs.
 async fn peer_ping_load_test(
     probe: &PeerProbeHandle,
     peer: &Peer,
@@ -787,31 +792,32 @@ async fn peer_ping_load_test(
             }
         }
     }
-    let rtts: Vec<Duration> = pingers.join_all().await.into_iter().flatten().collect();
+    let mut rtts = Vec::new();
+    while let Some(res) = pingers.join_next().await {
+        match res {
+            Ok(batch) => rtts.extend(batch),
+            Err(e) => tracing::warn!(err = %e, "Ping load task failed"),
+        }
+    }
 
     tracing::info!(target = %target_name, "Ping load tests finished");
 
-    if rtts.is_empty() {
-        return result.fail(TestResultError::from_string(
-            "no successful pings during load test",
-        ));
-    }
     evaluate_highest_rtt(rtts, result, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR)
 }
 
 /// Pings `peer` back to back, with a random pause of up to 100ms between
-/// pings, until `deadline` or the first failed ping.
+/// pings, until `deadline`.
 ///
-/// Failed pings are not recorded: Charon records them with a zero RTT, which
-/// grades a dead peer as "Good".
+/// A failed ping is recorded as a zero RTT, as in Charon: if every ping fails,
+/// the highest RTT is zero, which grades "Poor".
 async fn ping_continuously(
     probe: PeerProbeHandle,
     peer: PeerId,
     deadline: tokio::time::Instant,
 ) -> Vec<Duration> {
     let mut rtts = Vec::new();
-    while let Ok(Ok(rtt)) = tokio::time::timeout_at(deadline, probe.ping(peer)).await {
-        rtts.push(rtt);
+    while let Ok(res) = tokio::time::timeout_at(deadline, probe.ping(peer)).await {
+        rtts.push(res.unwrap_or_default());
         let pause = Duration::from_millis(rand::thread_rng().gen_range(0..PING_LOAD_MAX_PAUSE_MS));
         if tokio::time::timeout_at(deadline, tokio::time::sleep(pause))
             .await
@@ -825,6 +831,9 @@ async fn ping_continuously(
 
 /// Retries a direct dial every second for up to `timeout`, then checks that
 /// both the relay and the direct connection are open.
+///
+/// As in Charon, a timeout under a second makes no dial attempt and only
+/// checks the connections.
 async fn peer_direct_conn_test(
     probe: &PeerProbeHandle,
     peer: &Peer,
@@ -836,23 +845,26 @@ async fn peer_direct_conn_test(
 
     let now = tokio::time::Instant::now();
     let deadline = now.checked_add(timeout).unwrap_or(now);
-    loop {
-        let err = match tokio::time::timeout_at(deadline, probe.dial_direct(peer.id)).await {
-            Ok(Ok(())) => break,
-            Ok(Err(e)) => TestResultError::from(e),
-            Err(_) => {
-                TestResultError::from_string("direct connection not established within timeout")
+    if timeout >= DIRECT_CONN_RETRY_INTERVAL {
+        loop {
+            let err = match tokio::time::timeout_at(deadline, probe.dial_direct(peer.id)).await {
+                Ok(Ok(())) => {
+                    tracing::info!(target = %target_name, "Direct connection established");
+                    break;
+                }
+                Ok(Err(e)) => TestResultError::from(e),
+                Err(_) => {
+                    TestResultError::from_string("direct connection not established within timeout")
+                }
+            };
+            if tokio::time::timeout_at(deadline, tokio::time::sleep(DIRECT_CONN_RETRY_INTERVAL))
+                .await
+                .is_err()
+            {
+                return result.fail(err);
             }
-        };
-        if tokio::time::timeout_at(deadline, tokio::time::sleep(DIRECT_CONN_RETRY_INTERVAL))
-            .await
-            .is_err()
-        {
-            return result.fail(err);
         }
     }
-
-    tracing::info!(target = %target_name, "Direct connection established");
 
     let connections = probe.connection_count(&peer.id);
     if connections < 2 {
@@ -1295,6 +1307,9 @@ mod tests {
     }
 
     /// Returns a localhost TCP address that was free a moment ago.
+    ///
+    /// Only for `run()`, which takes a fixed `--p2p-tcp-address`; nodes
+    /// started by [`start_node`] bind port 0 instead.
     fn free_tcp_addr() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().to_string()
@@ -1308,32 +1323,52 @@ mod tests {
             .with(Protocol::P2p(peer))
     }
 
+    /// Which peer a [`start_node`] node dials, and how many connections to it
+    /// the node keeps open.
+    struct Dial {
+        addr: Multiaddr,
+        peer: PeerId,
+        conns: usize,
+    }
+
     fn enr(key: &SecretKey) -> String {
         Record::from_key(key).unwrap().to_string()
     }
 
-    /// Starts a test node listening on `tcp_addr`. While `dial` is set, the
-    /// node keeps dialing it until it holds two connections to its peer, so
-    /// the remote sees a relay-free "relay and direct" pair.
+    /// Starts a test node listening on a free localhost port and returns its
+    /// probe and listen address. While `dial` is set, the node keeps dialing
+    /// its peer until it holds `conns` connections; two connections give the
+    /// remote a relay-free "relay and direct" pair.
     async fn start_node(
         key: SecretKey,
         cluster: &[Peer],
-        tcp_addr: &str,
-        dial: Option<(Multiaddr, PeerId)>,
+        dial: Option<Dial>,
         ct: CancellationToken,
-    ) -> PeerProbeHandle {
+    ) -> (PeerProbeHandle, Multiaddr) {
         let self_id = peer::peer_id_from_key(key.public_key()).unwrap();
         let cfg = P2PConfig {
             relays: vec![],
             external_ip: None,
             external_host: None,
-            tcp_addrs: vec![tcp_addr.to_string()],
+            tcp_addrs: vec!["127.0.0.1:0".to_string()],
             udp_addrs: vec![],
             disable_reuse_port: false,
         };
         let (mut node, probe) = setup_p2p(ct.clone(), key, cfg, &[], cluster, self_id, "test")
             .await
             .unwrap();
+
+        let listen_addr = tokio::time::timeout(StdDuration::from_secs(10), async {
+            loop {
+                if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+                    node.select_next_some().await
+                {
+                    return address.with(Protocol::P2p(self_id));
+                }
+            }
+        })
+        .await
+        .expect("node did not listen");
 
         let dialer = probe.clone();
         tokio::spawn(async move {
@@ -1342,10 +1377,10 @@ mod tests {
                 tokio::select! {
                     _ = node.select_next_some() => {}
                     _ = redial.tick() => {
-                        if let Some((addr, target)) = &dial
-                            && dialer.connection_count(target) < 2
+                        if let Some(dial) = &dial
+                            && dialer.connection_count(&dial.peer) < dial.conns
                         {
-                            let _ = node.dial(addr.clone());
+                            let _ = node.dial(dial.addr.clone());
                         }
                     }
                     () = ct.cancelled() => return,
@@ -1353,7 +1388,27 @@ mod tests {
             }
         });
 
-        probe
+        (probe, listen_addr)
+    }
+
+    /// Starts two connected nodes, `b` keeping `conns` connections to `a`.
+    async fn start_pair(
+        conns: usize,
+        ct: &CancellationToken,
+    ) -> (PeerProbeHandle, PeerProbeHandle, Vec<Peer>) {
+        let (key_a, key_b) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
+        let cluster = parse_peers(&[enr(&key_a), enr(&key_b)]).unwrap();
+
+        let (probe_a, addr_a) = start_node(key_a, &cluster, None, ct.clone()).await;
+        let dial = Dial {
+            addr: addr_a,
+            peer: cluster[0].id,
+            conns,
+        };
+        let (probe_b, _) = start_node(key_b, &cluster, Some(dial), ct.clone()).await;
+        wait_for_connections(&probe_a, &cluster[1].id, conns).await;
+
+        (probe_a, probe_b, cluster)
     }
 
     async fn wait_for_connections(probe: &PeerProbeHandle, peer: &PeerId, want: usize) {
@@ -1386,23 +1441,10 @@ mod tests {
 
     #[tokio::test]
     async fn probes_measure_a_connected_peer() {
-        let (key_a, key_b) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
-        let cluster = parse_peers(&[enr(&key_a), enr(&key_b)]).unwrap();
-        let (addr_a, addr_b) = (free_tcp_addr(), free_tcp_addr());
         let ct = CancellationToken::new();
         let _stop = ct.clone().drop_guard();
-
-        let probe_a = start_node(key_a, &cluster, &addr_a, None, ct.clone()).await;
-        let _probe_b = start_node(
-            key_b,
-            &cluster,
-            &addr_b,
-            Some((tcp_multiaddr(&addr_a, cluster[0].id), cluster[0].id)),
-            ct.clone(),
-        )
-        .await;
+        let (probe_a, _probe_b, cluster) = start_pair(2, &ct).await;
         let peer_b = &cluster[1];
-        wait_for_connections(&probe_a, &peer_b.id, 2).await;
 
         let rtt = probe_a.ping(peer_b.id).await.unwrap();
         assert!(!rtt.is_zero());
@@ -1416,24 +1458,107 @@ mod tests {
         assert_eq!(measure.verdict, TestVerdict::Good, "{measure:?}");
         assert!(!measure.measurement.is_empty());
 
-        let load = peer_ping_load_test(&probe_a, peer_b, "peer b", StdDuration::from_secs(2)).await;
+        // Long enough for several pingers to run concurrently.
+        let load = peer_ping_load_test(&probe_a, peer_b, "peer b", StdDuration::from_secs(4)).await;
         assert_eq!(load.verdict, TestVerdict::Good, "{load:?}");
 
         let direct =
             peer_direct_conn_test(&probe_a, peer_b, "peer b", StdDuration::from_secs(2)).await;
         assert_eq!(direct.verdict, TestVerdict::Ok, "{direct:?}");
+
+        // Below a second Charon makes no dial attempt and only checks the
+        // connections, which are already there.
+        let direct = peer_direct_conn_test(&probe_a, peer_b, "peer b", StdDuration::ZERO).await;
+        assert_eq!(direct.verdict, TestVerdict::Ok, "{direct:?}");
+    }
+
+    #[tokio::test]
+    async fn direct_conn_requires_two_connections() {
+        let ct = CancellationToken::new();
+        let _stop = ct.clone().drop_guard();
+        let (probe_a, _probe_b, cluster) = start_pair(1, &ct).await;
+
+        // The single connection is direct, so the dial succeeds at once, but
+        // there is no second connection.
+        let direct =
+            peer_direct_conn_test(&probe_a, &cluster[1], "peer b", StdDuration::from_secs(2)).await;
+        assert_eq!(direct.verdict, TestVerdict::Fail);
+        assert_eq!(
+            direct.error.message(),
+            Some("expected 2 connections to peer (relay and direct): connections=1")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ping_load_keeps_pinging_after_failures() {
+        let (key_a, key_dead) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
+        let cluster = parse_peers(&[enr(&key_a), enr(&key_dead)]).unwrap();
+        let ct = CancellationToken::new();
+        let _stop = ct.clone().drop_guard();
+        let (probe_a, _) = start_node(key_a, &cluster, None, ct.clone()).await;
+
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(1);
+        let rtts = ping_continuously(probe_a.clone(), cluster[1].id, deadline).await;
+        assert!(rtts.len() > 1, "{rtts:?}");
+        assert!(rtts.iter().all(Duration::is_zero), "{rtts:?}");
+
+        // Every ping failed, so the highest RTT is zero, which grades "Poor".
+        let load =
+            peer_ping_load_test(&probe_a, &cluster[1], "dead", StdDuration::from_secs(3)).await;
+        assert_eq!(load.verdict, TestVerdict::Poor, "{load:?}");
+        assert_eq!(load.measurement, "0s");
+    }
+
+    #[tokio::test]
+    async fn timeout_interrupts_the_running_peer_test() {
+        let (key_a, key_dead) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
+        let cluster = parse_peers(&[enr(&key_a), enr(&key_dead)]).unwrap();
+        let ct = CancellationToken::new();
+        let _stop = ct.clone().drop_guard();
+        let (probe_a, _) = start_node(key_a, &cluster, None, ct.clone()).await;
+
+        let timeout_ct = CancellationToken::new();
+        tokio::spawn({
+            let timeout_ct = timeout_ct.clone();
+            async move {
+                tokio::time::sleep(StdDuration::from_millis(200)).await;
+                timeout_ct.cancel();
+            }
+        });
+
+        let queued = [
+            TestCaseName::new("Ping", 1),
+            TestCaseName::new("PingMeasure", 2),
+        ];
+        let results = run_single_peer_tests(
+            &probe_a,
+            &cluster[1],
+            "dead",
+            &queued,
+            &no_source_peers_args(),
+            &timeout_ct,
+        )
+        .await;
+
+        // Ping retries until interrupted; PingMeasure never starts.
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].name, "Ping");
+        assert_eq!(results[0].verdict, TestVerdict::Fail);
+        assert_eq!(
+            results[0].error.message(),
+            Some(CliError::TimeoutInterrupted.to_string().as_str())
+        );
     }
 
     #[tokio::test]
     async fn direct_conn_fails_without_direct_addresses() {
         let (key_a, key_b) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
         let cluster = parse_peers(&[enr(&key_a), enr(&key_b)]).unwrap();
-        let (addr_a, addr_b) = (free_tcp_addr(), free_tcp_addr());
         let ct = CancellationToken::new();
         let _stop = ct.clone().drop_guard();
 
-        let probe_a = start_node(key_a, &cluster, &addr_a, None, ct.clone()).await;
-        let _probe_b = start_node(key_b, &cluster, &addr_b, None, ct.clone()).await;
+        let (probe_a, _) = start_node(key_a, &cluster, None, ct.clone()).await;
+        let _node_b = start_node(key_b, &cluster, None, ct.clone()).await;
         let peer_b = &cluster[1];
 
         // Neither node dials, so identify never reports `b`'s addresses.
@@ -1458,7 +1583,7 @@ mod tests {
         let cluster = parse_peers(&[enr(&key_a), enr(&key_dead)]).unwrap();
         let ct = CancellationToken::new();
         let _stop = ct.clone().drop_guard();
-        let probe_a = start_node(key_a, &cluster, &free_tcp_addr(), None, ct.clone()).await;
+        let (probe_a, _) = start_node(key_a, &cluster, None, ct.clone()).await;
 
         let started = tokio::time::Instant::now();
         let ping = peer_ping_test(&probe_a, &cluster[1]).await;
@@ -1478,7 +1603,7 @@ mod tests {
         let (key_a, key_b) = (SecretKey::random(&mut OsRng), SecretKey::random(&mut OsRng));
         let enrs = vec![enr(&key_a), enr(&key_b)];
         let cluster = parse_peers(&enrs).unwrap();
-        let (addr_a, addr_b) = (free_tcp_addr(), free_tcp_addr());
+        let addr_a = free_tcp_addr();
         let ct = CancellationToken::new();
         let _stop = ct.clone().drop_guard();
 
@@ -1486,14 +1611,12 @@ mod tests {
         let key_path = key_file.path().join("key");
         pluto_k1util::save(&key_a, &key_path).unwrap();
 
-        let _probe_b = start_node(
-            key_b,
-            &cluster,
-            &addr_b,
-            Some((tcp_multiaddr(&addr_a, cluster[0].id), cluster[0].id)),
-            ct.clone(),
-        )
-        .await;
+        let dial = Dial {
+            addr: tcp_multiaddr(&addr_a, cluster[0].id),
+            peer: cluster[0].id,
+            conns: 2,
+        };
+        let _node_b = start_node(key_b, &cluster, Some(dial), ct.clone()).await;
 
         let args = peers_args(enrs, key_path, addr_a);
         let mut output = Vec::new();
@@ -1543,9 +1666,15 @@ mod tests {
         assert!(started.elapsed() < StdDuration::from_secs(15));
 
         let peer = results_for(&res, &format!("peer {dead_name}"));
-        assert_eq!(peer.len(), 3);
-        assert!(
-            peer.iter().all(|r| r.verdict == TestVerdict::Fail),
+        let verdicts: Vec<_> = peer.iter().map(|r| (r.name.as_str(), r.verdict)).collect();
+        assert_eq!(
+            verdicts,
+            [
+                ("PingMeasure", TestVerdict::Fail),
+                // Failed pings count as zero RTTs, as in Charon.
+                ("PingLoad", TestVerdict::Poor),
+                ("DirectConn", TestVerdict::Fail),
+            ],
             "{peer:?}"
         );
     }

@@ -26,8 +26,8 @@ use libp2p::{
     ping,
     swarm::{
         ConnectionDenied, ConnectionHandler, ConnectionHandlerEvent, ConnectionId, FromSwarm,
-        NetworkBehaviour, NotifyHandler, Stream, SubstreamProtocol, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm,
+        NetworkBehaviour, NotifyHandler, Stream, StreamUpgradeError, SubstreamProtocol, THandler,
+        THandlerInEvent, THandlerOutEvent, ToSwarm,
         dial_opts::{DialOpts, PeerCondition},
         handler::{ConnectionEvent, DialUpgradeError, FullyNegotiatedOutbound},
     },
@@ -39,7 +39,7 @@ use tokio::{
 };
 
 /// Upper bound for a single ping: stream negotiation plus the echo.
-pub(super) const PING_TIMEOUT: Duration = pluto_p2p::config::DEFAULT_PING_TIMEOUT;
+const PING_TIMEOUT: Duration = pluto_p2p::config::DEFAULT_PING_TIMEOUT;
 
 /// Size of a libp2p ping payload.
 const PING_SIZE: usize = 32;
@@ -57,7 +57,7 @@ pub(super) enum ProbeError {
 
     /// The ping stream could not be negotiated.
     #[error("open ping stream: {0}")]
-    OpenStream(String),
+    OpenStream(#[source] StreamUpgradeError<Infallible>),
 
     /// The connection closed before the ping stream was opened.
     #[error("connection closed before the ping stream opened")]
@@ -87,6 +87,9 @@ pub(super) enum ProbeError {
 impl ProbeError {
     /// Reports whether the error is a stream reset, which Charon
     /// (`p2p.IsRelayError`) treats as a relay failure not worth retrying.
+    ///
+    /// Only QUIC reports a reset as such: a reset yamux stream (TCP and relay
+    /// circuits) reads like a clean EOF, so those resets are retried.
     pub(super) fn is_relay_error(&self) -> bool {
         matches!(self, Self::Io(e) if e.kind() == std::io::ErrorKind::ConnectionReset)
     }
@@ -363,9 +366,28 @@ impl ConnectionHandler for Handler {
                 let _ = reply.send(Ok(stream));
             }
             ConnectionEvent::DialUpgradeError(DialUpgradeError { info: reply, error }) => {
-                let _ = reply.send(Err(ProbeError::OpenStream(error.to_string())));
+                let _ = reply.send(Err(ProbeError::OpenStream(error)));
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn only_connection_resets_are_relay_errors() {
+        let io_err = |kind| ProbeError::Io(io::Error::from(kind));
+
+        assert!(io_err(io::ErrorKind::ConnectionReset).is_relay_error());
+        // What a reset yamux stream reports on read and write.
+        assert!(!io_err(io::ErrorKind::UnexpectedEof).is_relay_error());
+        assert!(!io_err(io::ErrorKind::WriteZero).is_relay_error());
+        assert!(!ProbeError::NotConnected.is_relay_error());
+        assert!(!ProbeError::Timeout.is_relay_error());
     }
 }
