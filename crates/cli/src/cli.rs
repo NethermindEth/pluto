@@ -167,6 +167,24 @@ pub enum TestCommands {
     All(Box<TestAllArgs>),
 }
 
+impl TestCommands {
+    /// Checks flag combinations before the command runs, like Charon's
+    /// `PreRunE`.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        match self {
+            Self::Peers(args) => args.test_config.validate(),
+            Self::Beacon(args) => args.test_config.validate(),
+            Self::Validator(args) => args.test_config.validate(),
+            Self::Mev(args) => {
+                args.test_config.validate()?;
+                args.validate()
+            }
+            Self::Infra(args) => args.test_config.validate(),
+            Self::All(args) => args.validate(),
+        }
+    }
+}
+
 /// Arguments for the create command
 #[derive(clap::Args)]
 pub struct CreateArgs {

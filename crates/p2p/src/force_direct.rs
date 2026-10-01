@@ -151,12 +151,7 @@ impl ForceDirectBehaviour {
                 continue;
             };
 
-            // Find non-relay addresses
-            let direct_addresses: Vec<Multiaddr> = addresses
-                .iter()
-                .filter(|addr| utils::is_direct_addr(addr))
-                .cloned()
-                .collect();
+            let direct_addresses = direct_addrs(&addresses);
 
             if direct_addresses.is_empty() {
                 warn!(
@@ -216,6 +211,24 @@ impl ForceDirectBehaviour {
             ));
         }
     }
+}
+
+/// Returns the direct (non-relay) addresses known for `peer` in the peer
+/// store, i.e. the candidates for a force-direct dial.
+pub fn direct_peer_addrs(p2p_context: &P2PContext, peer: &PeerId) -> Vec<Multiaddr> {
+    p2p_context
+        .peer_store_lock()
+        .peer_addresses(peer)
+        .map(|addrs| direct_addrs(addrs.as_slice()))
+        .unwrap_or_default()
+}
+
+fn direct_addrs(addrs: &[Multiaddr]) -> Vec<Multiaddr> {
+    addrs
+        .iter()
+        .filter(|addr| utils::is_direct_addr(addr))
+        .cloned()
+        .collect()
 }
 
 impl NetworkBehaviour for ForceDirectBehaviour {
