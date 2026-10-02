@@ -803,14 +803,14 @@ async fn write_keys_to_keymanager(
             .await
             .inspect_err(|_| {
                 tracing::error!(
-                    addr = %args.keymanager_addrs[i_usize],
+                    addr = %pluto_tracing::redact_url_userinfo(&args.keymanager_addrs[i_usize]),
                     "Failed to import keys",
                 );
             })?;
 
         info!(
             node = format!("node{}", i),
-            addr = %args.keymanager_addrs[i_usize],
+            addr = %pluto_tracing::redact_url_userinfo(&args.keymanager_addrs[i_usize]),
             "Imported key shares to keymanager",
         );
     }

@@ -133,6 +133,9 @@ pub(super) struct AppState {
     /// non-DV request here. A `userinfo` component (`user:pass@host`) is
     /// applied as HTTP basic auth on the proxied request.
     pub upstream_base_url: reqwest::Url,
+    /// Extra headers (`--beacon-node-headers`) set on every proxied request,
+    /// replacing any client-supplied header of the same name.
+    pub upstream_headers: HeaderMap,
     /// HTTP client used by the reverse-proxy fallback.
     pub proxy_client: reqwest::Client,
 }
@@ -145,16 +148,19 @@ pub(super) struct AppState {
 /// `builder_enabled` is consumed by `propose_block_v3` to maximise the
 /// builder boost factor. `upstream_base_url` is the beacon-node address the
 /// fallback proxies to; a `user:pass@host` component is applied as HTTP basic
-/// auth on each proxied request.
+/// auth on each proxied request. `upstream_headers` are set on each proxied
+/// request too.
 pub fn new_router(
     handler: Arc<dyn Handler>,
     builder_enabled: bool,
     upstream_base_url: reqwest::Url,
+    upstream_headers: HeaderMap,
 ) -> Router {
     let state = Arc::new(AppState {
         handler,
         builder_enabled,
         upstream_base_url,
+        upstream_headers,
         proxy_client: reqwest::Client::new(),
     });
 
@@ -1053,8 +1059,9 @@ async fn respond_404() -> impl IntoResponse {
 /// Reverse-proxy fallback: forwards every request not handled by a registered
 /// distributed-validator route to the upstream beacon node.
 ///
-/// Basic-auth credentials in the upstream URL's `userinfo` are applied to the
-/// proxied request and the `Host` header is rewritten to the upstream host.
+/// Basic-auth credentials in the upstream URL's `userinfo` and the configured
+/// upstream headers are applied to the proxied request, and the `Host` header
+/// is rewritten to the upstream host.
 /// The upstream response body is streamed straight through (not buffered), so
 /// long-lived endpoints such as the SSE `/eth/v1/events` stream proxy
 /// incrementally. The proxied request inherits the axum request's own
@@ -1115,18 +1122,21 @@ async fn proxy_handler(
 
     // Forward request headers, skipping the Host (rewritten below),
     // Content-Length (reqwest sets it from the body), the hop-by-hop headers a
-    // proxy must not relay, and — when we apply our own basic auth — the
-    // client Authorization header.
+    // proxy must not relay, headers overridden by the configured upstream
+    // headers, and — when we apply our own basic auth — the client
+    // Authorization header.
     for (name, value) in &headers {
         if name == header::HOST
             || name == header::CONTENT_LENGTH
             || is_hop_by_hop_header(name)
+            || state.upstream_headers.contains_key(name)
             || (has_upstream_auth && name == header::AUTHORIZATION)
         {
             continue;
         }
         request = request.header(name.as_str(), value.as_bytes());
     }
+    request = request.headers(state.upstream_headers.clone());
     if let Some(host) = target.host_str() {
         let host_header = match target.port() {
             Some(port) => format!("{host}:{port}"),
@@ -1669,6 +1679,7 @@ mod tests {
             handler,
             builder_enabled: false,
             upstream_base_url: test_upstream_url(),
+            upstream_headers: HeaderMap::new(),
             proxy_client: reqwest::Client::new(),
         })
     }
@@ -1676,7 +1687,12 @@ mod tests {
     /// Builds a router for oneshot tests with the proxy disabled (placeholder
     /// upstream) and the given builder mode.
     fn test_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
-        new_router(handler, builder_enabled, test_upstream_url())
+        new_router(
+            handler,
+            builder_enabled,
+            test_upstream_url(),
+            HeaderMap::new(),
+        )
     }
 
     #[tokio::test]
@@ -2632,7 +2648,12 @@ mod tests {
         upstream.set_username("user").unwrap();
         upstream.set_password(Some("pass")).unwrap();
 
-        let app = new_router(Arc::new(TestHandler::default()), false, upstream);
+        let app = new_router(
+            Arc::new(TestHandler::default()),
+            false,
+            upstream,
+            HeaderMap::new(),
+        );
         let req = Request::builder()
             .uri("/eth/v1/some/passthrough?foo=bar")
             .body(Body::empty())
@@ -2641,6 +2662,49 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         assert_eq!(&bytes[..], b"upstream-ok");
+    }
+
+    /// The proxy sets the configured upstream headers on the proxied request,
+    /// replacing a client-supplied header of the same name, and still relays
+    /// unrelated client headers.
+    #[tokio::test]
+    async fn proxy_applies_upstream_headers() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/node/syncing"))
+            .and(header("x-api-key", "bn-secret"))
+            .and(header("x-client", "vc"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("headers-ok"))
+            .mount(&server)
+            .await;
+
+        let mut upstream_headers = HeaderMap::new();
+        upstream_headers.insert("x-api-key", HeaderValue::from_static("bn-secret"));
+        let app = new_router(
+            Arc::new(TestHandler::default()),
+            false,
+            server.uri().parse().unwrap(),
+            upstream_headers,
+        );
+        let req = Request::builder()
+            .uri("/eth/v1/node/syncing")
+            .header("x-api-key", "vc-value")
+            .header("x-client", "vc")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(&bytes[..], b"headers-ok");
+
+        let received = server.received_requests().await.unwrap();
+        let values: Vec<_> = received[0].headers.get_all("x-api-key").iter().collect();
+        assert_eq!(values, ["bn-secret"]);
     }
 
     /// The proxy propagates a non-2xx upstream status to the client.
@@ -2659,7 +2723,12 @@ mod tests {
             .await;
 
         let upstream: reqwest::Url = server.uri().parse().unwrap();
-        let app = new_router(Arc::new(TestHandler::default()), false, upstream);
+        let app = new_router(
+            Arc::new(TestHandler::default()),
+            false,
+            upstream,
+            HeaderMap::new(),
+        );
         let req = Request::builder()
             .uri("/eth/v1/missing")
             .body(Body::empty())
@@ -2689,7 +2758,12 @@ mod tests {
 
         let mut upstream: reqwest::Url = server.uri().parse().unwrap();
         upstream.set_path("/internal");
-        let app = new_router(Arc::new(TestHandler::default()), false, upstream);
+        let app = new_router(
+            Arc::new(TestHandler::default()),
+            false,
+            upstream,
+            HeaderMap::new(),
+        );
         let req = Request::builder()
             .uri("/eth/v1/events")
             .body(Body::empty())

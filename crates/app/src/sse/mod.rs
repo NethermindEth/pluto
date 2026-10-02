@@ -105,7 +105,8 @@ impl SseListenerBuilder {
             .await
             .ok_or(SseListenerError::Terminated)??;
 
-        let addr = client.base_url().to_string();
+        // Used in log fields and as a metric label, so drop any `user:pass@`.
+        let addr = pluto_tracing::redact_url_userinfo(client.base_url().as_str());
 
         let actor = SseListenerActor {
             addr: addr.clone(),

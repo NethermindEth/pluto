@@ -66,6 +66,7 @@ async fn simnet_single_node_boots_and_serves_validator_api() {
         priv_key_file,
         priv_key_locking: false,
         beacon_node_addrs: Vec::new(),
+        beacon_node_headers: Default::default(),
         beacon_node_timeout: Duration::from_secs(10),
         beacon_node_submit_timeout: Duration::from_secs(10),
         validator_api_addr,

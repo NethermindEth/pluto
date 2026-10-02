@@ -388,7 +388,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             .cloned()
             .unwrap_or_default(),
     };
-    let eth2_cl = build_api_client(&beacon_node_addr, config.beacon_node_timeout)?;
+    let eth2_cl = build_api_client(
+        &beacon_node_addr,
+        &config.beacon_node_headers,
+        config.beacon_node_timeout,
+    )?;
 
     // Fail fast if the beacon node is on a different network than the cluster
     // lock (Charon's `configureEth2Client`, app.go:1022-1053). Both eth2
@@ -403,7 +407,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     }
 
     // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_client = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_client = build_api_client(
+        &beacon_node_addr,
+        &config.beacon_node_headers,
+        config.beacon_node_submit_timeout,
+    )?;
 
     // ---- Beacon-derived duty-workflow inputs ----
 
@@ -554,6 +562,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             consensus: consensus_controller.current_consensus(),
             builder_enabled: config.builder_api,
             upstream_url,
+            upstream_headers: config.beacon_node_headers.header_map().clone(),
             parsigex: parsigex_seam,
             sigagg_verifier,
             deadline_calc,
@@ -1079,12 +1088,15 @@ fn resolve_feature_set(
 }
 
 /// Builds an [`EthBeaconNodeApiClient`](pluto_eth2api::EthBeaconNodeApiClient)
-/// for `base_url` with the given request timeout.
+/// for `base_url` with the given request timeout. `headers` are sent with
+/// every request, including the SSE `/eth/v1/events` stream.
 fn build_api_client(
     base_url: &str,
+    headers: &pluto_eth2util::helpers::HttpHeaders,
     timeout: std::time::Duration,
 ) -> Result<pluto_eth2api::EthBeaconNodeApiClient, AppError> {
     let http = reqwest::Client::builder()
+        .default_headers(headers.header_map().clone())
         .timeout(timeout)
         .build()
         .map_err(|e| pluto_eth2api::EthBeaconNodeApiClientError::Transport(e.into()))?;
@@ -1243,7 +1255,11 @@ async fn build_simnet_validator_mock(
         validator_api_addr
     };
     let vapi_url = format!("http://{vapi_dial}");
-    let vapi_client = build_api_client(&vapi_url, SIMNET_VMOCK_TIMEOUT)?;
+    let vapi_client = build_api_client(
+        &vapi_url,
+        &pluto_eth2util::helpers::HttpHeaders::default(),
+        SIMNET_VMOCK_TIMEOUT,
+    )?;
 
     Ok(Arc::new(
         ValidatorMock::builder()
@@ -1259,6 +1275,36 @@ async fn build_simnet_validator_mock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn build_api_client_sends_beacon_node_headers() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/node/version"))
+            .and(header("authorization", "Bearer bn-token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"{"data":{"version":"mock/v1"}}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let headers = pluto_eth2util::helpers::HttpHeaders::parse(&[
+            "Authorization=Bearer bn-token".to_string(),
+        ])
+        .expect("valid headers");
+        let client = build_api_client(&server.uri(), &headers, Duration::from_secs(5))
+            .expect("client builds");
+        client
+            .get_node_version()
+            .await
+            .expect("headers reach the beacon node");
+    }
 
     #[test]
     fn simnet_slot_duration_normalizes_to_whole_seconds() {
