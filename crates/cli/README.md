@@ -269,7 +269,7 @@ Global: accepted by every command, and parsed identically before or after the su
 
 All log output goes to stderr, leaving each command's stdout free for its own data.
 
-`RUST_LOG` is not consulted; `--log-level` (or its default) decides the console filter, except that `libp2p_*` crates log only errors. Loki always receives pluto's own logs at `debug` and dependencies' logs at `error`.
+`RUST_LOG` is not consulted; `--log-level` (or its default) decides the console filter, except that `libp2p_*` crates log only errors. Loki receives pluto's own logs at `debug` and dependencies' logs at `error`.
 
 - `--log-format <FORMAT>`: **[IGNORED]** Accepted but not yet applied — output is always console-formatted. (default: `console`)
 - `--log-level <LEVEL>`: Log level; `off`, `trace`, `debug`, `info`, `warn` or `error`. Charon accepts only the last four; the two extra levels are what `tracing`'s `EnvFilter` understands. (default: `info`)

@@ -160,7 +160,7 @@ pub struct TracingArgs {
         global = true,
         ignore_case = true,
         display_order = 1006,
-        help = "Libp2p circuit relay log level. Defaults to --log-level."
+        help = "Libp2p circuit relay log level. Defaults to error."
     )]
     pub p2p_relay_log_level: Option<LogLevel>,
 }
