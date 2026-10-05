@@ -88,14 +88,14 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
 
     let registry = Registry::default()
         .with(fmt_layer.with_filter(env_filter))
-        // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events.
-        // A level filter would enable every DEBUG callsite in the process, including libp2p's poll
-        // spans.
+        // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events, and like Charon
+        // counts only Pluto's own events. A level filter would enable every DEBUG callsite in the
+        // process, including libp2p's poll spans.
         .with(MetricsLayer.with_filter(filter::filter_fn(|meta| {
             if meta.is_span() {
                 meta.fields().field("topic").is_some()
             } else {
-                *meta.level() <= tracing::Level::WARN
+                *meta.level() <= tracing::Level::WARN && meta.target().starts_with("pluto")
             }
         })));
 

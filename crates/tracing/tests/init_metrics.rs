@@ -31,8 +31,12 @@ fn default_info_filter_keeps_debug_topic_for_log_metrics() {
     let span = tracing::debug_span!("health", topic = "init_info_filter_topic");
     {
         let _guard = span.enter();
-        tracing::warn!("warning from a debug-level topic span");
-        tracing::error!("error from a debug-level topic span");
+        // Only events from `pluto*` targets are counted, as Charon counts only
+        // its own logs.
+        tracing::warn!(target: "pluto_test", "warning from a debug-level topic span");
+        tracing::error!(target: "pluto_test", "error from a debug-level topic span");
+        tracing::warn!(target: "libp2p_swarm", "dependency warning");
+        tracing::error!(target: "libp2p_swarm", "dependency error");
     }
 
     assert_eq!(
