@@ -13,8 +13,8 @@ pub struct TracingConfig {
     /// always enabled.
     pub console: Option<ConsoleConfig>,
 
-    /// Overrides the environment filter. If not - the environment filter is
-    /// used.
+    /// `EnvFilter` directives for the console and Loki layers; `info` when
+    /// absent or invalid.
     #[builder(into)]
     pub override_env_filter: Option<String>,
 }

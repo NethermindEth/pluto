@@ -75,11 +75,11 @@ impl LokiWorker {
 /// Panics when Loki is configured and this is called outside a Tokio runtime.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
     let make_env_filter = || {
-        if let Some(override_env_filter) = config.override_env_filter.as_ref() {
-            EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
-        } else {
-            EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
-        }
+        config
+            .override_env_filter
+            .as_deref()
+            .and_then(|filter| EnvFilter::from_str(filter).ok())
+            .unwrap_or_else(default_env_filter)
     };
 
     let console_config = config.console.clone().unwrap_or_default();
