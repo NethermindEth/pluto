@@ -65,10 +65,11 @@ fn console_filter(base: LogLevel) -> String {
 
 /// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
 /// prefix-matches against every `libp2p_relay::*` target.
-fn relay_filter(base: impl fmt::Display, relay_level: Option<LogLevel>) -> String {
+fn relay_filter(base: impl Into<String>, relay_level: Option<LogLevel>) -> String {
+    let base = base.into();
     match relay_level {
         Some(level) => format!("{base},libp2p_relay={level}"),
-        None => base.to_string(),
+        None => base,
     }
 }
 
