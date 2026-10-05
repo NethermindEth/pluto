@@ -55,7 +55,7 @@ impl fmt::Display for LogLevel {
 
 /// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
 /// prefix-matches against every `libp2p_relay::*` target.
-fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
+fn relay_filter(base: impl fmt::Display, relay_level: Option<LogLevel>) -> String {
     match relay_level {
         Some(level) => format!("{base},libp2p_relay={level}"),
         None => base.to_string(),
@@ -178,6 +178,7 @@ impl TracingArgs {
             .first()
             .map(|loki_url| pluto_tracing::LokiConfig {
                 loki_url: loki_url.clone(),
+                env_filter: relay_filter(pluto_tracing::LOKI_ENV_FILTER, self.p2p_relay_log_level),
                 labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
                 extra_fields: HashMap::new(),
             });
@@ -345,6 +346,10 @@ mod tests {
                 EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
             }
         }
+        for relay in LogLevel::value_variants() {
+            let filter = relay_filter(pluto_tracing::LOKI_ENV_FILTER, Some(*relay));
+            EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
+        }
     }
 
     #[test]
@@ -356,12 +361,34 @@ mod tests {
             "relay",
             "--log-level=info",
             "--p2p-relay-loglevel=error",
+            "--loki-addresses=http://loki:3100",
         ])
         .expect("relay args should parse");
+        let config = cli.tracing.tracing_config();
 
         assert_eq!(
-            cli.tracing.tracing_config().override_env_filter.as_deref(),
+            config.override_env_filter.as_deref(),
             Some("info,libp2p_relay=error")
+        );
+        assert_eq!(
+            config.loki.expect("loki").env_filter,
+            "error,pluto=debug,libp2p_relay=error"
+        );
+    }
+
+    #[test]
+    fn loki_filter_ignores_log_level() {
+        let cli = <Cli as clap::Parser>::try_parse_from([
+            "pluto",
+            "enr",
+            "--log-level=warn",
+            "--loki-addresses=http://loki:3100",
+        ])
+        .expect("loki args should parse");
+
+        assert_eq!(
+            cli.tracing.tracing_config().loki.expect("loki").env_filter,
+            pluto_tracing::LOKI_ENV_FILTER
         );
     }
 

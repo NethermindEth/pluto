@@ -219,6 +219,7 @@ fn build_tracing_config(args: &Args) -> TracingConfig {
 
         LokiConfig {
             loki_url: loki_url.clone(),
+            env_filter: args.log_level.clone(),
             labels,
             extra_fields: HashMap::new(),
         }

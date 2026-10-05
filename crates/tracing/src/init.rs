@@ -74,13 +74,11 @@ impl LokiWorker {
 ///
 /// Panics when Loki is configured and this is called outside a Tokio runtime.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
-    let make_env_filter = || {
-        config
-            .override_env_filter
-            .as_deref()
-            .and_then(|filter| EnvFilter::from_str(filter).ok())
-            .unwrap_or_else(default_env_filter)
-    };
+    let env_filter = config
+        .override_env_filter
+        .as_deref()
+        .and_then(|filter| EnvFilter::from_str(filter).ok())
+        .unwrap_or_else(default_env_filter);
 
     let console_config = config.console.clone().unwrap_or_default();
 
@@ -95,7 +93,7 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         .with_ansi(console_config.with_ansi);
 
     let registry = Registry::default()
-        .with(fmt_layer.with_filter(make_env_filter()))
+        .with(fmt_layer.with_filter(env_filter))
         // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events.
         // A level filter would enable every DEBUG callsite in the process, including libp2p's poll
         // spans.
@@ -130,7 +128,8 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         }
         let (loki_layer, controller, task) = builder.build_controller_url(loki_url)?;
 
-        let registry = registry.with(loki_layer.with_filter(make_env_filter()));
+        let registry =
+            registry.with(loki_layer.with_filter(EnvFilter::new(&loki_config.env_filter)));
         registry.try_init()?;
 
         Ok(Some(LokiWorker {

@@ -19,11 +19,19 @@ pub struct TracingConfig {
     pub override_env_filter: Option<String>,
 }
 
+/// Loki directives: Pluto's own logs at DEBUG and dependencies at ERROR,
+/// matching Charon's DEBUG-level Loki logger and go-log's ERROR default.
+pub const LOKI_ENV_FILTER: &str = "error,pluto=debug";
+
 /// Configuration for the loki logging.
 #[derive(Clone)]
 pub struct LokiConfig {
     /// URL of the Loki instance.
     pub loki_url: String,
+
+    /// `EnvFilter` directives for the Loki layer, independent of
+    /// [`TracingConfig::override_env_filter`].
+    pub env_filter: String,
 
     /// Labels to add to the Loki logs.
     pub labels: HashMap<String, String>,
@@ -38,6 +46,7 @@ impl fmt::Debug for LokiConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LokiConfig")
             .field("loki_url", &redact_url_userinfo(&self.loki_url))
+            .field("env_filter", &self.env_filter)
             .field("labels", &self.labels)
             .field("extra_fields", &self.extra_fields)
             .finish()
@@ -98,6 +107,7 @@ mod tests {
     fn loki_with_url(url: &str) -> LokiConfig {
         LokiConfig {
             loki_url: url.to_string(),
+            env_filter: LOKI_ENV_FILTER.to_string(),
             labels: HashMap::new(),
             extra_fields: HashMap::new(),
         }
