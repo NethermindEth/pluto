@@ -19,7 +19,7 @@
 //! driven via [`pluto_app::node::App::run`] until cancelled.
 //!
 //! Not every accepted flag is honored yet. Correctness-affecting flags with no
-//! implementation (beacon-node headers, VC TLS, a preferred consensus protocol,
+//! implementation (VC TLS, a preferred consensus protocol,
 //! synthetic block proposals) fail fast with a "not yet supported" error, while
 //! the remaining observability/availability flags with no implementation
 //! (debug/pprof address, OTLP, proc directory, fallback beacon endpoints) are
@@ -623,8 +623,8 @@ pub struct RunConfig {
     pub consensus_protocol: String,
     /// Human friendly peer nickname.
     pub nickname: String,
-    /// Beacon node request headers (header=value).
-    pub beacon_node_headers: Vec<String>,
+    /// Beacon node request headers; `Debug` prints header names only.
+    pub beacon_node_headers: helpers::HttpHeaders,
     /// Fallback beacon node endpoint URLs.
     pub fallback_beacon_node_addrs: Vec<String>,
     /// Execution engine JSON-RPC API address.
@@ -697,7 +697,7 @@ impl TryFrom<RunArgs> for RunConfig {
             warn!("Jaeger flags are disabled and will be removed in a future release");
         }
 
-        helpers::validate_http_headers(&general.beacon_node_headers)
+        let beacon_node_headers = helpers::HttpHeaders::parse(&general.beacon_node_headers)
             .map_err(|err| CliError::Other(err.to_string()))?;
 
         let max_graffiti_bytes = if general.graffiti_disable_client_append {
@@ -766,7 +766,7 @@ impl TryFrom<RunArgs> for RunConfig {
             proc_directory: general.proc_directory,
             consensus_protocol: general.consensus_protocol,
             nickname: general.nickname,
-            beacon_node_headers: general.beacon_node_headers,
+            beacon_node_headers,
             fallback_beacon_node_addrs: general.fallback_beacon_node_endpoints,
             execution_engine_addr: general.execution_client_rpc_endpoint,
             graffiti: general.graffiti,
@@ -890,7 +890,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         proc_directory: _,
         consensus_protocol: _,
         nickname,
-        beacon_node_headers: _,
+        beacon_node_headers,
         fallback_beacon_node_addrs: _,
         execution_engine_addr,
         graffiti,
@@ -906,6 +906,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         priv_key_file: PathBuf::from(private_key_file),
         priv_key_locking: private_key_locking,
         beacon_node_addrs,
+        beacon_node_headers,
         beacon_node_timeout,
         beacon_node_submit_timeout,
         validator_api_addr,
@@ -943,9 +944,6 @@ fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     if config.p2p_fuzz {
         return Err(unsupported("--p2p-fuzz"));
     }
-    if !config.beacon_node_headers.is_empty() {
-        return Err(unsupported("--beacon-node-headers"));
-    }
     if !config.consensus_protocol.is_empty() {
         return Err(unsupported("--consensus-protocol"));
     }
@@ -967,7 +965,8 @@ fn warn_ignored_flags(config: &RunConfig) {
     if !config.otlp_address.is_empty() {
         warn!(
             address = %config.otlp_address,
-            headers = ?config.otlp_headers,
+            // Header values carry credentials; log the names only.
+            header_names = ?otlp_header_names(&config.otlp_headers),
             insecure = config.otlp_insecure,
             service = %config.otlp_service_name,
             "OTLP tracing is not yet supported by pluto run; ignoring the --otlp-* flags"
@@ -993,6 +992,18 @@ fn warn_ignored_flags(config: &RunConfig) {
             "cluster manifest support was removed (Charon #4130); the cluster lock file is authoritative and the manifest file is ignored"
         );
     }
+}
+
+/// Returns the names of `header=value` flag entries, dropping the values.
+fn otlp_header_names(headers: &[String]) -> Vec<&str> {
+    headers
+        .iter()
+        .map(|header| {
+            header
+                .split_once('=')
+                .map_or(header.as_str(), |(name, _)| name)
+        })
+        .collect()
 }
 
 /// Parses the feature-set flags into a [`pluto_featureset::Config`].
@@ -1710,7 +1721,6 @@ mod tests {
         for flags in [
             ["--synthetic-block-proposals"].as_slice(),
             &["--consensus-protocol=qbft"],
-            &["--beacon-node-headers=key1=value1"],
         ] {
             let err = app_config_err(flags);
             assert!(
@@ -1718,6 +1728,27 @@ mod tests {
                 "flags {flags:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn build_app_config_threads_beacon_node_headers() {
+        let config = app_config(&["--beacon-node-headers=Authorization=Bearer token,x-api-key=k"])
+            .expect("beacon node headers are supported");
+        let headers = config.beacon_node_headers.header_map();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers["authorization"], "Bearer token");
+        assert_eq!(headers["x-api-key"], "k");
+        // `Debug` never exposes the values.
+        assert!(!format!("{config:?}").contains("Bearer token"));
+    }
+
+    #[test]
+    fn otlp_header_names_drops_values() {
+        let headers = [
+            "Authorization=Basic abc==".to_string(),
+            "no-value".to_string(),
+        ];
+        assert_eq!(otlp_header_names(&headers), ["Authorization", "no-value"]);
     }
 
     #[test]

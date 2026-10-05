@@ -16,6 +16,6 @@ pub mod layers;
 /// Metrics for the tracing.
 pub mod metrics;
 
-pub use config::{ConsoleConfig, LokiConfig, TracingConfig};
+pub use config::{ConsoleConfig, LokiConfig, TracingConfig, redact_url_userinfo};
 
 pub use init::{LokiWorker, init};

@@ -213,6 +213,7 @@ fn wire_inputs_with(
         consensus,
         builder_enabled: false,
         upstream_url: reqwest::Url::parse("http://127.0.0.1:5052").expect("url"),
+        upstream_headers: reqwest::header::HeaderMap::new(),
         parsigex: loopback_parsigex_seam(),
         sigagg_verifier,
         // Inert fetcher inputs: never-expiring deadlines (so driven slot-1
