@@ -226,7 +226,7 @@ fn spawn_retried<F, Fut, E>(
             fut.await.map_err(|err| {
                 // `DoAsyncError` carries no payload, so log the underlying
                 // error before classifying it.
-                tracing::warn!(%err, topic, name, "duty callback failed");
+                tracing::warn!(%err, "duty callback failed");
                 match policy {
                     RetryPolicy::Retry => DoAsyncError::RetryableError,
                     RetryPolicy::Once => DoAsyncError::NonRetryableError,
