@@ -29,8 +29,8 @@ pub enum ConsoleColor {
 /// The log levels `tracing_subscriber`'s `EnvFilter` understands.
 ///
 /// `Display` renders the directive spelling, so these compose into a filter
-/// string that always parses.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+/// string that always parses. Variants are ordered from least to most verbose.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Off,
     Error,
@@ -51,6 +51,12 @@ impl fmt::Display for LogLevel {
             Self::Trace => "trace",
         })
     }
+}
+
+/// Console directives: `base`, with every `libp2p_*` crate at the stricter of
+/// `error` and `base`, as go-log does for libp2p in Charon.
+fn console_filter(base: LogLevel) -> String {
+    format!("{base},libp2p={}", base.min(LogLevel::Error))
 }
 
 /// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
@@ -189,7 +195,10 @@ impl TracingArgs {
                     .with_ansi(ansi)
                     .build(),
             )
-            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level))
+            .override_env_filter(relay_filter(
+                console_filter(self.log_level),
+                self.p2p_relay_log_level,
+            ))
             .maybe_loki(loki)
             .build()
     }
@@ -269,7 +278,7 @@ mod tests {
 
             assert_eq!(
                 cli.tracing.tracing_config().override_env_filter.as_deref(),
-                Some("debug")
+                Some("debug,libp2p=error")
             );
         }
 
@@ -325,15 +334,32 @@ mod tests {
     }
 
     #[test]
-    fn relay_filter_scopes_upstream_relay_logs() {
-        // An unset relay level leaves the base filter alone.
-        with_filter(&relay_filter(LogLevel::Info, None), || {
-            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+    fn console_filter_limits_libp2p_to_errors() {
+        with_filter(&console_filter(LogLevel::Debug), || {
+            assert!(!enabled!(target: "libp2p_swarm", Level::WARN));
+            assert!(enabled!(target: "libp2p_swarm", Level::ERROR));
+            assert!(enabled!(target: "pluto_p2p", Level::DEBUG));
         });
 
-        // A relay level silences the upstream relay crate but not our own logs.
-        with_filter(&relay_filter(LogLevel::Info, Some(LogLevel::Error)), || {
+        // `off` is not raised to `error`.
+        with_filter(&console_filter(LogLevel::Off), || {
+            assert!(!enabled!(target: "libp2p_swarm", Level::ERROR));
+        });
+    }
+
+    #[test]
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An unset relay level leaves the upstream relay crate at `error`.
+        with_filter(&relay_filter(console_filter(LogLevel::Info), None), || {
             assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::ERROR));
+        });
+
+        // A relay level applies to the upstream relay crate only.
+        let filter = relay_filter(console_filter(LogLevel::Info), Some(LogLevel::Debug));
+        with_filter(&filter, || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::DEBUG));
+            assert!(!enabled!(target: "libp2p_swarm", Level::WARN));
             assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
         });
     }
@@ -342,7 +368,7 @@ mod tests {
     fn every_log_level_composes_into_a_valid_filter() {
         for base in LogLevel::value_variants() {
             for relay in LogLevel::value_variants() {
-                let filter = relay_filter(*base, Some(*relay));
+                let filter = relay_filter(console_filter(*base), Some(*relay));
                 EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
             }
         }
@@ -368,7 +394,7 @@ mod tests {
 
         assert_eq!(
             config.override_env_filter.as_deref(),
-            Some("info,libp2p_relay=error")
+            Some("info,libp2p=error,libp2p_relay=error")
         );
         assert_eq!(
             config.loki.expect("loki").env_filter,
