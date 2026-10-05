@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use tracing::Instrument as _;
@@ -72,11 +72,7 @@ impl LokiWorker {
 ///
 /// Panics when Loki is configured and this is called outside a Tokio runtime.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
-    let env_filter = config
-        .override_env_filter
-        .as_deref()
-        .and_then(|filter| EnvFilter::from_str(filter).ok())
-        .unwrap_or_else(default_env_filter);
+    let env_filter = EnvFilter::new(config.override_env_filter.as_deref().unwrap_or("info"));
 
     let console_config = config.console.clone().unwrap_or_default();
 
@@ -162,10 +158,6 @@ fn strip_userinfo(mut url: Url) -> Result<Url> {
         return Ok(url);
     }
     Ok(url)
-}
-
-fn default_env_filter() -> EnvFilter {
-    EnvFilter::new("info")
 }
 
 #[cfg(test)]

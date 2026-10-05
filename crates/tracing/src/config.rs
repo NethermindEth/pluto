@@ -13,8 +13,8 @@ pub struct TracingConfig {
     /// always enabled.
     pub console: Option<ConsoleConfig>,
 
-    /// `EnvFilter` directives for the console layer; `info` when absent or
-    /// invalid.
+    /// `EnvFilter` directives for the console layer; `info` when absent.
+    /// Invalid directives are ignored.
     #[builder(into)]
     pub override_env_filter: Option<String>,
 }
@@ -30,7 +30,7 @@ pub struct LokiConfig {
     pub loki_url: String,
 
     /// `EnvFilter` directives for the Loki layer, independent of
-    /// [`TracingConfig::override_env_filter`].
+    /// [`TracingConfig::override_env_filter`]. Invalid directives are ignored.
     pub env_filter: String,
 
     /// Labels to add to the Loki logs.
