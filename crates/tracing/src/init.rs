@@ -1,12 +1,10 @@
 use std::{str::FromStr, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
-    EnvFilter, Registry,
-    filter::filter_fn,
+    EnvFilter, Registry, filter,
     layer::{Layer as _, SubscriberExt as _},
     util::SubscriberInitExt as _,
 };
@@ -97,7 +95,7 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events.
         // A level filter would enable every DEBUG callsite in the process, including libp2p's poll
         // spans.
-        .with(MetricsLayer.with_filter(filter_fn(|meta| {
+        .with(MetricsLayer.with_filter(filter::filter_fn(|meta| {
             if meta.is_span() {
                 meta.fields().field("topic").is_some()
             } else {
@@ -150,8 +148,9 @@ fn extract_basic_auth(url: &Url) -> Option<String> {
     // it appears in the URL. HTTP basic-auth expects the raw credentials, so
     // decode before base64-encoding; otherwise a username/password containing
     // `@`, `:`, `/`, etc. would authenticate with the literal `%xx` escapes.
-    let user = percent_decode_str(url.username()).decode_utf8_lossy();
-    let pass = percent_decode_str(url.password().unwrap_or("")).decode_utf8_lossy();
+    let user = percent_encoding::percent_decode_str(url.username()).decode_utf8_lossy();
+    let pass =
+        percent_encoding::percent_decode_str(url.password().unwrap_or("")).decode_utf8_lossy();
     Some(format!("Basic {}", BASE64.encode(format!("{user}:{pass}"))))
 }
 
