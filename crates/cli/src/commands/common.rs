@@ -53,6 +53,10 @@ impl fmt::Display for LogLevel {
     }
 }
 
+/// Loki directives: Pluto's own logs at DEBUG and dependencies at ERROR,
+/// matching Charon's DEBUG-level Loki logger and go-log's ERROR default.
+const LOKI_FILTER: &str = "error,pluto=debug";
+
 /// Console directives: `base`, with every `libp2p_*` crate at the stricter of
 /// `error` and `base`, as go-log does for libp2p in Charon.
 fn console_filter(base: LogLevel) -> String {
@@ -184,7 +188,7 @@ impl TracingArgs {
             .first()
             .map(|loki_url| pluto_tracing::LokiConfig {
                 loki_url: loki_url.clone(),
-                env_filter: relay_filter(pluto_tracing::LOKI_ENV_FILTER, self.p2p_relay_log_level),
+                env_filter: relay_filter(LOKI_FILTER, self.p2p_relay_log_level),
                 labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
                 extra_fields: HashMap::new(),
             });
@@ -373,7 +377,7 @@ mod tests {
             }
         }
         for relay in LogLevel::value_variants() {
-            let filter = relay_filter(pluto_tracing::LOKI_ENV_FILTER, Some(*relay));
+            let filter = relay_filter(LOKI_FILTER, Some(*relay));
             EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
         }
     }
@@ -414,7 +418,7 @@ mod tests {
 
         assert_eq!(
             cli.tracing.tracing_config().loki.expect("loki").env_filter,
-            pluto_tracing::LOKI_ENV_FILTER
+            LOKI_FILTER
         );
     }
 
