@@ -31,6 +31,10 @@ pub struct AppConfig {
     /// multiple addresses enable fallback.
     pub beacon_node_addrs: Vec<String>,
 
+    /// Extra HTTP headers sent with every beacon node request, including
+    /// requests the validator API proxies upstream.
+    pub beacon_node_headers: pluto_eth2util::helpers::HttpHeaders,
+
     /// Timeout for general beacon node requests.
     pub beacon_node_timeout: Duration,
 

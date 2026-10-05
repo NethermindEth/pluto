@@ -365,6 +365,8 @@ pub struct WireInputs {
     /// Upstream beacon URL the validator API reverse-proxies unhandled requests
     /// to.
     pub upstream_url: reqwest::Url,
+    /// Extra headers set on every request the validator API proxies upstream.
+    pub upstream_headers: reqwest::header::HeaderMap,
     /// Partial-signature exchange seam (production handle or test loopback).
     pub parsigex: ParSigExSeam,
     /// Aggregated-signature verifier for SigAgg. Production injects the eth2
@@ -524,6 +526,7 @@ pub async fn wire_core_workflow(
         consensus,
         builder_enabled,
         upstream_url,
+        upstream_headers,
         parsigex,
         sigagg_verifier,
         deadline_calc,
@@ -1304,6 +1307,7 @@ pub async fn wire_core_workflow(
         Arc::new(vapi) as Arc<dyn Handler>,
         builder_enabled,
         upstream_url,
+        upstream_headers,
     );
 
     Ok(WiredComponents {

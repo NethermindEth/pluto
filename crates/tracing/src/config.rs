@@ -49,7 +49,10 @@ impl fmt::Debug for LokiConfig {
     }
 }
 
-fn redact_url_userinfo(raw: &str) -> String {
+/// Strips the `user:password@` component from `raw` so the URL is safe to use
+/// in log fields and metric labels. Returns `raw` unchanged if it does not
+/// parse as a URL.
+pub fn redact_url_userinfo(raw: &str) -> String {
     let Ok(mut url) = tracing_loki::url::Url::parse(raw) else {
         return raw.to_string();
     };
@@ -130,6 +133,22 @@ mod tests {
         let cfg = loki_with_url("not a url");
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("not a url"));
+    }
+
+    #[test]
+    fn redact_url_userinfo_strips_credentials() {
+        assert_eq!(
+            redact_url_userinfo("https://user:secret@bn.example.com:5052/prefix"),
+            "https://bn.example.com:5052/prefix"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://user@bn.example.com/"),
+            "http://bn.example.com/"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://bn.example.com:5052"),
+            "http://bn.example.com:5052/"
+        );
     }
 
     /// Pins every [`ConsoleConfig`] default field value.

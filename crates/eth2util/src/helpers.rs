@@ -1,8 +1,9 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, fmt, sync::LazyLock};
 
 use alloy::primitives::Address;
 use k256::{PublicKey, elliptic_curve::sec1::ToEncodedPoint};
 use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 // The pattern ([^=,]+) captures any string that does not contain '=' or ','.
 // The pattern ([^,]+) captures any string that does not contain ','.
@@ -22,6 +23,11 @@ pub enum HelperError {
     /// Invalid HTTP header format
     #[error("http headers must be comma separated values formatted as header=value")]
     InvalidHTTPHeader,
+
+    /// A header name or value is not valid HTTP. The value is omitted since it
+    /// may carry a credential.
+    #[error("http header '{0}' has an invalid name or value")]
+    InvalidHTTPHeaderToken(String),
 
     /// Failed to get the beacon node spec
     #[error("getting spec: {0}")]
@@ -75,6 +81,47 @@ pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>>
     }
 
     Ok(parsed_headers)
+}
+
+/// HTTP headers parsed from a `header=value` flag list (e.g.
+/// `--beacon-node-headers`).
+///
+/// Values are marked sensitive and [`Debug`](fmt::Debug) prints header names
+/// only, since the values typically carry credentials (`Authorization=...`).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct HttpHeaders(HeaderMap);
+
+impl HttpHeaders {
+    /// Validates and parses `headers` (see [`parse_http_headers`]) into a
+    /// header map. A repeated header keeps its last value.
+    pub fn parse(headers: &[String]) -> Result<Self> {
+        let mut map = HeaderMap::new();
+        for (name, value) in parse_http_headers(headers)? {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| HelperError::InvalidHTTPHeaderToken(name.clone()))?;
+            let mut header_value = HeaderValue::from_str(&value)
+                .map_err(|_| HelperError::InvalidHTTPHeaderToken(name))?;
+            header_value.set_sensitive(true);
+            map.insert(header_name, header_value);
+        }
+        Ok(Self(map))
+    }
+
+    /// Returns true if no headers are configured.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the headers as a [`HeaderMap`].
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.0
+    }
+}
+
+impl fmt::Debug for HttpHeaders {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 /// Returns an EIP55-compliant checksummed address.
@@ -350,6 +397,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn http_headers_parse_builds_sensitive_header_map() {
+        let headers = HttpHeaders::parse(&[
+            "Authorization=Basic bmljZXRyeQ==".to_string(),
+            "x-api-key=secret".to_string(),
+        ])
+        .unwrap();
+
+        let map = headers.header_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["authorization"], "Basic bmljZXRyeQ==");
+        assert_eq!(map["x-api-key"], "secret");
+        assert!(map.values().all(HeaderValue::is_sensitive));
+    }
+
+    #[test]
+    fn http_headers_parse_empty() {
+        let headers = HttpHeaders::parse(&[]).unwrap();
+        assert!(headers.is_empty());
+        assert_eq!(headers, HttpHeaders::default());
+    }
+
+    #[test]
+    fn http_headers_parse_rejects_invalid() {
+        assert!(matches!(
+            HttpHeaders::parse(&["key=".to_string()]),
+            Err(HelperError::InvalidHTTPHeader)
+        ));
+        let err = HttpHeaders::parse(&["bad name=secret".to_string()]).unwrap_err();
+        assert!(matches!(err, HelperError::InvalidHTTPHeaderToken(ref name) if name == "bad name"));
+        let err = HttpHeaders::parse(&["x-key=se\ncret".to_string()]).unwrap_err();
+        assert!(!err.to_string().contains("se\ncret"));
+    }
+
+    #[test]
+    fn http_headers_debug_omits_values() {
+        let headers =
+            HttpHeaders::parse(&["Authorization=Bearer secret-token".to_string()]).unwrap();
+        let debug = format!("{headers:?}");
+        assert_eq!(debug, r#"{"authorization"}"#);
     }
 
     #[test]

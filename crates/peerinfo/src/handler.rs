@@ -6,7 +6,7 @@
 //! The implementation uses libp2p::protocol::ping as a reference
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     sync::Arc,
     task::{Context, Poll},
@@ -26,6 +26,7 @@ use libp2p::{
         },
     },
 };
+use tokio::sync::Mutex;
 
 use crate::{
     PROTOCOL_NAME, config::Config, failure::Failure, peerinfopb::v1::peerinfo::PeerInfo,
@@ -76,7 +77,14 @@ enum State {
 
 impl Handler {
     /// Builds a new [`Handler`] with the given configuration.
-    pub fn new(config: Config, peer: PeerId) -> Self {
+    ///
+    /// `nicknames` is the node-wide map owned by [`crate::Behaviour`]; handlers
+    /// share it so a peer's nickname survives reconnects.
+    pub fn new(
+        config: Config,
+        peer: PeerId,
+        nicknames: Arc<Mutex<HashMap<String, String>>>,
+    ) -> Self {
         let interval = config.interval();
         let local_info = config.local_info().clone();
         Handler {
@@ -87,8 +95,14 @@ impl Handler {
             outbound: None,
             inbound: None,
             state: State::Active,
-            protocol: Arc::new(ProtocolState::new(peer, local_info)),
+            protocol: Arc::new(ProtocolState::new(peer, local_info, nicknames)),
         }
+    }
+
+    /// Returns the node-wide nickname map shared with every other handler.
+    #[cfg(test)]
+    pub(crate) fn nicknames(&self) -> &Arc<Mutex<HashMap<String, String>>> {
+        self.protocol.nicknames()
     }
 
     fn on_dial_upgrade_error(
@@ -158,8 +172,8 @@ impl ConnectionHandler for Handler {
                 Poll::Ready(Ok((_stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
                     // Don't try to read again - Charon closes the stream after
-                    // each exchange. A new inbound stream
-                    // will be opened for the next request.
+                    // each exchange, and now so does `recv_peer_info`. A new
+                    // inbound stream will be opened for the next request.
                     self.inbound = None;
                 }
             }
@@ -209,9 +223,9 @@ impl ConnectionHandler for Handler {
                         self.failures = 0;
                         self.interval.reset(self.config.interval());
                         // Don't keep the stream idle for reuse - Charon closes
-                        // streams after each
-                        // exchange. A new outbound stream will be opened
-                        // for the next request.
+                        // streams after each exchange, and now so does
+                        // `send_peer_info`. A new outbound stream will be
+                        // opened for the next request.
                         self.outbound = None;
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Ok(Success {
                             peer_info,
@@ -332,7 +346,11 @@ mod tests {
 
     fn test_handler() -> Handler {
         let local_info = LocalPeerInfo::new("v1.0.0", vec![0u8; 32], "abc1234", false, "test");
-        Handler::new(Config::new(local_info), PeerId::random())
+        Handler::new(
+            Config::new(local_info),
+            PeerId::random(),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
     }
 
     /// Regression test for the charon-relay peerinfo timeout.
