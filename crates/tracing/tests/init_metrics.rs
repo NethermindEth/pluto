@@ -9,10 +9,20 @@ fn default_info_filter_keeps_debug_topic_for_log_metrics() {
         override_env_filter: Some("info".into()),
         ..Default::default()
     };
+    // Global subscriber is initialized here so this binary can only hold this
+    // test.
     init(&config).expect("initialize the default tracing layers");
     assert!(
         !tracing::enabled!(tracing::Level::DEBUG),
         "metrics filter must not enable DEBUG callsites at info"
+    );
+    assert!(
+        tracing::debug_span!("no_topic").is_disabled(),
+        "metrics filter must not enable spans without a topic"
+    );
+    assert!(
+        !tracing::trace_span!("trace_topic", topic = "init_trace_topic").is_disabled(),
+        "metrics filter must enable topic spans at any level"
     );
 
     let topic = String::from("init_info_filter_topic");
