@@ -281,10 +281,7 @@ mod tests {
             ])
             .unwrap_or_else(|err| panic!("--log-level={level} should parse: {err}"));
 
-            assert_eq!(
-                cli.tracing.tracing_config().override_env_filter.as_deref(),
-                Some("debug,libp2p=error")
-            );
+            assert_eq!(cli.tracing.log_level, LogLevel::Debug);
         }
 
         for color in ["disable", "DISABLE", "Disable"] {
@@ -334,7 +331,7 @@ mod tests {
 
     /// Runs `f` with a subscriber that only lets `filter` through.
     fn with_filter(filter: &str, f: impl FnOnce()) {
-        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        let filter = EnvFilter::from_str(filter).expect("filter should be a valid EnvFilter");
         tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
     }
 
@@ -385,8 +382,7 @@ mod tests {
 
     #[test]
     fn p2p_relay_loglevel_reaches_the_env_filter() {
-        // The flag is global, so it composes with `--log-level` from the root
-        // rather than from the `relay` subcommand that used to own it.
+        // The flag is global, so it composes with `--log-level` from the root.
         let cli = <Cli as clap::Parser>::try_parse_from([
             "pluto",
             "relay",

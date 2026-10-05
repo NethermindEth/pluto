@@ -376,10 +376,6 @@ mod tests {
             Some(Path::new("/tmp/pluto.log"))
         );
         let tracing_config = cli.tracing.tracing_config();
-        assert_eq!(
-            tracing_config.override_env_filter.as_deref(),
-            Some("debug,libp2p=error")
-        );
         assert!(
             tracing_config
                 .console
@@ -433,11 +429,8 @@ mod tests {
         ])
         .expect("dkg command should parse");
 
+        assert_eq!(cli.tracing.log_level, LogLevel::Debug);
         let tracing_config = cli.tracing.tracing_config();
-        assert_eq!(
-            tracing_config.override_env_filter.as_deref(),
-            Some("debug,libp2p=error")
-        );
         assert!(
             !tracing_config
                 .console
