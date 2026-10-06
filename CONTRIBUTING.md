@@ -24,7 +24,7 @@ If you prefer not to use Nix, install the following manually:
 * [Docker](https://www.docker.com/)
 * [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) - `cargo install cargo-deny@0.19.0`
 * [cargo-machete](https://github.com/bnjbvr/cargo-machete) - `cargo install cargo-machete@0.9.2`
-* [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) - `cargo install cargo-llvm-cov` (coverage only)
+* [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) - `cargo install cargo-llvm-cov@0.6.24` (coverage only)
 
 Then install the pre-push git hook:
 
