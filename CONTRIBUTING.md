@@ -10,23 +10,27 @@ The easiest way to set up the development environment is using [Nix](https://nix
 nix develop
 ```
 
-This automatically provides all required dependencies (Rust toolchain, Protobuf, cargo-deny, cargo-machete) and configures git hooks.
+This provides the pinned Rust toolchain (derived from `rust-toolchain.toml`) and nightly `rustfmt`, plus Protobuf, cargo-deny, cargo-machete and cargo-llvm-cov, and configures git hooks.
 
 ### Manual Setup
 
 If you prefer not to use Nix, install the following manually:
 
 * [Rust](https://www.rust-lang.org/tools/install)
+* Nightly [rustfmt](https://github.com/rust-lang/rustfmt) - `rustup toolchain install nightly --profile minimal --component rustfmt`
 * [Protobuf](https://protobuf.dev/installation/)
 * [Docker](https://www.docker.com/)
 * [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) - `cargo install cargo-deny@0.19.0`
 * [cargo-machete](https://github.com/bnjbvr/cargo-machete) - `cargo install cargo-machete@0.9.2`
+* [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) - `cargo install cargo-llvm-cov@0.6.24` (coverage only)
 
 Then install the pre-push git hook:
 
 ```sh
 git config core.hooksPath .githooks
 ```
+
+The pre-push hook (`.githooks/pre-push`) runs `cargo deny`, `cargo machete`, nightly `rustfmt`, `clippy` and the test suite; all must pass before a push is accepted.
 
 ## Building
 To build the project with all its crates, run:
@@ -42,7 +46,9 @@ To run all tests - unit and integration - run:
 cargo test --workspace --features pluto-eth2api/integration
 ```
 
-Smoke tests are opt-in (`--features smoke`); see `crates/test-compose/README.md`.
+> **Note:** `pluto-eth2api/integration` uses [testcontainers](https://github.com/testcontainers/testcontainers-rs) and therefore requires a **running Docker daemon**, which the Nix shell does not provide. Without Docker the integration tests fail with opaque errors.
+
+Smoke tests are opt-in (`--features smoke`) and also need Docker; see `crates/test-compose/README.md`.
 
 ## Running the Rust Documentation Locally
 To build the documentation locally:
@@ -103,9 +109,9 @@ This command will open a browser page that contains a graphic representation of 
 
 ### Dhat
 We can add Dhat as a dependency:
-```rust
+```toml
 [dependencies]
-dhat = "latest"
+dhat = "0.3"
 
 [features]
 dhat-heap = []

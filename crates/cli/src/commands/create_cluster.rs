@@ -259,12 +259,12 @@ pub struct CreateClusterArgs {
     )]
     pub network: Option<Network>,
 
-    /// The number of charon nodes in the cluster
+    /// The number of nodes in the cluster
     #[arg(
         long = "nodes",
         env = "CHARON_NODES",
         default_value = "0",
-        help = "The number of charon nodes in the cluster. Minimum is 3."
+        help = "The number of nodes in the cluster. Minimum is 3."
     )]
     pub nodes: u64,
 

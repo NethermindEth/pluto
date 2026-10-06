@@ -103,7 +103,7 @@ pub struct CreateDkgArgs {
         long,
         env = "CHARON_OPERATOR_ENRS",
         value_delimiter = ',',
-        help = "Comma-separated list of each operator's Charon ENR address."
+        help = "Comma-separated list of each operator's ENR address."
     )]
     pub operator_enrs: Vec<String>,
 
