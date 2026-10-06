@@ -11,8 +11,8 @@ use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
     calculate_score,
     constants::{SLOT_TIME, SLOTS_IN_EPOCH},
-    evaluate_rtt, http_client, must_output_to_file_on_quiet, publish_result_to_obol_api,
-    request_rtt, write_result_to_file, write_result_to_writer,
+    evaluate_rtt, http_client, publish_result_to_obol_api, request_rtt, write_result_to_file,
+    write_result_to_writer,
 };
 use crate::{
     commands::test::TestCaseName,
@@ -109,22 +109,28 @@ impl TestCaseMev {
     }
 }
 
+impl TestMevArgs {
+    /// Requires `--beacon-node-endpoint` exactly when `--load-test` is set.
+    ///
+    /// Only the standalone `mev` command checks this, like Charon's `PreRunE`;
+    /// `alpha test all` does not.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.load_test && self.beacon_node_endpoint.is_none() {
+            return Err(MevTestError::BeaconNodeEndpointRequired.into());
+        }
+        if !self.load_test && self.beacon_node_endpoint.is_some() {
+            return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
+        }
+        Ok(())
+    }
+}
+
 /// Runs the MEV relay tests.
 pub async fn run(
     args: TestMevArgs,
     writer: &mut dyn Write,
     token: CancellationToken,
 ) -> Result<TestCategoryResult> {
-    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
-
-    // Validate flag combinations.
-    if args.load_test && args.beacon_node_endpoint.is_none() {
-        return Err(MevTestError::BeaconNodeEndpointRequired.into());
-    }
-    if !args.load_test && args.beacon_node_endpoint.is_some() {
-        return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
-    }
-
     info!("Starting MEV relays test");
 
     let queued_tests = {
@@ -752,29 +758,6 @@ mod tests {
             .mount(&server)
             .await;
         server
-    }
-
-    fn assert_verdict(
-        results: &std::collections::HashMap<String, Vec<TestResult>>,
-        target: &str,
-        expected: &[(&str, TestVerdict)],
-    ) {
-        let target_results = results.get(target).expect("missing target in results");
-        assert_eq!(
-            target_results.len(),
-            expected.len(),
-            "result count mismatch for {target}"
-        );
-        let by_name: std::collections::HashMap<&str, TestVerdict> = target_results
-            .iter()
-            .map(|r| (r.name.as_str(), r.verdict))
-            .collect();
-        for (name, verdict) in expected {
-            let actual = by_name
-                .get(name)
-                .unwrap_or_else(|| panic!("missing result for {name}"));
-            assert_eq!(*actual, *verdict, "verdict mismatch for {name}");
-        }
     }
 
     #[tokio::test]

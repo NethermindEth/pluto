@@ -4,11 +4,6 @@
 //! cluster setup, including tests for peers, beacon nodes, validator clients,
 //! MEV relays, and infrastructure.
 
-#![expect(
-    dead_code,
-    reason = "foundation for the test command; the detail will be implemented later"
-)]
-
 pub mod all;
 pub mod beacon;
 pub mod constants;
@@ -108,10 +103,26 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
             .into_iter()
             .map(|tc| tc.name.to_string())
             .collect(),
-        TestCategory::All => {
-            // TODO: Combine all test cases from all categories
-            vec![]
-        }
+        TestCategory::All => [
+            TestCategory::Peers,
+            TestCategory::Beacon,
+            TestCategory::Validator,
+            TestCategory::Mev,
+            TestCategory::Infra,
+        ]
+        .into_iter()
+        .flat_map(list_test_cases)
+        .collect(),
+    }
+}
+
+impl TestConfigArgs {
+    /// Requires `--output-json` with `--quiet`, so results are not lost.
+    ///
+    /// Checked before a command runs, like Charon's `PreRunE`: `alpha test
+    /// all` forces `quiet` on each category it runs.
+    pub(crate) fn validate(&self) -> crate::error::Result<()> {
+        must_output_to_file_on_quiet(self.quiet, &self.output_json)
     }
 }
 
