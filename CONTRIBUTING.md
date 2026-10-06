@@ -10,9 +10,7 @@ The easiest way to set up the development environment is using [Nix](https://nix
 nix develop
 ```
 
-This provides everything needed to build and check the project — the pinned Rust toolchain (derived from `rust-toolchain.toml`) and nightly `rustfmt`, plus Protobuf, cargo-deny, cargo-machete and cargo-llvm-cov — and configures git hooks.
-
-Docker is not part of the dev shell: the integration and smoke tests talk to the host's Docker daemon, so install it separately if you intend to run them.
+This provides the pinned Rust toolchain (derived from `rust-toolchain.toml`) and nightly `rustfmt`, plus Protobuf, cargo-deny, cargo-machete and cargo-llvm-cov, and configures git hooks.
 
 ### Manual Setup
 
@@ -48,7 +46,7 @@ To run all tests - unit and integration - run:
 cargo test --workspace --features pluto-eth2api/integration
 ```
 
-> **Note:** `pluto-eth2api/integration` uses [testcontainers](https://github.com/testcontainers/testcontainers-rs) and therefore requires a **running Docker daemon**. Without Docker the integration tests fail with opaque errors.
+> **Note:** `pluto-eth2api/integration` uses [testcontainers](https://github.com/testcontainers/testcontainers-rs) and therefore requires a **running Docker daemon**, which the Nix shell does not provide. Without Docker the integration tests fail with opaque errors.
 
 Smoke tests are opt-in (`--features smoke`) and also need Docker; see `crates/test-compose/README.md`.
 
