@@ -19,6 +19,7 @@ Docker is not part of the dev shell: the integration and smoke tests talk to the
 If you prefer not to use Nix, install the following manually:
 
 * [Rust](https://www.rust-lang.org/tools/install)
+* Nightly [rustfmt](https://github.com/rust-lang/rustfmt) - `rustup toolchain install nightly --profile minimal --component rustfmt`
 * [Protobuf](https://protobuf.dev/installation/)
 * [Docker](https://www.docker.com/)
 * [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) - `cargo install cargo-deny@0.19.0`
