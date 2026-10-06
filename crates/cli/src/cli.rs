@@ -56,7 +56,7 @@ pub enum Commands {
 
     #[command(
         about = "Start a libp2p relay server",
-        long_about = "Starts a libp2p circuit relay that Pluto clients can use to discover and connect to their peers."
+        long_about = "Starts a libp2p circuit relay that cluster nodes can use to discover and connect to their peers."
     )]
     Relay(Box<RelayArgs>),
 
@@ -115,7 +115,7 @@ pub struct AlphaArgs {
 pub enum AlphaCommands {
     #[command(
         about = "Test subcommands provide test suite to evaluate current cluster setup",
-        long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - Pluto peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
+        long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
     )]
     Test(Box<TestArgs>),
 }
@@ -181,13 +181,13 @@ pub enum CreateCommands {
     /// ceremony
     Dkg(Box<CreateDkgArgs>),
 
-    /// Create an Ethereum Node Record (ENR) private key to identify this charon
+    /// Create an Ethereum Node Record (ENR) private key to identify this Pluto
     /// client
     Enr(CreateEnrArgs),
 
     #[command(
         about = "Create private keys and configuration files needed to run a distributed validator cluster locally",
-        long_about = "Creates a local cluster configuration including validator keys, Pluto p2p keys, cluster-lock.json and deposit-data.json file(s). See flags for supported features."
+        long_about = "Creates a local cluster configuration including validator keys, p2p keys, cluster-lock.json and deposit-data.json file(s). See flags for supported features."
     )]
     Cluster(Box<CreateClusterArgs>),
 }

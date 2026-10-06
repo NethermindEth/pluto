@@ -17,7 +17,7 @@ pub struct DkgArgs {
         long = "data-dir",
         env = "CHARON_DATA_DIR",
         default_value = ".charon",
-        help = "The directory where charon will store all its internal data."
+        help = "The directory where Pluto will store all its internal data."
     )]
     pub data_dir: PathBuf,
 
