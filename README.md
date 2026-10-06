@@ -50,10 +50,9 @@ cargo build --release --workspace
 cargo test --workspace --features pluto-eth2api/integration   # requires a running Docker daemon
 ```
 
-**Local cluster with test-infra:**
+**Local observability stack for tests:**
 ```sh
-cd test-infra
-docker compose up
+docker compose -f test-infra/docker-compose.yml up -d   # Grafana on http://localhost:3000
 ```
 
 ## Examples
