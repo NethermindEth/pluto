@@ -32,7 +32,7 @@ Then install the pre-push git hook:
 git config core.hooksPath .githooks
 ```
 
-The pre-push hook (`.githooks/pre-push`) runs the full quality-gate sequence in order: `cargo deny check`, `cargo machete`, `cargo +nightly fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --workspace --features pluto-eth2api/integration`. All checks must pass before a push is accepted.
+The pre-push hook (`.githooks/pre-push`) runs `cargo deny`, `cargo machete`, nightly `rustfmt`, `clippy` and the test suite; all must pass before a push is accepted.
 
 ## Building
 To build the project with all its crates, run:
