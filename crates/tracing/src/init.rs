@@ -1,11 +1,12 @@
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use tracing_loki::{BackgroundTaskController, url::Url};
 use tracing_subscriber::{
-    EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+    EnvFilter, Registry, filter,
+    layer::{Layer as _, SubscriberExt as _},
+    util::SubscriberInitExt as _,
 };
 
 use crate::{config::TracingConfig, layers::metrics::MetricsLayer};
@@ -71,11 +72,7 @@ impl LokiWorker {
 ///
 /// Panics when Loki is configured and this is called outside a Tokio runtime.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
-    let env_filter = if let Some(override_env_filter) = config.override_env_filter.as_ref() {
-        EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
-    } else {
-        EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
-    };
+    let env_filter = EnvFilter::new(config.override_env_filter.as_deref().unwrap_or("info"));
 
     let console_config = config.console.clone().unwrap_or_default();
 
@@ -90,9 +87,17 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         .with_ansi(console_config.with_ansi);
 
     let registry = Registry::default()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(MetricsLayer);
+        .with(fmt_layer.with_filter(env_filter))
+        // MetricsLayer only reads spans with a `topic` field and WARN/ERROR events, and like Charon
+        // counts only Pluto's own events. A level filter would enable every DEBUG callsite in the
+        // process, including libp2p's poll spans.
+        .with(MetricsLayer.with_filter(filter::filter_fn(|meta| {
+            if meta.is_span() {
+                meta.fields().field("topic").is_some()
+            } else {
+                *meta.level() <= tracing::Level::WARN && meta.target().starts_with("pluto")
+            }
+        })));
 
     if let Some(loki_config) = &config.loki {
         // Match the path-stripping behaviour of `tracing_loki::layer` so the
@@ -117,7 +122,8 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiWorker>> {
         }
         let (loki_layer, controller, task) = builder.build_controller_url(loki_url)?;
 
-        let registry = registry.with(loki_layer);
+        let registry =
+            registry.with(loki_layer.with_filter(EnvFilter::new(&loki_config.env_filter)));
         registry.try_init()?;
 
         Ok(Some(LokiWorker {
@@ -138,8 +144,9 @@ fn extract_basic_auth(url: &Url) -> Option<String> {
     // it appears in the URL. HTTP basic-auth expects the raw credentials, so
     // decode before base64-encoding; otherwise a username/password containing
     // `@`, `:`, `/`, etc. would authenticate with the literal `%xx` escapes.
-    let user = percent_decode_str(url.username()).decode_utf8_lossy();
-    let pass = percent_decode_str(url.password().unwrap_or("")).decode_utf8_lossy();
+    let user = percent_encoding::percent_decode_str(url.username()).decode_utf8_lossy();
+    let pass =
+        percent_encoding::percent_decode_str(url.password().unwrap_or("")).decode_utf8_lossy();
     Some(format!("Basic {}", BASE64.encode(format!("{user}:{pass}"))))
 }
 
@@ -151,10 +158,6 @@ fn strip_userinfo(mut url: Url) -> Result<Url> {
         return Ok(url);
     }
     Ok(url)
-}
-
-fn default_env_filter() -> EnvFilter {
-    EnvFilter::new("info")
 }
 
 #[cfg(test)]

@@ -29,8 +29,8 @@ pub enum ConsoleColor {
 /// The log levels `tracing_subscriber`'s `EnvFilter` understands.
 ///
 /// `Display` renders the directive spelling, so these compose into a filter
-/// string that always parses.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+/// string that always parses. Variants are ordered from least to most verbose.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Off,
     Error,
@@ -53,12 +53,23 @@ impl fmt::Display for LogLevel {
     }
 }
 
+/// Loki directives: Pluto's own logs at DEBUG and dependencies at ERROR,
+/// matching Charon's DEBUG-level Loki logger and go-log's ERROR default.
+const LOKI_FILTER: &str = "error,pluto=debug";
+
+/// Console directives: `base`, with every `libp2p_*` crate at the stricter of
+/// `error` and `base`, as go-log does for libp2p in Charon.
+fn console_filter(base: LogLevel) -> String {
+    format!("{base},libp2p={}", base.min(LogLevel::Error))
+}
+
 /// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
 /// prefix-matches against every `libp2p_relay::*` target.
-fn relay_filter(base: LogLevel, relay_level: Option<LogLevel>) -> String {
+fn relay_filter(base: impl Into<String>, relay_level: Option<LogLevel>) -> String {
+    let base = base.into();
     match relay_level {
         Some(level) => format!("{base},libp2p_relay={level}"),
-        None => base.to_string(),
+        None => base,
     }
 }
 
@@ -154,7 +165,7 @@ pub struct TracingArgs {
         global = true,
         ignore_case = true,
         display_order = 1006,
-        help = "Libp2p circuit relay log level. Defaults to --log-level."
+        help = "Libp2p circuit relay log level. Defaults to error."
     )]
     pub p2p_relay_log_level: Option<LogLevel>,
 }
@@ -178,6 +189,7 @@ impl TracingArgs {
             .first()
             .map(|loki_url| pluto_tracing::LokiConfig {
                 loki_url: loki_url.clone(),
+                env_filter: relay_filter(LOKI_FILTER, self.p2p_relay_log_level),
                 labels: HashMap::from([("service".to_string(), self.loki_service.clone())]),
                 extra_fields: HashMap::new(),
             });
@@ -188,7 +200,10 @@ impl TracingArgs {
                     .with_ansi(ansi)
                     .build(),
             )
-            .override_env_filter(relay_filter(self.log_level, self.p2p_relay_log_level))
+            .override_env_filter(relay_filter(
+                console_filter(self.log_level),
+                self.p2p_relay_log_level,
+            ))
             .maybe_loki(loki)
             .build()
     }
@@ -266,10 +281,7 @@ mod tests {
             ])
             .unwrap_or_else(|err| panic!("--log-level={level} should parse: {err}"));
 
-            assert_eq!(
-                cli.tracing.tracing_config().override_env_filter.as_deref(),
-                Some("debug")
-            );
+            assert_eq!(cli.tracing.log_level, LogLevel::Debug);
         }
 
         for color in ["disable", "DISABLE", "Disable"] {
@@ -319,20 +331,37 @@ mod tests {
 
     /// Runs `f` with a subscriber that only lets `filter` through.
     fn with_filter(filter: &str, f: impl FnOnce()) {
-        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        let filter = EnvFilter::from_str(filter).expect("filter should be a valid EnvFilter");
         tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
     }
 
     #[test]
-    fn relay_filter_scopes_upstream_relay_logs() {
-        // An unset relay level leaves the base filter alone.
-        with_filter(&relay_filter(LogLevel::Info, None), || {
-            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+    fn console_filter_limits_libp2p_to_errors() {
+        with_filter(&console_filter(LogLevel::Debug), || {
+            assert!(!enabled!(target: "libp2p_swarm", Level::WARN));
+            assert!(enabled!(target: "libp2p_swarm", Level::ERROR));
+            assert!(enabled!(target: "pluto_p2p", Level::DEBUG));
         });
 
-        // A relay level silences the upstream relay crate but not our own logs.
-        with_filter(&relay_filter(LogLevel::Info, Some(LogLevel::Error)), || {
+        // `off` is not raised to `error`.
+        with_filter(&console_filter(LogLevel::Off), || {
+            assert!(!enabled!(target: "libp2p_swarm", Level::ERROR));
+        });
+    }
+
+    #[test]
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An unset relay level leaves the upstream relay crate at `error`.
+        with_filter(&relay_filter(console_filter(LogLevel::Info), None), || {
             assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::ERROR));
+        });
+
+        // A relay level applies to the upstream relay crate only.
+        let filter = relay_filter(console_filter(LogLevel::Info), Some(LogLevel::Debug));
+        with_filter(&filter, || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::DEBUG));
+            assert!(!enabled!(target: "libp2p_swarm", Level::WARN));
             assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
         });
     }
@@ -341,27 +370,52 @@ mod tests {
     fn every_log_level_composes_into_a_valid_filter() {
         for base in LogLevel::value_variants() {
             for relay in LogLevel::value_variants() {
-                let filter = relay_filter(*base, Some(*relay));
+                let filter = relay_filter(console_filter(*base), Some(*relay));
                 EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
             }
+        }
+        for relay in LogLevel::value_variants() {
+            let filter = relay_filter(LOKI_FILTER, Some(*relay));
+            EnvFilter::from_str(&filter).unwrap_or_else(|e| panic!("{filter:?}: {e}"));
         }
     }
 
     #[test]
     fn p2p_relay_loglevel_reaches_the_env_filter() {
-        // The flag is global, so it composes with `--log-level` from the root
-        // rather than from the `relay` subcommand that used to own it.
+        // The flag is global, so it composes with `--log-level` from the root.
         let cli = <Cli as clap::Parser>::try_parse_from([
             "pluto",
             "relay",
             "--log-level=info",
             "--p2p-relay-loglevel=error",
+            "--loki-addresses=http://loki:3100",
         ])
         .expect("relay args should parse");
+        let config = cli.tracing.tracing_config();
 
         assert_eq!(
-            cli.tracing.tracing_config().override_env_filter.as_deref(),
-            Some("info,libp2p_relay=error")
+            config.override_env_filter.as_deref(),
+            Some("info,libp2p=error,libp2p_relay=error")
+        );
+        assert_eq!(
+            config.loki.expect("loki").env_filter,
+            "error,pluto=debug,libp2p_relay=error"
+        );
+    }
+
+    #[test]
+    fn loki_filter_ignores_log_level() {
+        let cli = <Cli as clap::Parser>::try_parse_from([
+            "pluto",
+            "enr",
+            "--log-level=warn",
+            "--loki-addresses=http://loki:3100",
+        ])
+        .expect("loki args should parse");
+
+        assert_eq!(
+            cli.tracing.tracing_config().loki.expect("loki").env_filter,
+            LOKI_FILTER
         );
     }
 

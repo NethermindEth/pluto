@@ -269,7 +269,7 @@ Global: accepted by every command, and parsed identically before or after the su
 
 All log output goes to stderr, leaving each command's stdout free for its own data.
 
-`RUST_LOG` is not consulted; `--log-level` (or its default) always decides the filter.
+`RUST_LOG` is not consulted; `--log-level` (or its default) decides the console filter, except that `libp2p_*` crates log only errors. Loki receives pluto's own logs at `debug` and dependencies' logs at `error`.
 
 - `--log-format <FORMAT>`: **[IGNORED]** Accepted but not yet applied — output is always console-formatted. (default: `console`)
 - `--log-level <LEVEL>`: Log level; `off`, `trace`, `debug`, `info`, `warn` or `error`. Charon accepts only the last four; the two extra levels are what `tracing`'s `EnvFilter` understands. (default: `info`)
@@ -277,7 +277,7 @@ All log output goes to stderr, leaving each command's stdout free for its own da
 - `--log-output-path <PATH>`: **[IGNORED]** Accepted but not yet applied — no log file is written.
 - `--loki-addresses <ADDRS>`: Enables sending of logfmt structured logs to a Loki log aggregation server, in addition to normal stderr logs. Only the first address is used; extra entries are ignored with a warning (charon fans out to every address).
 - `--loki-service <NAME>`: Service label sent with logs to Loki. (default: `pluto`)
-- `--p2p-relay-loglevel <LEVEL>`: Log level for the upstream `libp2p_relay` crate, letting its logs be quieted (`--p2p-relay-loglevel=error`) without lowering pluto's own verbosity. Takes the same values as `--log-level`; when unset the relay crate follows `--log-level`. Charon scopes this to `relay`.
+- `--p2p-relay-loglevel <LEVEL>`: Log level for the upstream `libp2p_relay` crate on the console and Loki. Takes the same values as `--log-level`; when unset the crate logs only errors, like every other `libp2p_*` crate.
 
 ## Example
 

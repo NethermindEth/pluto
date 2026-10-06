@@ -13,8 +13,8 @@ pub struct TracingConfig {
     /// always enabled.
     pub console: Option<ConsoleConfig>,
 
-    /// Overrides the environment filter. If not - the environment filter is
-    /// used.
+    /// `EnvFilter` directives for the console layer; `info` when absent.
+    /// Invalid directives are ignored.
     #[builder(into)]
     pub override_env_filter: Option<String>,
 }
@@ -24,6 +24,10 @@ pub struct TracingConfig {
 pub struct LokiConfig {
     /// URL of the Loki instance.
     pub loki_url: String,
+
+    /// `EnvFilter` directives for the Loki layer, independent of
+    /// [`TracingConfig::override_env_filter`]. Invalid directives are ignored.
+    pub env_filter: String,
 
     /// Labels to add to the Loki logs.
     pub labels: HashMap<String, String>,
@@ -38,6 +42,7 @@ impl fmt::Debug for LokiConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LokiConfig")
             .field("loki_url", &redact_url_userinfo(&self.loki_url))
+            .field("env_filter", &self.env_filter)
             .field("labels", &self.labels)
             .field("extra_fields", &self.extra_fields)
             .finish()
@@ -101,6 +106,7 @@ mod tests {
     fn loki_with_url(url: &str) -> LokiConfig {
         LokiConfig {
             loki_url: url.to_string(),
+            env_filter: String::new(),
             labels: HashMap::new(),
             extra_fields: HashMap::new(),
         }

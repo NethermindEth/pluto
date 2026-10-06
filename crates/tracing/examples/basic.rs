@@ -24,6 +24,7 @@ async fn main() {
         .console(ConsoleConfig::default())
         .loki(LokiConfig {
             loki_url: "http://localhost:3100".to_string(),
+            env_filter: "debug".to_string(),
             labels: HashMap::new(),
             extra_fields: HashMap::new(),
         })
