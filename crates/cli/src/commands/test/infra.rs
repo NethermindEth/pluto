@@ -14,8 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     AllCategoriesResult, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs,
     TestResult, TestVerdict, calculate_score, evaluate_rtt, filter_tests,
-    must_output_to_file_on_quiet, publish_result_to_obol_api, sort_tests, write_result_to_file,
-    write_result_to_writer,
+    publish_result_to_obol_api, sort_tests, write_result_to_file, write_result_to_writer,
 };
 use crate::{
     duration::Duration as CliDuration,
@@ -556,8 +555,6 @@ pub async fn run(
     writer: &mut dyn Write,
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
-    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
-
     tracing::info!("Starting hardware performance and network connectivity test");
 
     let disk_dir = match &args.disk_io_test_file_dir {

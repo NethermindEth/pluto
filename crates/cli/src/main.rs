@@ -116,26 +116,33 @@ async fn run(command: Commands) -> std::result::Result<(), CliError> {
             }
         },
         Commands::Alpha(args) => match args.command {
-            AlphaCommands::Test(args) => match args.command {
-                TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
-                    .await
-                    .map(|_| ()),
-                TestCommands::Beacon(args) => commands::test::beacon::run(args, &mut stdout, ct)
-                    .await
-                    .map(|_| ()),
-                TestCommands::Validator(args) => {
-                    commands::test::validator::run(args, &mut stdout, ct)
+            AlphaCommands::Test(args) => {
+                args.command.validate()?;
+                match args.command {
+                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
                         .await
-                        .map(|_| ())
+                        .map(|_| ()),
+                    TestCommands::Beacon(args) => {
+                        commands::test::beacon::run(args, &mut stdout, ct)
+                            .await
+                            .map(|_| ())
+                    }
+                    TestCommands::Validator(args) => {
+                        commands::test::validator::run(args, &mut stdout, ct)
+                            .await
+                            .map(|_| ())
+                    }
+                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
+                        .await
+                        .map(|_| ()),
+                    TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout, ct)
+                        .await
+                        .map(|_| ()),
+                    TestCommands::All(args) => {
+                        commands::test::all::run(*args, &mut stdout, ct).await
+                    }
                 }
-                TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
-                    .await
-                    .map(|_| ()),
-                TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout, ct)
-                    .await
-                    .map(|_| ()),
-                TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await,
-            },
+            }
         },
     }
 }
